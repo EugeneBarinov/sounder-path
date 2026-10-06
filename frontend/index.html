@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SeaPath ECDIS - Bathymetric Passage Planner</title>
+    <script src="https://unpkg.com/maplibre-gl@3.3.1/dist/maplibre-gl.js"></script>
+    <link href="https://unpkg.com/maplibre-gl@3.3.1/dist/maplibre-gl.css" rel="stylesheet" />
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div id="sidebar">
+        <div class="panel-header">Vessel Parameters</div>
+        <div class="control-group">
+            <label for="vessel-profile">Vessel Profile</label>
+            <select id="vessel-profile" class="vessel-select">
+                <option value="custom">Custom</option>
+                <option value="yacht" selected>Small Yacht (12m)</option>
+                <option value="ferry">Ferry / Ro-Ro (80m)</option>
+                <option value="cargo">Cargo Ship (150m)</option>
+            </select>
+
+            <label for="draft-slider">Static Draft <span class="val" id="draft-val">1.2m</span></label>
+            <input type="range" id="draft-slider" min="0.5" max="4.0" step="0.1" value="1.2">
+            
+            <label for="speed-slider">Speed (Knots) <span class="val" id="speed-val">10 kts</span></label>
+            <input type="range" id="speed-slider" min="0" max="30" step="1" value="10">
+            
+            <label for="ukc-slider">UKC Margin <span class="val" id="ukc-val">0.5m</span></label>
+            <input type="range" id="ukc-slider" min="0.0" max="2.0" step="0.1" value="0.5">
+
+            <div class="metrics-grid">
+                <div class="metric-box">
+                    <span class="metric-label">Dyn. Draft</span>
+                    <span class="metric-val val-warn" id="dynamic-draft-val">1.26m</span>
+                </div>
+                <div class="metric-box">
+                    <span class="metric-label">Min Depth Req.</span>
+                    <span class="metric-val val-danger" id="danger-val">1.76m</span>
+                </div>
+            </div>
+        </div>
+
+        <div class="panel-header">Route Planning</div>
+        <div class="wp-container">
+            <div class="wp wp-start">
+                <div class="wp-indicator"></div>
+                <span id="start-coord">A: Not set</span>
+            </div>
+            <div class="wp wp-goal">
+                <div class="wp-indicator"></div>
+                <span id="goal-coord">B: Not set</span>
+            </div>
+            
+            <button id="clear-route" style="margin-top: 8px;">Clear Route</button>
+            <div id="status"></div>
+        </div>
+    </div>
+
+    <div id="map"></div>
+
+    <div id="chart-panel">
+        <canvas id="depth-chart"></canvas>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>

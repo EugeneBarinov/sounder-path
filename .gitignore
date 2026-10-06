@@ -1,0 +1,59 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# C extensions
+*.obj
+*.o
+*.pyd
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/
+.eggs/
+
+# Virtual Environments
+venv/
+env/
+ENV/
+.venv/
+env.bak/
+venv.bak/
+
+# IDE and Editor configurations
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.project
+.pydevproject
+.settings/
+
+# OS-generated files
+.DS_Store
+Thumbs.db
+ehthumbs.db
+[Dd]esktop.ini
+
+# Environment variables
+.env
+.env.local
+
+# Runtime / Logs
+*.log
+*.tmp
+logs/
+
+# Processed cache / artifacts
+data/processed/*
+!data/processed/.gitkeep
+
+# Large GeoTIFF / bathymetry data files (managed externally)
+data/raw/*.tif
+data/raw/*.tiff
+*.tif
+*.tiff
