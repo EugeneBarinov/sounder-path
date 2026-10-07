@@ -91,8 +91,84 @@ const hudWpDist = document.getElementById('hud-wp-dist');
 const hudWpEta = document.getElementById('hud-wp-eta');
 const simAlarmBanner = document.getElementById('sim-alarm-banner');
 
+// Элементы плавающей панели ECDIS Topbar
+const topbarClearRouteBtn = document.getElementById('topbar-clear-route');
+const topbarAddWpBtn = document.getElementById('topbar-add-wp');
+const toolEblVrmBtn = document.getElementById('tool-ebl-vrm');
+const themeToggleBtn = document.getElementById('theme-toggle-btn');
+const themeStatusTag = document.getElementById('theme-status-tag');
+const soundToggleBtn = document.getElementById('sound-toggle-btn');
+const hudCursorCoords = document.getElementById('hud-cursor-coords');
+const hudCursorDepth = document.getElementById('hud-cursor-depth');
+
+// Элементы панели EBL / VRM
+const eblVrmOverlay = document.getElementById('ebl-vrm-overlay');
+const eblCloseBtn = document.getElementById('ebl-close-btn');
+const eblBearingVal = document.getElementById('ebl-bearing-val');
+const eblRecipVal = document.getElementById('ebl-recip-val');
+const eblDistVal = document.getElementById('ebl-dist-val');
+const eblDistMVal = document.getElementById('ebl-dist-m-val');
+const eblEtaVal = document.getElementById('ebl-eta-val');
+const eblSpdRef = document.getElementById('ebl-spd-ref');
+const eblPromptText = document.getElementById('ebl-prompt-text');
+
 // -----------------------------------------------------------------------------
-// 3. Пресеты судов и состояние навигации
+// Звуковая сигнализация эхолота и опасных глубин (Web Audio API)
+// -----------------------------------------------------------------------------
+class MarineAudioAlerts {
+    constructor() {
+        this.ctx = null;
+        this.enabled = true;
+    }
+    init() {
+        if (!this.ctx) {
+            const AudioCtx = window.AudioContext || window.webkitAudioContext;
+            if (AudioCtx) this.ctx = new AudioCtx();
+        }
+        if (this.ctx && this.ctx.state === 'suspended') {
+            this.ctx.resume();
+        }
+    }
+    playSonarPing() {
+        if (!this.enabled) return;
+        this.init();
+        if (!this.ctx) return;
+        try {
+            const osc = this.ctx.createOscillator();
+            const gain = this.ctx.createGain();
+            osc.type = 'sine';
+            osc.frequency.setValueAtTime(880, this.ctx.currentTime);
+            osc.frequency.exponentialRampToValueAtTime(440, this.ctx.currentTime + 0.18);
+            gain.gain.setValueAtTime(0.12, this.ctx.currentTime);
+            gain.gain.exponentialRampToValueAtTime(0.001, this.ctx.currentTime + 0.22);
+            osc.connect(gain);
+            gain.connect(this.ctx.destination);
+            osc.start();
+            osc.stop(this.ctx.currentTime + 0.25);
+        } catch (_) {}
+    }
+    playShallowAlarm() {
+        if (!this.enabled) return;
+        this.init();
+        if (!this.ctx) return;
+        try {
+            const now = this.ctx.currentTime;
+            [0, 0.14].forEach((offset, idx) => {
+                const osc = this.ctx.createOscillator();
+                const gain = this.ctx.createGain();
+                osc.type = 'triangle';
+                osc.frequency.setValueAtTime(idx === 0 ? 660 : 880, now + offset);
+                gain.gain.setValueAtTime(0.20, now + offset);
+                gain.gain.exponentialRampToValueAtTime(0.001, now + offset + 0.12);
+                osc.connect(gain);
+                gain.connect(this.ctx.destination);
+                osc.start(now + offset);
+                osc.stop(now + offset + 0.14);
+            });
+        } catch (_) {}
+    }
+}
+const marineAudio = new MarineAudioAlerts();
 // -----------------------------------------------------------------------------
 const VESSEL_PROFILES = {
     yacht: { draft: 1.2, speed: 10, ukc: 0.5, radius: 50, cb: 0.50 },
@@ -155,6 +231,17 @@ const chartInstance = new Chart(ctx, {
         responsive: true,
         maintainAspectRatio: false,
         animation: { duration: 300 },
+        onHover: (event, activeElements) => {
+            if (activeElements && activeElements.length > 0 && currentRouteData && currentRouteData.profile) {
+                const idx = activeElements[0].index;
+                const pt = currentRouteData.profile[idx];
+                if (pt && pt.lon !== undefined && pt.lat !== undefined) {
+                    highlightRouteProfilePoint([pt.lon, pt.lat], pt);
+                }
+            } else {
+                clearRouteProfileHighlight();
+            }
+        },
         scales: {
             y: {
                 reverse: true,
@@ -178,6 +265,51 @@ const chartInstance = new Chart(ctx, {
         }
     }
 });
+
+let profileHoverPopup = null;
+
+function highlightRouteProfilePoint(coords, pt) {
+    if (!map.getSource('profile-hover')) return;
+    map.getSource('profile-hover').setData({
+        type: 'Feature',
+        properties: {},
+        geometry: { type: 'Point', coordinates: coords }
+    });
+    const distNm = (pt.distance_from_start_m / 1852.0).toFixed(1);
+    const depthM = pt.depth.toFixed(1);
+    const ukcM = pt.clearance.toFixed(2);
+    
+    if (!profileHoverPopup) {
+        profileHoverPopup = new maplibregl.Popup({
+            closeButton: false,
+            closeOnClick: false,
+            offset: 14
+        });
+    }
+    profileHoverPopup
+        .setLngLat(coords)
+        .setHTML(`
+            <div class="map-profile-tooltip">
+                <div><b>Дистанция:</b> ${distNm} ММ</div>
+                <div><b>Глубина:</b> ${depthM} м | <b>UKC:</b> ${ukcM} м</div>
+            </div>
+        `)
+        .addTo(map);
+}
+
+function clearRouteProfileHighlight() {
+    if (map.getSource('profile-hover')) {
+        map.getSource('profile-hover').setData({ type: 'FeatureCollection', features: [] });
+    }
+    if (profileHoverPopup) {
+        profileHoverPopup.remove();
+    }
+}
+
+const depthChartCanvas = document.getElementById('depth-chart');
+if (depthChartCanvas) {
+    depthChartCanvas.addEventListener('mouseleave', clearRouteProfileHighlight);
+}
 
 // -----------------------------------------------------------------------------
 // 5. Расчет гидродинамических параметров судна
@@ -514,6 +646,149 @@ map.on('load', () => {
         });
     }
 
+    // 7. Слой интерактивного указателя профиля глубин на карте
+    map.addSource('profile-hover', {
+        type: 'geojson',
+        data: { type: 'FeatureCollection', features: [] }
+    });
+
+    map.addLayer({
+        id: 'profile-hover-circle',
+        type: 'circle',
+        source: 'profile-hover',
+        paint: {
+            'circle-color': '#38bdf8',
+            'circle-radius': 7.5,
+            'circle-stroke-width': 3,
+            'circle-stroke-color': '#ffffff'
+        }
+    });
+
+    // 8. Слой электронного пеленгатора и дальности EBL / VRM
+    map.addSource('ebl-vrm', {
+        type: 'geojson',
+        data: { type: 'FeatureCollection', features: [] }
+    });
+
+    map.addLayer({
+        id: 'ebl-vrm-range-circle',
+        type: 'line',
+        source: 'ebl-vrm',
+        filter: ['==', ['get', 'role'], 'vrm_circle'],
+        paint: {
+            'line-color': '#38bdf8',
+            'line-width': 1.5,
+            'line-dasharray': [4, 2],
+            'line-opacity': 0.85
+        }
+    });
+
+    map.addLayer({
+        id: 'ebl-vrm-bearing-line',
+        type: 'line',
+        source: 'ebl-vrm',
+        filter: ['==', ['get', 'role'], 'ebl_line'],
+        paint: {
+            'line-color': '#38bdf8',
+            'line-width': 2.0,
+            'line-opacity': 0.95
+        }
+    });
+
+    map.addLayer({
+        id: 'ebl-vrm-center-point',
+        type: 'circle',
+        source: 'ebl-vrm',
+        filter: ['==', ['get', 'role'], 'ebl_center'],
+        paint: {
+            'circle-color': '#38bdf8',
+            'circle-radius': 5.0,
+            'circle-stroke-width': 2,
+            'circle-stroke-color': '#0f172a'
+        }
+    });
+
+    // Интерактивная вставка путевой точки по клику на линию маршрута
+    map.on('mouseenter', 'route-layer', () => {
+        if (!isEblVrmActive && !isAddingViaMode) {
+            map.getCanvas().style.cursor = 'copy';
+        }
+    });
+
+    map.on('mouseleave', 'route-layer', () => {
+        if (!isEblVrmActive && !isAddingViaMode) {
+            map.getCanvas().style.cursor = '';
+        }
+    });
+
+    map.on('click', 'route-layer', (e) => {
+        if (isEblVrmActive || isAddingViaMode) return;
+        if (plannedWaypoints.length < 2) return;
+
+        const clickPt = [e.lngLat.lng, e.lngLat.lat];
+        let bestLegIndex = 0;
+        let minPerpDist = Infinity;
+
+        for (let i = 0; i < plannedWaypoints.length - 1; i++) {
+            const p1 = plannedWaypoints[i].coords;
+            const p2 = plannedWaypoints[i + 1].coords;
+            const d = distToSegmentSquared(clickPt, p1, p2);
+            if (d < minPerpDist) {
+                minPerpDist = d;
+                bestLegIndex = i;
+            }
+        }
+
+        const newWp = {
+            id: nextWpId++,
+            coords: clickPt,
+            role: 'via',
+            marker: null
+        };
+        newWp.marker = createWaypointMarker(newWp);
+        plannedWaypoints.splice(bestLegIndex + 1, 0, newWp);
+
+        renderWaypointsListUI();
+        calculateRoute();
+    });
+
+    // Интерактивный курсор: координаты и глубина дна под курсором в реальном времени
+    let depthQueryTimer = null;
+    map.on('mousemove', (e) => {
+        const lng = e.lngLat.lng;
+        const lat = e.lngLat.lat;
+
+        if (hudCursorCoords) {
+            hudCursorCoords.innerText = formatCoordinates(lat, lng);
+        }
+
+        if (isEblVrmActive && eblOrigin && !isEblLocked) {
+            updateEblVrm([lng, lat]);
+        }
+
+        if (hudCursorDepth) {
+            if (depthQueryTimer) clearTimeout(depthQueryTimer);
+            depthQueryTimer = setTimeout(() => {
+                fetch(`/api/depth?lon=${lng.toFixed(5)}&lat=${lat.toFixed(5)}`)
+                    .then(r => r.json())
+                    .then(data => {
+                        if (!data || !data.in_bounds) {
+                            hudCursorDepth.innerText = 'Вне зоны';
+                            hudCursorDepth.style.color = 'var(--text-muted)';
+                        } else if (data.is_land) {
+                            hudCursorDepth.innerText = 'Суша (0.0 м)';
+                            hudCursorDepth.style.color = 'var(--status-danger)';
+                        } else {
+                            hudCursorDepth.innerText = `${data.depth.toFixed(1)} м`;
+                            const isSafe = data.depth >= (draft + dynamicSquat + baseUkc - tideOffsetM);
+                            hudCursorDepth.style.color = isSafe ? 'var(--status-success)' : 'var(--status-danger)';
+                        }
+                    })
+                    .catch(() => {});
+            }, 80);
+        }
+    });
+
     updateVesselPhysics();
 });
 
@@ -649,6 +924,7 @@ function clearRouteData() {
     if (map.getSource('route-corridor')) map.getSource('route-corridor').setData({ type: 'FeatureCollection', features: [] });
     if (map.getSource('turn-arcs')) map.getSource('turn-arcs').setData({ type: 'FeatureCollection', features: [] });
     if (map.getSource('bottleneck-point')) map.getSource('bottleneck-point').setData({ type: 'FeatureCollection', features: [] });
+    clearRouteProfileHighlight();
 
     renderWaypointsListUI();
     renderWaypointsTable([]);
@@ -660,37 +936,203 @@ function clearRouteData() {
     stopSimulator();
 }
 
+function distToSegmentSquared(p, v, w) {
+    const l2 = (v[0] - w[0]) * (v[0] - w[0]) + (v[1] - w[1]) * (v[1] - w[1]);
+    if (l2 === 0) return (p[0] - v[0]) * (p[0] - v[0]) + (p[1] - v[1]) * (p[1] - v[1]);
+    let t = ((p[0] - v[0]) * (w[0] - v[0]) + (p[1] - v[1]) * (w[1] - v[1])) / l2;
+    t = Math.max(0, Math.min(1, t));
+    const proj = [v[0] + t * (w[0] - v[0]), v[1] + t * (w[1] - v[1])];
+    return (p[0] - proj[0]) * (p[0] - proj[0]) + (p[1] - proj[1]) * (p[1] - proj[1]);
+}
+
+// -----------------------------------------------------------------------------
+// Электронный пеленгатор EBL & маркер дистанции VRM (IMO MSC.192(79))
+// -----------------------------------------------------------------------------
+let isEblVrmActive = false;
+let eblOrigin = null;
+let isEblLocked = false;
+
+function toggleEblVrmMode() {
+    isEblVrmActive = !isEblVrmActive;
+    if (isEblVrmActive) {
+        if (toolEblVrmBtn) toolEblVrmBtn.classList.add('active');
+        if (eblVrmOverlay) eblVrmOverlay.style.display = 'block';
+        if (eblPromptText) eblPromptText.innerText = 'Кликните на карте для фиксации центра отсчета (Origin)';
+        eblOrigin = null;
+        isEblLocked = false;
+        map.getCanvas().style.cursor = 'crosshair';
+    } else {
+        closeEblVrm();
+    }
+}
+
+function closeEblVrm() {
+    isEblVrmActive = false;
+    eblOrigin = null;
+    isEblLocked = false;
+    if (toolEblVrmBtn) toolEblVrmBtn.classList.remove('active');
+    if (eblVrmOverlay) eblVrmOverlay.style.display = 'none';
+    map.getCanvas().style.cursor = '';
+    clearEblVrmGraphics();
+}
+
+function clearEblVrmGraphics() {
+    if (map.getSource('ebl-vrm')) {
+        map.getSource('ebl-vrm').setData({ type: 'FeatureCollection', features: [] });
+    }
+}
+
+function calculateGeodesicCircle(center, radiusM, numPoints = 64) {
+    const coords = [];
+    const lon1 = center[0] * Math.PI / 180;
+    const lat1 = center[1] * Math.PI / 180;
+    const dOverR = radiusM / 6371000.0;
+
+    for (let i = 0; i <= numPoints; i++) {
+        const brg = (i * 360.0 / numPoints) * Math.PI / 180;
+        const lat2 = Math.asin(Math.sin(lat1) * Math.cos(dOverR) + Math.cos(lat1) * Math.sin(dOverR) * Math.cos(brg));
+        const lon2 = lon1 + Math.atan2(
+            Math.sin(brg) * Math.sin(dOverR) * Math.cos(lat1),
+            Math.cos(dOverR) - Math.sin(lat1) * Math.sin(lat2)
+        );
+        coords.push([lon2 * 180 / Math.PI, lat2 * 180 / Math.PI]);
+    }
+    return coords;
+}
+
+function updateEblVrm(targetCoords) {
+    if (!eblOrigin) return;
+
+    const lon1 = eblOrigin[0], lat1 = eblOrigin[1];
+    const lon2 = targetCoords[0], lat2 = targetCoords[1];
+
+    const phi1 = lat1 * Math.PI / 180;
+    const phi2 = lat2 * Math.PI / 180;
+    const dLambda = (lon2 - lon1) * Math.PI / 180;
+    const y = Math.sin(dLambda) * Math.cos(phi2);
+    const x = Math.cos(phi1) * Math.sin(phi2) - Math.sin(phi1) * Math.cos(phi2) * Math.cos(dLambda);
+    let brgDeg = (Math.atan2(y, x) * 180 / Math.PI + 360) % 360;
+    let recipDeg = (brgDeg + 180) % 360;
+
+    const dPhi = (lat2 - lat1) * Math.PI / 180;
+    const a = Math.sin(dPhi / 2) * Math.sin(dPhi / 2) +
+              Math.cos(phi1) * Math.cos(phi2) * Math.sin(dLambda / 2) * Math.sin(dLambda / 2);
+    const distM = 6371000.0 * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    const distNm = distM / 1852.0;
+
+    const spd = Math.max(1.0, speedKnots);
+    const etaHours = distNm / spd;
+    const hrs = Math.floor(etaHours);
+    const mins = Math.round((etaHours - hrs) * 60);
+    const etaStr = hrs > 0 ? `${hrs}ч ${mins}мин` : `${mins} мин`;
+
+    if (eblBearingVal) eblBearingVal.innerText = `${brgDeg.toFixed(1)}°T`;
+    if (eblRecipVal) eblRecipVal.innerText = `${recipDeg.toFixed(1)}°T`;
+    if (eblDistVal) eblDistVal.innerText = `${distNm.toFixed(2)} ММ`;
+    if (eblDistMVal) eblDistMVal.innerText = `${Math.round(distM)} м`;
+    if (eblSpdRef) eblSpdRef.innerText = speedKnots;
+    if (eblEtaVal) eblEtaVal.innerText = etaStr;
+
+    const circleCoords = calculateGeodesicCircle(eblOrigin, distM);
+    const features = [
+        {
+            type: 'Feature',
+            properties: { role: 'ebl_center' },
+            geometry: { type: 'Point', coordinates: eblOrigin }
+        },
+        {
+            type: 'Feature',
+            properties: { role: 'ebl_line' },
+            geometry: { type: 'LineString', coordinates: [eblOrigin, targetCoords] }
+        },
+        {
+            type: 'Feature',
+            properties: { role: 'vrm_circle' },
+            geometry: { type: 'LineString', coordinates: circleCoords }
+        }
+    ];
+
+    if (map.getSource('ebl-vrm')) {
+        map.getSource('ebl-vrm').setData({ type: 'FeatureCollection', features });
+    }
+}
+
 if (clearRouteBtn) {
     clearRouteBtn.addEventListener('click', clearRouteData);
 }
+if (topbarClearRouteBtn) {
+    topbarClearRouteBtn.addEventListener('click', clearRouteData);
+}
 
-if (addWpBtn) {
-    addWpBtn.addEventListener('click', () => {
-        isAddingViaMode = !isAddingViaMode;
-        if (isAddingViaMode) {
-            addWpBtn.innerText = 'Кликните на карте для добавления РТ (Отмена)';
-            addWpBtn.style.background = 'rgba(245, 158, 11, 0.25)';
-            addWpBtn.style.borderColor = '#f59e0b';
-            addWpBtn.style.color = '#fbbf24';
-        } else {
-            addWpBtn.innerText = '+ Добавить путевую точку';
-            addWpBtn.style.background = 'rgba(56, 189, 248, 0.15)';
-            addWpBtn.style.borderColor = '#38bdf8';
-            addWpBtn.style.color = '#38bdf8';
+function toggleAddWaypointMode() {
+    isAddingViaMode = !isAddingViaMode;
+    const label = isAddingViaMode ? '✕ Отмена РТ' : '+ Точка';
+    const topbarLabel = isAddingViaMode ? '✕ Отмена РТ' : '+ Путевая точка';
+    if (addWpBtn) {
+        addWpBtn.innerText = label;
+        addWpBtn.style.background = isAddingViaMode ? 'rgba(245, 158, 11, 0.25)' : '';
+        addWpBtn.style.borderColor = isAddingViaMode ? '#f59e0b' : '';
+        addWpBtn.style.color = isAddingViaMode ? '#fbbf24' : '';
+    }
+    if (topbarAddWpBtn) {
+        topbarAddWpBtn.innerText = topbarLabel;
+        topbarAddWpBtn.classList.toggle('active', isAddingViaMode);
+    }
+    map.getCanvas().style.cursor = isAddingViaMode ? 'crosshair' : '';
+}
+
+if (addWpBtn) addWpBtn.addEventListener('click', toggleAddWaypointMode);
+if (topbarAddWpBtn) topbarAddWpBtn.addEventListener('click', toggleAddWaypointMode);
+
+if (toolEblVrmBtn) toolEblVrmBtn.addEventListener('click', toggleEblVrmMode);
+if (eblCloseBtn) eblCloseBtn.addEventListener('click', closeEblVrm);
+
+if (themeToggleBtn) {
+    themeToggleBtn.addEventListener('click', () => {
+        const isDay = document.body.classList.toggle('ecdis-day-mode');
+        themeToggleBtn.innerText = isDay ? '🌓 Режим: День' : '🌓 Режим: Ночь';
+        if (themeStatusTag) {
+            themeStatusTag.innerText = isDay ? 'ДЕНЬ' : 'НОЧЬ';
         }
     });
 }
 
+if (soundToggleBtn) {
+    soundToggleBtn.addEventListener('click', () => {
+        marineAudio.enabled = !marineAudio.enabled;
+        soundToggleBtn.innerText = marineAudio.enabled ? '🔔 Звук: Вкл' : '🔕 Звук: Выкл';
+        soundToggleBtn.style.opacity = marineAudio.enabled ? '1.0' : '0.6';
+    });
+}
+
+window.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+        if (isEblVrmActive) closeEblVrm();
+        if (isAddingViaMode) toggleAddWaypointMode();
+    }
+});
+
 map.on('click', (e) => {
     const coords = [e.lngLat.lng, e.lngLat.lat];
 
+    if (isEblVrmActive) {
+        if (!eblOrigin) {
+            eblOrigin = coords;
+            if (eblPromptText) eblPromptText.innerText = 'Перемещайте курсор для замера. Клик — зафиксировать';
+        } else if (!isEblLocked) {
+            isEblLocked = true;
+            if (eblPromptText) eblPromptText.innerText = 'Замер зафиксирован. Кликните для нового замера';
+        } else {
+            eblOrigin = coords;
+            isEblLocked = false;
+            if (eblPromptText) eblPromptText.innerText = 'Перемещайте курсор для замера. Клик — зафиксировать';
+        }
+        return;
+    }
+
     if (isAddingViaMode) {
         addWaypoint(coords, 'via');
-        isAddingViaMode = false;
-        addWpBtn.innerText = '+ Добавить путевую точку';
-        addWpBtn.style.background = 'rgba(56, 189, 248, 0.15)';
-        addWpBtn.style.borderColor = '#38bdf8';
-        addWpBtn.style.color = '#38bdf8';
+        toggleAddWaypointMode();
         return;
     }
 
@@ -1135,25 +1577,8 @@ let simState = {
     vesselMarker: null
 };
 
-let audioCtx = null;
 function playBridgeChime() {
-    try {
-        if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-        if (audioCtx.state === 'suspended') audioCtx.resume();
-        const osc = audioCtx.createOscillator();
-        const gain = audioCtx.createGain();
-        osc.type = 'sine';
-        osc.frequency.setValueAtTime(880, audioCtx.currentTime);
-        osc.frequency.exponentialRampToValueAtTime(440, audioCtx.currentTime + 0.35);
-        gain.gain.setValueAtTime(0.2, audioCtx.currentTime);
-        gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.35);
-        osc.connect(gain);
-        gain.connect(audioCtx.destination);
-        osc.start();
-        osc.stop(audioCtx.currentTime + 0.4);
-    } catch (e) {
-        // браузерная блокировка аудио без взаимодействия
-    }
+    marineAudio.playShallowAlarm();
 }
 
 function initVesselSimulatorMarker() {

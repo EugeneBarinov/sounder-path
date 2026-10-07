@@ -76,6 +76,10 @@
 
         <div class="panel-header">Прокладка маршрута</div>
         <div class="wp-container">
+            <div class="route-toolbar">
+                <button id="add-wp-btn" class="route-action-btn btn-add-wp" title="Добавить промежуточную путевую точку">+ Точка</button>
+                <button id="clear-route" class="route-action-btn btn-clear-route" title="Очистить маршрут и точки">✕ Очистить маршрут</button>
+            </div>
             <div id="waypoints-list">
                 <div class="wp wp-start" id="wp-row-start">
                     <div class="wp-indicator"></div>
@@ -86,11 +90,49 @@
                     <span id="goal-coord">B (Приход): Кликните на карте</span>
                 </div>
             </div>
-            
-            <button id="add-wp-btn" style="margin-top: 8px; background: rgba(56, 189, 248, 0.15); border: 1px solid #38bdf8; color: #38bdf8;">+ Добавить путевую точку</button>
-            <button id="clear-route" style="margin-top: 6px;">Очистить маршрут</button>
             <div id="status"></div>
         </div>
+    </div>
+
+    <!-- Floating Map ECDIS Top Bar & Telemetry HUD -->
+    <div id="map-topbar">
+        <div class="topbar-section topbar-brand">
+            <span class="topbar-logo">⚓ SEAPATH ECDIS</span>
+            <span class="topbar-pill" id="theme-status-tag">НОЧЬ</span>
+        </div>
+        <div class="topbar-section topbar-actions">
+            <button id="topbar-clear-route" class="topbar-tool-btn btn-danger-pill" title="Очистить маршрут и все точки">✕ Очистить маршрут</button>
+            <button id="topbar-add-wp" class="topbar-tool-btn" title="Добавить промежуточную путевую точку">+ Путевая точка</button>
+            <button id="tool-ebl-vrm" class="topbar-tool-btn" title="Электронный визир направления и дальности (EBL / VRM)">📏 Линейка / Пеленг</button>
+            <button id="theme-toggle-btn" class="topbar-tool-btn" title="Переключение режима ECDIS День / Ночь (IEC 61174)">🌓 Режим: Ночь</button>
+            <button id="sound-toggle-btn" class="topbar-tool-btn" title="Звуковое оповещение эхолота и опасных глубин">🔔 Звук: Вкл</button>
+        </div>
+        <div class="topbar-section topbar-telemetry">
+            <div class="hud-pill">
+                <span class="hud-pill-label">КУРСОР:</span>
+                <span id="hud-cursor-coords" class="hud-pill-val">--°--.-'N --°--.-'E</span>
+            </div>
+            <div class="hud-pill">
+                <span class="hud-pill-label">ГЛУБИНА:</span>
+                <span id="hud-cursor-depth" class="hud-pill-val hud-depth-val">-- м</span>
+            </div>
+        </div>
+    </div>
+
+    <!-- Floating EBL / VRM Navigation HUD -->
+    <div id="ebl-vrm-overlay" class="ebl-vrm-hud" style="display: none;">
+        <div class="ebl-header">
+            <span>ЭЛЕКТРОННЫЙ ПЕЛЕНГАТОР (EBL / VRM)</span>
+            <button id="ebl-close-btn" class="ebl-close-btn">✕</button>
+        </div>
+        <div class="ebl-body">
+            <div class="ebl-row"><span>Истинный пеленг (BRG):</span><strong id="ebl-bearing-val">---°T</strong></div>
+            <div class="ebl-row"><span>Обратный пеленг:</span><strong id="ebl-recip-val">---°T</strong></div>
+            <div class="ebl-row"><span>Дальность (VRM):</span><strong id="ebl-dist-val">--- ММ</strong></div>
+            <div class="ebl-row"><span>Дистанция:</span><strong id="ebl-dist-m-val">--- м</strong></div>
+            <div class="ebl-row"><span>Время хода (<span id="ebl-spd-ref">10</span> уз):</span><strong id="ebl-eta-val">---</strong></div>
+        </div>
+        <div class="ebl-footer" id="ebl-prompt-text">Кликните на карте для фиксации центра отсчета</div>
     </div>
 
     <div id="map"></div>

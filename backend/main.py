@@ -218,6 +218,26 @@ def get_fairways():
     return load_fairways_geojson()
 
 
+@app.get("/api/depth")
+def get_depth_at(lon: float, lat: float):
+    """Returns exact seabed sounding depth in meters at the given geographic coordinate."""
+    if not _is_within_coverage(lon, lat, full_grid):
+        return {"depth": None, "in_bounds": False, "is_land": False, "is_restricted": False}
+    r, c = full_grid.lonlat_to_cell(lon, lat)
+    d = float(full_grid.depths[r, c])
+    is_land = d <= 0.05
+    is_restr = False
+    if routing_grid:
+        rr, rc = routing_grid.lonlat_to_cell(lon, lat)
+        is_restr = routing_grid.is_restricted(rr, rc)
+    return {
+        "depth": round(d, 1) if not is_land else 0.0,
+        "in_bounds": True,
+        "is_land": is_land,
+        "is_restricted": is_restr,
+    }
+
+
 @app.post("/api/route")
 def calculate_route(req: RouteRequest):
     """

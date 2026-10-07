@@ -43,9 +43,36 @@ body, html {
     height: 100%;
     background: var(--bg-surface);
     border-right: 1px solid var(--border-color);
-    z-index: 10;
+    z-index: 20;
     display: flex;
     flex-direction: column;
+    overflow-y: auto;
+    overflow-x: hidden;
+    box-sizing: border-box;
+}
+
+/* Custom Sleek Scrollbar for ECDIS Marine Theme */
+#sidebar::-webkit-scrollbar,
+.table-scroll::-webkit-scrollbar,
+.safety-scroll::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+}
+#sidebar::-webkit-scrollbar-track,
+.table-scroll::-webkit-scrollbar-track,
+.safety-scroll::-webkit-scrollbar-track {
+    background: #141414;
+}
+#sidebar::-webkit-scrollbar-thumb,
+.table-scroll::-webkit-scrollbar-thumb,
+.safety-scroll::-webkit-scrollbar-thumb {
+    background: #333333;
+    border-radius: 3px;
+}
+#sidebar::-webkit-scrollbar-thumb:hover,
+.table-scroll::-webkit-scrollbar-thumb:hover,
+.safety-scroll::-webkit-scrollbar-thumb:hover {
+    background: #555555;
 }
 
 .panel-header {
@@ -132,7 +159,51 @@ input[type="range"] {
 
 /* Waypoint Corridor Controls */
 .wp-container {
-    padding: 16px;
+    padding: 14px 16px;
+}
+
+.route-toolbar {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 12px;
+}
+
+.route-action-btn {
+    flex: 1;
+    padding: 8px 10px;
+    font-size: 11px;
+    font-weight: 600;
+    border-radius: 3px;
+    cursor: pointer;
+    text-transform: uppercase;
+    transition: all 0.15s ease;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    border: 1px solid transparent;
+}
+
+.btn-add-wp {
+    background: rgba(56, 189, 248, 0.14);
+    border-color: #0284c7;
+    color: #38bdf8;
+}
+.btn-add-wp:hover {
+    background: rgba(56, 189, 248, 0.28);
+    border-color: #38bdf8;
+    color: #ffffff;
+}
+
+.btn-clear-route {
+    background: rgba(239, 68, 68, 0.14);
+    border-color: #b91c1c;
+    color: #f87171;
+}
+.btn-clear-route:hover {
+    background: rgba(239, 68, 68, 0.32);
+    border-color: #ef4444;
+    color: #ffffff;
 }
 
 .wp {
@@ -715,4 +786,312 @@ button:hover {
 @keyframes alarm-pulse {
     from { opacity: 0.75; }
     to { opacity: 1.0; background: rgba(239, 68, 68, 0.35); }
+}
+
+/* =============================================================================
+ * Floating Map ECDIS Top Bar & Telemetry HUD
+ * ============================================================================= */
+#map-topbar {
+    position: absolute;
+    top: 10px;
+    left: 295px;
+    right: 15px;
+    height: 42px;
+    background: rgba(24, 24, 27, 0.88);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: 6px;
+    z-index: 15;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 12px;
+    box-shadow: 0 4px 18px rgba(0, 0, 0, 0.45);
+    pointer-events: auto;
+}
+
+.topbar-section {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.topbar-brand {
+    gap: 8px;
+}
+
+.topbar-logo {
+    font-weight: 700;
+    font-size: 13px;
+    letter-spacing: 0.8px;
+    color: #f1f5f9;
+}
+
+.topbar-pill {
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+    padding: 2px 6px;
+    border-radius: 3px;
+    background: #334155;
+    color: #94a3b8;
+    letter-spacing: 0.5px;
+}
+
+.topbar-tool-btn {
+    width: auto;
+    background: #27272a;
+    border: 1px solid #3f3f46;
+    color: #e4e4e7;
+    padding: 6px 10px;
+    font-size: 11px;
+    font-weight: 600;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: all 0.15s ease;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.topbar-tool-btn:hover {
+    background: #3f3f46;
+    color: #ffffff;
+    border-color: #52525b;
+}
+
+.topbar-tool-btn.btn-danger-pill {
+    background: rgba(239, 68, 68, 0.2);
+    border-color: #ef4444;
+    color: #fca5a5;
+}
+
+.topbar-tool-btn.btn-danger-pill:hover {
+    background: #ef4444;
+    color: #ffffff;
+}
+
+.topbar-tool-btn.active {
+    background: #0284c7;
+    border-color: #38bdf8;
+    color: #ffffff;
+}
+
+.topbar-telemetry {
+    gap: 10px;
+}
+
+.hud-pill {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-family: Consolas, monospace;
+    font-size: 11px;
+    background: rgba(0, 0, 0, 0.4);
+    padding: 4px 8px;
+    border-radius: 4px;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.hud-pill-label {
+    color: #94a3b8;
+    font-size: 10px;
+}
+
+.hud-pill-val {
+    color: #f8fafc;
+    font-weight: 600;
+}
+
+.hud-depth-val {
+    color: #34d399;
+}
+
+/* =============================================================================
+ * Electronic Bearing Line (EBL) & Variable Range Marker (VRM) HUD
+ * ============================================================================= */
+.ebl-vrm-hud {
+    position: absolute;
+    top: 60px;
+    right: 15px;
+    width: 270px;
+    background: rgba(15, 23, 42, 0.94);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+    border: 1px solid #38bdf8;
+    border-radius: 6px;
+    z-index: 25;
+    padding: 12px 14px;
+    box-shadow: 0 6px 24px rgba(0, 0, 0, 0.6);
+    font-size: 11px;
+}
+
+.ebl-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-weight: 700;
+    color: #38bdf8;
+    font-size: 11px;
+    letter-spacing: 0.5px;
+    margin-bottom: 10px;
+    border-bottom: 1px solid rgba(56, 189, 248, 0.25);
+    padding-bottom: 6px;
+}
+
+.ebl-close-btn {
+    background: transparent;
+    border: none;
+    color: #94a3b8;
+    cursor: pointer;
+    font-size: 13px;
+    padding: 0;
+    width: auto;
+}
+
+.ebl-close-btn:hover {
+    color: #ffffff;
+}
+
+.ebl-body {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.ebl-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    color: #cbd5e1;
+}
+
+.ebl-row strong {
+    font-family: Consolas, monospace;
+    color: #38bdf8;
+    font-size: 12px;
+}
+
+.ebl-footer {
+    margin-top: 8px;
+    font-size: 10px;
+    color: #94a3b8;
+    font-style: italic;
+    text-align: center;
+    border-top: 1px solid rgba(255, 255, 255, 0.06);
+    padding-top: 6px;
+}
+
+/* On-Map Profile Hover Cursor Marker Tooltip */
+.map-profile-tooltip {
+    background: rgba(15, 23, 42, 0.92);
+    border: 1px solid #10b981;
+    border-radius: 4px;
+    padding: 4px 8px;
+    color: #e2e8f0;
+    font-family: Consolas, monospace;
+    font-size: 11px;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.5);
+    pointer-events: none;
+    white-space: nowrap;
+}
+
+/* =============================================================================
+ * IEC 61174 ECDIS Day Mode Theme
+ * ============================================================================= */
+body.ecdis-day-mode {
+    --bg-base: #f1f5f9;
+    --bg-surface: #ffffff;
+    --bg-panel: #f8fafc;
+    --border-color: #cbd5e1;
+    --text-primary: #0f172a;
+    --text-secondary: #475569;
+    --text-muted: #64748b;
+    --accent-blue: #0284c7;
+}
+
+body.ecdis-day-mode #sidebar {
+    background: #ffffff;
+    border-right-color: #cbd5e1;
+}
+
+body.ecdis-day-mode .panel-header {
+    background: #f1f5f9;
+    color: #0f172a;
+    border-bottom-color: #cbd5e1;
+}
+
+body.ecdis-day-mode .vessel-select {
+    background: #f8fafc;
+    color: #0f172a;
+    border-color: #cbd5e1;
+}
+
+body.ecdis-day-mode #map-topbar {
+    background: rgba(255, 255, 255, 0.94);
+    border-color: #cbd5e1;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
+}
+
+body.ecdis-day-mode .topbar-logo {
+    color: #0f172a;
+}
+
+body.ecdis-day-mode .topbar-tool-btn {
+    background: #f1f5f9;
+    border-color: #cbd5e1;
+    color: #0f172a;
+}
+
+body.ecdis-day-mode .topbar-tool-btn:hover {
+    background: #e2e8f0;
+}
+
+body.ecdis-day-mode .topbar-pill {
+    background: #e2e8f0;
+    color: #475569;
+}
+
+body.ecdis-day-mode .hud-pill {
+    background: #f1f5f9;
+    border-color: #cbd5e1;
+}
+
+body.ecdis-day-mode .hud-pill-label {
+    color: #64748b;
+}
+
+body.ecdis-day-mode .hud-pill-val {
+    color: #0f172a;
+}
+
+body.ecdis-day-mode #bottom-drawer {
+    background: #ffffff;
+    border-top-color: #cbd5e1;
+}
+
+body.ecdis-day-mode .drawer-header {
+    background: #f8fafc;
+    border-bottom-color: #cbd5e1;
+}
+
+body.ecdis-day-mode .hud-card {
+    background: #f8fafc;
+    border-color: #e2e8f0;
+}
+
+body.ecdis-day-mode .hud-card .hud-label {
+    color: #475569;
+}
+
+body.ecdis-day-mode .metric-box {
+    background: #f8fafc;
+    border-color: #e2e8f0;
+}
+
+body.ecdis-day-mode .wp {
+    background: #f8fafc;
+    border-color: #e2e8f0;
+    color: #0f172a;
 }
