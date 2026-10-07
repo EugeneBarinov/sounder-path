@@ -83,7 +83,7 @@ class Router:
         while True:
             if not (0 <= r < self.grid.rows and 0 <= c < self.grid.cols):
                 return False
-            if float(self.grid.depths[r, c]) < min_depth:
+            if float(self.grid.depths[r, c]) <= min_depth:
                 return False
             if r == r1 and c == c1:
                 return True
@@ -141,10 +141,10 @@ class Router:
                     continue
 
                 depth = float(self.grid.depths[nr, nc])
-                if depth < min_depth:
+                if depth <= min_depth:
                     continue
 
-                clearance = depth - min_depth
+                clearance = max(0.05, depth - min_depth)
                 # Asymptotic safety penalty when approaching minimum safe clearance
                 shallow_penalty = 8.0 / clearance
                 # Coastal fairway preference: discourages uncontrolled deep-trench routing

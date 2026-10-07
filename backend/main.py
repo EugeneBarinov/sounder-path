@@ -41,24 +41,25 @@ _BASE_DIR = Path(__file__).resolve().parent.parent
 _RAW_DATA_DIR = _BASE_DIR / "data" / "raw"
 _GEOTIFF_PATH = _RAW_DATA_DIR / "E8_2024.tif"
 
-if not _GEOTIFF_PATH.exists():
-    raise RuntimeError(
-        f"Primary bathymetric dataset missing at {_GEOTIFF_PATH}. "
-        "Place the regional GeoTIFF (EMODnet DTM) in data/raw/ before starting."
+if _GEOTIFF_PATH.exists():
+    print(f"Loading primary bathymetric grid: {_GEOTIFF_PATH.name}...")
+    full_grid = BathymetricGrid.load_from_geotiff(_GEOTIFF_PATH)
+    routing_grid = full_grid.downsample(factor=10)
+else:
+    print(
+        f"[DEMO MODE] {_GEOTIFF_PATH.name} not found in data/raw/. "
+        "Initialized synthetic regional bathymetry grid for demonstration. "
+        "Place operational EMODnet GeoTIFF in data/raw/ for real-world navigation."
     )
-
-print(f"Loading primary bathymetric grid: {_GEOTIFF_PATH.name}...")
-full_grid = BathymetricGrid.load_from_geotiff(_GEOTIFF_PATH)
+    full_grid = BathymetricGrid.create_synthetic()
+    routing_grid = full_grid
 
 # Optional local high-resolution soundings fusion
 _LOCAL_SURVEY_CSV = _RAW_DATA_DIR / "yevpatoriya_channel.csv"
 if _LOCAL_SURVEY_CSV.exists():
     full_grid.fuse_csv_data(_LOCAL_SURVEY_CSV)
 
-# Downsampled grid for fast heuristic graph search (10x reduction)
-routing_grid = full_grid.downsample(factor=10)
-print(f"Grid loaded: Full resolution {full_grid.rows}x{full_grid.cols} | Routing {routing_grid.rows}x{routing_grid.cols}")
-
+print(f"Grid active: Full resolution {full_grid.rows}x{full_grid.cols} | Routing {routing_grid.rows}x{routing_grid.cols}")
 router = Router(routing_grid)
 
 # ---------------------------------------------------------------------------
@@ -170,7 +171,7 @@ def calculate_route(req: RouteRequest):
         raise HTTPException(status_code=400, detail="No navigable passage found satisfying vessel draft and UKC constraints.")
 
     distance_nm = result["diagnostics"]["distance_nm"]
-    eta_hours = round(distance_nm / max(req.speed_knots, 0.5), 2)
+    eta_hours = round(distance_nm / req.speed_knots, 2) if req.speed_knots > 0 else None
     result["diagnostics"]["eta_hours"] = eta_hours
 
     return {

@@ -308,7 +308,7 @@ window.calculateRoute = async function () {
 
             const p = data.properties;
             const distNm = p.distance_nm !== undefined ? p.distance_nm.toFixed(1) + ' NM' : '—';
-            const eta = p.eta_hours !== undefined ? p.eta_hours.toFixed(1) + ' h' : '—';
+            const eta = (p.eta_hours !== null && p.eta_hours !== undefined) ? p.eta_hours.toFixed(1) + ' h' : '— (Stationary)';
             const clearance = p.min_clearance_m !== undefined ? p.min_clearance_m.toFixed(2) + ' m' : '—';
             const waypointsCount = p.waypoints || '—';
 

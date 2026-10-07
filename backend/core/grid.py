@@ -48,6 +48,13 @@ class BathymetricGrid:
             raise FileNotFoundError(f"Bathymetry dataset not found at: {path}")
 
         with rasterio.open(path) as src:
+            if src.crs is not None and hasattr(src.crs, "to_epsg"):
+                epsg_code = src.crs.to_epsg()
+                if epsg_code is not None and epsg_code != 4326:
+                    raise ValueError(
+                        f"Unsupported CRS (EPSG:{epsg_code}). BathymetricGrid expects EPSG:4326 (WGS 84 geographic coordinates)."
+                    )
+
             data = src.read(1).astype(np.float32)
             # Invert negative elevation to positive depth
             depths = -data
@@ -63,6 +70,40 @@ class BathymetricGrid:
             lon_min=bounds.left,
             lon_max=bounds.right,
             depths=depths,
+        )
+
+    @classmethod
+    def create_synthetic(
+        cls,
+        lat_min: float = 43.12,
+        lat_max: float = 46.50,
+        lon_min: float = 33.12,
+        lon_max: float = 40.00,
+        rows: int = 400,
+        cols: int = 600,
+    ) -> "BathymetricGrid":
+        """
+        Generates a synthetic bathymetric grid for demonstration mode
+        when regional GeoTIFF datasets are not present locally.
+        """
+        lats = np.linspace(lat_max, lat_min, rows)
+        lons = np.linspace(lon_min, lon_max, cols)
+        lon_grid, lat_grid = np.meshgrid(lons, lats)
+
+        # Realistic shelf-to-basin depth gradient
+        norm_lat = (lat_max - lat_grid) / (lat_max - lat_min)
+        depths = 15.0 + 900.0 * (norm_lat ** 1.8)
+
+        # Synthetic shoreline / shallow sandbanks
+        coast_mask = (lat_grid > 45.3) & (lon_grid < 34.2)
+        depths[coast_mask] = 0.0
+
+        return cls(
+            lat_min=lat_min,
+            lat_max=lat_max,
+            lon_min=lon_min,
+            lon_max=lon_max,
+            depths=depths.astype(np.float32),
         )
 
     def downsample(self, factor: int = 10) -> "BathymetricGrid":
