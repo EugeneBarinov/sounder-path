@@ -63,13 +63,20 @@ class Router:
         self.grid = grid
 
     @staticmethod
-    def calculate_squat(speed_knots: float, block_coefficient: float = 0.6) -> float:
+    def calculate_squat(speed_knots: float, block_coefficient: float = 0.65, h_over_t: float = 0.0) -> float:
         """
-        Barrass open-water squat formulation.
-        Computes dynamic ship sinkage in meters based on hull form and operational speed.
-        Delta_h = (Cb * V^2) / 100
+        Barrass / PIANC hydrodynamic squat formulation.
+        Computes dynamic ship sinkage in meters based on hull form, operational speed,
+        and depth-to-draft confinement ratio (h/T).
+        Delta_h = (Cb * V^2) / K, where K=100 (open water) down to K=50 (confined shallow water h/T <= 1.2).
         """
-        return (block_coefficient * (speed_knots ** 2)) / 100.0
+        k = 100.0
+        if h_over_t > 0.0:
+            if h_over_t <= 1.2:
+                k = 50.0
+            elif h_over_t < 1.5:
+                k = 50.0 + 50.0 * ((h_over_t - 1.2) / 0.3)
+        return (block_coefficient * (speed_knots ** 2)) / k
 
     def _line_of_sight(
         self,
@@ -127,7 +134,8 @@ class Router:
         Compute optimal safe passage plan using constrained A* search.
         Evaluates dynamic draft, under-keel clearance, vector fairways, and restricted zones.
         """
-        dynamic_draft = draft + self.calculate_squat(speed_knots, block_coefficient)
+        h_over_t = (draft + ukc) / draft if draft > 0.0 else 0.0
+        dynamic_draft = draft + self.calculate_squat(speed_knots, block_coefficient, h_over_t)
         min_depth = dynamic_draft + ukc
 
         rows, cols = self.grid.rows, self.grid.cols
@@ -334,6 +342,8 @@ class Router:
                 "turn_radius_m": round(turn_radius, 1),
                 "rot_deg_min": rot_deg_min,
                 "wop_distance_m": wop_distance_m,
+                "port_xtd_nm": 0.10,
+                "stbd_xtd_nm": 0.10,
                 "depth_m": round(depth, 1),
                 "clearance_m": round(clearance, 1),
             })

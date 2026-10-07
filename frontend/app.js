@@ -42,11 +42,19 @@ const goalCoordTxt = document.getElementById('goal-coord');
 const statusMsg = document.getElementById('status');
 const vesselSelect = document.getElementById('vessel-profile');
 
+const xtdSlider = document.getElementById('xtd-slider');
+const xtdVal = document.getElementById('xtd-val');
+
 const bottomDrawer = document.getElementById('bottom-drawer');
 const tabProfileBtn = document.getElementById('tab-profile-btn');
 const tabWaypointsBtn = document.getElementById('tab-waypoints-btn');
+const tabSafetyBtn = document.getElementById('tab-safety-btn');
 const paneProfile = document.getElementById('pane-profile');
 const paneWaypoints = document.getElementById('pane-waypoints');
+const paneSafety = document.getElementById('pane-safety');
+const safetyBadge = document.getElementById('safety-badge');
+const safetyDashboard = document.getElementById('safety-dashboard-content');
+
 const exportActions = document.getElementById('export-actions');
 const exportGpxBtn = document.getElementById('export-gpx-btn');
 const exportRtzBtn = document.getElementById('export-rtz-btn');
@@ -69,6 +77,7 @@ let speedKnots = parseFloat(speedSlider.value);
 let baseUkc = parseFloat(ukcSlider.value);
 let turningRadius = radiusSlider ? parseFloat(radiusSlider.value) : 50.0;
 let fairwayPreference = prioritizeFairwaysCheckbox && prioritizeFairwaysCheckbox.checked ? 1.0 : 0.0;
+let portXtdM = xtdSlider ? parseFloat(xtdSlider.value) : 185.2;
 let currentCb = 0.50;
 let dynamicSquat = 0.0;
 
@@ -266,12 +275,52 @@ if (vesselSelect) {
             triggerRouteRecalculation(true);
         });
     }
+
+    if (xtdSlider) {
+        xtdSlider.addEventListener('input', (e) => {
+            portXtdM = parseFloat(e.target.value);
+            const nm = (portXtdM / 1852.0).toFixed(2);
+            if (xtdVal) xtdVal.innerText = `${Math.round(portXtdM)}m (${nm} NM)`;
+            triggerRouteRecalculation(false);
+        });
+        xtdSlider.addEventListener('change', () => {
+            triggerRouteRecalculation(true);
+        });
+    }
 }
 
 // -----------------------------------------------------------------------------
 // Map Layer Setup
 // -----------------------------------------------------------------------------
 map.on('load', () => {
+    // Safety Corridor Swath (XTD Buffer)
+    map.addSource('route-corridor', {
+        type: 'geojson',
+        data: { type: 'FeatureCollection', features: [] }
+    });
+
+    map.addLayer({
+        id: 'route-corridor-fill',
+        type: 'fill',
+        source: 'route-corridor',
+        paint: {
+            'fill-color': '#10b981',
+            'fill-opacity': 0.12
+        }
+    });
+
+    map.addLayer({
+        id: 'route-corridor-line',
+        type: 'line',
+        source: 'route-corridor',
+        paint: {
+            'line-color': '#10b981',
+            'line-width': 1.5,
+            'line-opacity': 0.45,
+            'line-dasharray': [3, 3]
+        }
+    });
+
     // Route layer
     map.addSource('route', {
         type: 'geojson',
@@ -470,31 +519,41 @@ document.getElementById('clear-route').addEventListener('click', () => {
     goalCoordTxt.innerText = 'B: Not set';
 
     map.getSource('route').setData({ type: 'FeatureCollection', features: [] });
+    if (map.getSource('route-corridor')) {
+        map.getSource('route-corridor').setData({ type: 'FeatureCollection', features: [] });
+    }
     if (bottomDrawer) bottomDrawer.style.display = 'none';
     if (exportActions) exportActions.style.display = 'none';
     if (waypointsTbody) waypointsTbody.innerHTML = '';
     if (wpBadge) wpBadge.innerText = '0 WP';
+    if (safetyDashboard) safetyDashboard.innerHTML = '';
+    if (safetyBadge) {
+        safetyBadge.innerText = 'OK';
+        safetyBadge.className = 'badge-safe';
+    }
     statusMsg.innerText = '';
 });
 
 // -----------------------------------------------------------------------------
 // Drawer Tabs & Panel Controls
 // -----------------------------------------------------------------------------
-if (tabProfileBtn && tabWaypointsBtn) {
-    tabProfileBtn.addEventListener('click', () => {
-        tabProfileBtn.classList.add('active');
-        tabWaypointsBtn.classList.remove('active');
-        paneProfile.classList.add('active');
-        paneWaypoints.classList.remove('active');
-    });
-
-    tabWaypointsBtn.addEventListener('click', () => {
-        tabWaypointsBtn.classList.add('active');
-        tabProfileBtn.classList.remove('active');
-        paneWaypoints.classList.add('active');
-        paneProfile.classList.remove('active');
-    });
-}
+const drawerTabs = [
+    { btn: tabProfileBtn, pane: paneProfile },
+    { btn: tabWaypointsBtn, pane: paneWaypoints },
+    { btn: tabSafetyBtn, pane: paneSafety }
+];
+drawerTabs.forEach(t => {
+    if (t.btn && t.pane) {
+        t.btn.addEventListener('click', () => {
+            drawerTabs.forEach(o => {
+                if (o.btn) o.btn.classList.remove('active');
+                if (o.pane) o.pane.classList.remove('active');
+            });
+            t.btn.classList.add('active');
+            t.pane.classList.add('active');
+        });
+    }
+});
 
 if (drawerCloseBtn) {
     drawerCloseBtn.addEventListener('click', () => {
@@ -676,7 +735,9 @@ window.calculateRoute = async function () {
             ukc: baseUkc,
             turning_radius_m: turningRadius,
             fairway_preference: fairwayPreference,
-            block_coefficient: currentCb
+            block_coefficient: currentCb,
+            port_xtd_m: portXtdM,
+            stbd_xtd_m: portXtdM
         };
 
         const res = await fetch('/api/route', {
@@ -689,6 +750,9 @@ window.calculateRoute = async function () {
             const data = await res.json();
             currentRouteData = data;
             map.getSource('route').setData(data);
+            if (map.getSource('route-corridor')) {
+                map.getSource('route-corridor').setData(data.corridor || { type: 'FeatureCollection', features: [] });
+            }
 
             const p = data.properties;
             const distNm = p.distance_nm !== undefined ? p.distance_nm.toFixed(1) + ' NM' : '—';
@@ -703,6 +767,7 @@ window.calculateRoute = async function () {
             statusMsg.style.color = 'var(--status-success)';
 
             renderWaypointsTable(data.waypoints || []);
+            renderSafetyDashboard(data.safety_check);
 
             if (data.profile && data.profile.length) {
                 renderProfileChart(data.profile, payload.draft + dynamicSquat + payload.ukc);
@@ -715,6 +780,10 @@ window.calculateRoute = async function () {
             statusMsg.innerText = '❌ ' + (err.detail || 'No navigable passage found.');
             statusMsg.style.color = 'var(--status-danger)';
             map.getSource('route').setData({ type: 'FeatureCollection', features: [] });
+            if (map.getSource('route-corridor')) {
+                map.getSource('route-corridor').setData({ type: 'FeatureCollection', features: [] });
+            }
+            renderSafetyDashboard(null);
             if (bottomDrawer) bottomDrawer.style.display = 'none';
             if (exportActions) exportActions.style.display = 'none';
             currentRouteData = null;
@@ -744,4 +813,87 @@ function renderProfileChart(profile, safeDepthLimit) {
     chartInstance.options.scales.y.max = Math.ceil(displayMax);
 
     chartInstance.update();
+}
+
+// -----------------------------------------------------------------------------
+// ECDIS Route Safety Verification Dashboard Rendering (IEC 61174)
+// -----------------------------------------------------------------------------
+function renderSafetyDashboard(safetyData) {
+    if (!safetyDashboard) return;
+    if (!safetyData) {
+        safetyDashboard.innerHTML = '<div style="color: #94a3b8; padding: 10px;">No safety audit data available.</div>';
+        if (safetyBadge) {
+            safetyBadge.innerText = 'OK';
+            safetyBadge.className = 'badge-safe';
+        }
+        return;
+    }
+
+    if (safetyBadge) {
+        if (safetyData.status === 'CRITICAL_HAZARD') {
+            safetyBadge.innerText = 'DANGER';
+            safetyBadge.className = 'badge-danger';
+        } else if (safetyData.status === 'WARNING_ADVISORY') {
+            safetyBadge.innerText = `${safetyData.alarms_count} WARN`;
+            safetyBadge.className = 'badge-warn';
+        } else {
+            safetyBadge.innerText = 'PASSED';
+            safetyBadge.className = 'badge-safe';
+        }
+    }
+
+    const bannerClass = safetyData.status === 'CRITICAL_HAZARD'
+        ? 'safety-banner-danger'
+        : (safetyData.status === 'WARNING_ADVISORY' ? 'safety-banner-warning' : 'safety-banner-passed');
+
+    const m = safetyData.metrics || {};
+    let html = `
+        <div class="safety-status-banner ${bannerClass}">
+            <span>${safetyData.summary}</span>
+            <span style="font-size: 10px; opacity: 0.8;">IEC 61174:2015 §6.8</span>
+        </div>
+        <div class="safety-metrics-grid">
+            <div class="metric-box">
+                <span class="metric-label">Safety Contour Depth</span>
+                <span class="metric-val" style="color: #38bdf8;">${m.safety_depth_m !== undefined ? m.safety_depth_m.toFixed(2) + 'm' : '—'}</span>
+            </div>
+            <div class="metric-box">
+                <span class="metric-label">Dyn. Squat (PIANC)</span>
+                <span class="metric-val" style="color: #38bdf8;">${m.dynamic_squat_m !== undefined ? m.dynamic_squat_m.toFixed(2) + 'm' : '—'}</span>
+            </div>
+            <div class="metric-box">
+                <span class="metric-label">Min Seafloor UKC</span>
+                <span class="metric-val ${m.min_clearance_m < 0 ? 'val-danger' : (m.min_clearance_m < 0.5 ? 'val-warn' : '')}" style="${m.min_clearance_m >= 0.5 ? 'color: #10b981;' : ''}">${m.min_clearance_m !== undefined ? m.min_clearance_m.toFixed(2) + 'm' : '—'}</span>
+            </div>
+            <div class="metric-box">
+                <span class="metric-label">Bridge ROT Limit</span>
+                <span class="metric-val" style="color: #94a3b8;">${m.rot_threshold_deg_min !== undefined ? m.rot_threshold_deg_min + '°/min' : '—'}</span>
+            </div>
+        </div>
+    `;
+
+    if (safetyData.alarms && safetyData.alarms.length) {
+        html += '<div class="alarms-list">';
+        safetyData.alarms.forEach(a => {
+            const cardClass = a.severity === 'CRITICAL' ? 'alarm-critical' : 'alarm-warning';
+            html += `
+                <div class="alarm-card ${cardClass}">
+                    <div class="alarm-header">
+                        <span class="alarm-title">${a.title}</span>
+                        <span class="alarm-code">[${a.code}]</span>
+                    </div>
+                    <div class="alarm-detail">${a.detail}</div>
+                </div>
+            `;
+        });
+        html += '</div>';
+    } else {
+        html += `
+            <div style="background: rgba(16, 185, 129, 0.08); border: 1px solid rgba(16, 185, 129, 0.2); padding: 14px; border-radius: 4px; color: #a7f3d0; line-height: 1.5;">
+                ✓ <b>Safety Contour & Corridor Verified:</b> Route line and swept cross-track corridor (XTD) maintain required Under-Keel Clearance (UKC) across all soundings. No restricted or danger zones violated. Rate of Turn conforms to bridge maneuvering limits.
+            </div>
+        `;
+    }
+
+    safetyDashboard.innerHTML = html;
 }

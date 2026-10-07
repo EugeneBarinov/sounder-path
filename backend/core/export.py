@@ -138,11 +138,14 @@ def export_to_rtz(
             "lon": f"{lon:.6f}",
         })
 
+        port_xtd = wp.get("port_xtd_nm", 0.10)
+        stbd_xtd = wp.get("stbd_xtd_nm", 0.10)
+
         # Leg specification (IEC 61174 standards)
         leg_el = ET.SubElement(wp_el, "leg", {
             "legType": "Straight",
-            "portXTD": "0.1",
-            "starboardXTD": "0.1",
+            "portXTD": f"{port_xtd:.2f}",
+            "starboardXTD": f"{stbd_xtd:.2f}",
             "safetyContour": f"{(draft + ukc):.1f}",
         })
 

@@ -24,6 +24,8 @@ struct NavWaypoint {
     double turn_radius_m;       // Turning radius arc applied at this waypoint
     double rot_deg_min;         // Rate of Turn in degrees per minute
     double wop_distance_m;      // Wheel Over Point distance before waypoint in meters
+    double port_xtd_nm;         // Port Cross Track Distance (NM)
+    double stbd_xtd_nm;         // Starboard Cross Track Distance (NM)
     double depth_at_waypoint;   // Seabed depth at waypoint
     double clearance_m;         // Under-keel clearance at waypoint
 };
@@ -92,8 +94,16 @@ private:
 public:
     NativeRouter(std::shared_ptr<NativeGrid> g);
 
-    static inline double calculate_squat(double speed_knots, double block_coefficient = 0.6) {
-        return (block_coefficient * (speed_knots * speed_knots)) / 100.0;
+    static inline double calculate_squat(double speed_knots, double block_coefficient = 0.65, double h_over_t = 0.0) {
+        double k = 100.0;
+        if (h_over_t > 0.0) {
+            if (h_over_t <= 1.2) {
+                k = 50.0;
+            } else if (h_over_t < 1.5) {
+                k = 50.0 + 50.0 * ((h_over_t - 1.2) / 0.3);
+            }
+        }
+        return (block_coefficient * (speed_knots * speed_knots)) / k;
     }
 
     NativeRouteResult find_path(

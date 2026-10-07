@@ -64,7 +64,8 @@ NativeRouteResult NativeRouter::find_path(
     NativeRouteResult result;
     result.success = false;
 
-    double dynamic_squat = calculate_squat(speed_knots, block_coefficient);
+    double h_over_t = (draft > 0.0) ? (draft + ukc) / draft : 0.0;
+    double dynamic_squat = calculate_squat(speed_knots, block_coefficient, h_over_t);
     double dynamic_draft = draft + dynamic_squat;
     float min_depth = static_cast<float>(dynamic_draft + ukc);
 
@@ -230,6 +231,8 @@ NativeRouteResult NativeRouter::find_path(
         nav_wp.depth_at_waypoint = std::round(wp_d * 10.0) / 10.0;
         nav_wp.clearance_m = std::round((wp_d - dynamic_draft - ukc) * 100.0) / 100.0;
         nav_wp.turn_radius_m = turning_radius_m;
+        nav_wp.port_xtd_nm = 0.10;
+        nav_wp.stbd_xtd_nm = 0.10;
 
         if (i < num_wps - 1) {
             nav_wp.leg_bearing_deg = std::round(calculate_bearing_deg(

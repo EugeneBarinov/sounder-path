@@ -37,8 +37,11 @@ PYBIND11_MODULE(seapath_native, m) {
         .def_readonly("cols", &NativeGrid::cols);
 
     py::class_<NativeRouter>(m, "NativeRouter")
-        .def(py::init<std::shared_ptr<NativeGrid>>())
-        .def_static("calculate_squat", &NativeRouter::calculate_squat, py::arg("speed_knots"), py::arg("block_coefficient") = 0.6)
+        .def(py::init([](std::shared_ptr<NativeGrid> g) {
+            return std::make_unique<NativeRouter>(g);
+        }), py::arg("grid"))
+        .def_static("calculate_squat", &NativeRouter::calculate_squat,
+                    py::arg("speed_knots"), py::arg("block_coefficient") = 0.65, py::arg("h_over_t") = 0.0)
         .def("find_path", [](const NativeRouter& self, int start_r, int start_c, int goal_r, int goal_c,
                              double draft, double speed_knots, double ukc, double turning_radius_m,
                              double fairway_preference, double block_coefficient) -> py::object {
@@ -72,6 +75,8 @@ PYBIND11_MODULE(seapath_native, m) {
                 w_dict["turn_radius_m"] = wp.turn_radius_m;
                 w_dict["rot_deg_min"] = wp.rot_deg_min;
                 w_dict["wop_distance_m"] = wp.wop_distance_m;
+                w_dict["port_xtd_nm"] = wp.port_xtd_nm;
+                w_dict["stbd_xtd_nm"] = wp.stbd_xtd_nm;
                 w_dict["depth_m"] = wp.depth_at_waypoint;
                 w_dict["clearance_m"] = wp.clearance_m;
                 py_wps.append(w_dict);

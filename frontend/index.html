@@ -63,6 +63,9 @@
                 <span>Prioritize Fairways</span>
                 <input type="checkbox" id="prioritize-fairways" checked>
             </label>
+
+            <label for="xtd-slider" style="margin-top: 10px;">Safety Corridor (XTD) <span class="val" id="xtd-val">185m (0.10 NM)</span></label>
+            <input type="range" id="xtd-slider" min="50" max="1000" step="25" value="185">
         </div>
 
         <div class="panel-header">Route Planning</div>
@@ -88,6 +91,7 @@
             <div class="drawer-tabs">
                 <button class="drawer-tab active" id="tab-profile-btn">📊 Bathymetric Profile</button>
                 <button class="drawer-tab" id="tab-waypoints-btn">📋 Passage Plan (<span id="wp-badge">0 WP</span>)</button>
+                <button class="drawer-tab" id="tab-safety-btn">🛡️ ECDIS Safety Check (<span id="safety-badge" class="badge-safe">OK</span>)</button>
             </div>
             <div class="drawer-actions" id="export-actions" style="display: none;">
                 <button class="export-btn" id="export-gpx-btn" title="Export standard GPX route">⬇ GPX</button>
@@ -121,6 +125,11 @@
                             <!-- Injected dynamically -->
                         </tbody>
                     </table>
+                </div>
+            </div>
+            <div class="tab-pane" id="pane-safety">
+                <div class="safety-scroll" id="safety-dashboard-content">
+                    <!-- Injected dynamically by app.js -->
                 </div>
             </div>
         </div>

@@ -18,6 +18,7 @@ from backend.core.grid import BathymetricGrid
 from backend.core.router import Router
 from backend.core.fairways import rasterize_fairway_weights, load_fairways_geojson
 from backend.core.export import export_to_gpx, export_to_rtz
+from backend.core.safety import generate_safety_corridor_polygon, verify_ecdis_route_safety
 
 app = FastAPI(
     title="SeaPath ECDIS Engine",
@@ -100,6 +101,8 @@ class RouteRequest(BaseModel):
     turning_radius_m: float = Field(default=150.0, ge=10.0, description="Minimum vessel turning radius in meters")
     fairway_preference: float = Field(default=1.0, ge=0.0, le=1.0, description="Navigational fairway attraction factor (0.0=neutral, 1.0=prioritize fairways)")
     block_coefficient: float = Field(default=0.65, ge=0.3, le=0.95, description="Hull block coefficient Cb")
+    port_xtd_m: float = Field(default=185.2, ge=20.0, le=1852.0, description="Port cross-track limit in meters (XTD)")
+    stbd_xtd_m: float = Field(default=185.2, ge=20.0, le=1852.0, description="Starboard cross-track limit in meters (XTD)")
 
 
 class ExportRouteRequest(BaseModel):
@@ -220,15 +223,36 @@ def calculate_route(req: RouteRequest):
     result["diagnostics"]["eta_hours"] = eta_hours
     result["diagnostics"]["dynamic_squat_m"] = round(dynamic_squat, 2)
 
+    corridor_feature = generate_safety_corridor_polygon(
+        result["route"],
+        port_xtd_m=req.port_xtd_m,
+        stbd_xtd_m=req.stbd_xtd_m,
+    )
+
+    safety_audit = verify_ecdis_route_safety(
+        waypoints=result.get("waypoints", []),
+        profile=result.get("profile", []),
+        fairways_coll=load_fairways_geojson(),
+        draft=req.draft,
+        dynamic_squat=dynamic_squat,
+        ukc=req.ukc,
+        speed_knots=req.speed_knots,
+    )
+
     return {
         "type": "Feature",
-        "properties": result["diagnostics"],
+        "properties": {
+            **result["diagnostics"],
+            "safety_check": safety_audit,
+        },
         "geometry": {
             "type": "LineString",
             "coordinates": result["route"],
         },
+        "corridor": corridor_feature,
         "profile": result["profile"],
         "waypoints": result.get("waypoints", []),
+        "safety_check": safety_audit,
     }
 
 
