@@ -482,3 +482,237 @@ button:hover {
     font-size: 11.5px;
     line-height: 1.4;
 }
+
+/* Bottleneck & Choke Point Analysis Cards */
+.bottleneck-card {
+    background: rgba(239, 68, 68, 0.08);
+    border: 1px solid rgba(239, 68, 68, 0.3);
+    border-radius: 4px;
+    padding: 10px 14px;
+    margin-bottom: 10px;
+}
+
+.bottleneck-card.bottleneck-safe {
+    background: rgba(16, 185, 129, 0.08);
+    border: 1px solid rgba(16, 185, 129, 0.3);
+}
+
+.bottleneck-header {
+    display: flex;
+    justify-content: space-between;
+    font-weight: 600;
+    font-size: 12px;
+    margin-bottom: 6px;
+    color: #fca5a5;
+}
+
+.bottleneck-safe .bottleneck-header {
+    color: #6ee7b7;
+}
+
+.advisory-box {
+    background: rgba(56, 189, 248, 0.1);
+    border: 1px solid rgba(56, 189, 248, 0.4);
+    border-radius: 4px;
+    padding: 8px 12px;
+    margin-top: 8px;
+    color: #7dd3fc;
+    font-size: 11.5px;
+    line-height: 1.4;
+}
+
+.tidal-box {
+    background: rgba(168, 85, 247, 0.1);
+    border: 1px solid rgba(168, 85, 247, 0.4);
+    border-radius: 4px;
+    padding: 8px 12px;
+    margin-top: 8px;
+    color: #d8b4fe;
+    font-size: 11.5px;
+    line-height: 1.4;
+}
+
+/* Multi-Waypoint UI List */
+.wp-item-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    background: var(--bg-panel);
+    border: 1px solid var(--border-color);
+    padding: 5px 8px;
+    border-radius: 3px;
+    margin-bottom: 4px;
+    font-size: 11px;
+}
+
+.wp-item-del-btn {
+    background: transparent;
+    border: none;
+    color: #ef4444;
+    cursor: pointer;
+    font-size: 13px;
+    padding: 0 4px;
+    line-height: 1;
+}
+
+.wp-item-del-btn:hover {
+    color: #f87171;
+}
+
+/* Bridge Simulator Controls & HUD */
+.simulator-container {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    gap: 10px;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+}
+
+.sim-controls-bar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    background: var(--bg-panel);
+    border: 1px solid var(--border-color);
+    padding: 8px 12px;
+    border-radius: 4px;
+}
+
+.sim-btn {
+    padding: 6px 14px;
+    font-size: 12px;
+    font-weight: 600;
+    border-radius: 3px;
+    border: 1px solid var(--border-color);
+    background: var(--bg-card);
+    color: var(--text-primary);
+    cursor: pointer;
+    transition: all 0.15s ease;
+}
+
+.sim-btn:hover:not(:disabled) {
+    background: #334155;
+}
+
+.sim-btn-play {
+    background: rgba(16, 185, 129, 0.2);
+    border-color: var(--status-success);
+    color: #6ee7b7;
+}
+
+.sim-btn-play:hover {
+    background: rgba(16, 185, 129, 0.35);
+}
+
+.sim-btn:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+}
+
+.sim-speed-select {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    margin-left: 10px;
+}
+
+.sim-speed-btn {
+    padding: 4px 8px;
+    font-size: 11px;
+    background: transparent;
+    border: 1px solid var(--border-color);
+    color: var(--text-secondary);
+    border-radius: 3px;
+    cursor: pointer;
+}
+
+.sim-speed-btn.active {
+    background: var(--accent-blue);
+    color: #fff;
+    border-color: var(--accent-blue);
+}
+
+.sim-progress-box {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin-left: 12px;
+}
+
+#sim-progress-text {
+    font-size: 11px;
+    color: var(--text-muted);
+}
+
+.sim-progress-bar {
+    width: 100%;
+    height: 6px;
+    background: rgba(255, 255, 255, 0.08);
+    border-radius: 3px;
+    overflow: hidden;
+}
+
+.sim-progress-fill {
+    width: 0%;
+    height: 100%;
+    background: var(--status-success);
+    transition: width 0.1s linear;
+}
+
+.bridge-hud-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 10px;
+    flex: 1;
+}
+
+.hud-card {
+    background: #090e17;
+    border: 1px solid #1e293b;
+    border-radius: 4px;
+    padding: 12px 14px;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+}
+
+.hud-label {
+    font-size: 10px;
+    letter-spacing: 0.5px;
+    color: var(--text-muted);
+    font-weight: 600;
+}
+
+.hud-val {
+    font-family: Consolas, "Courier New", monospace;
+    font-size: 24px;
+    font-weight: bold;
+    color: #38bdf8;
+    margin: 4px 0;
+}
+
+.hud-depth {
+    color: #10b981;
+}
+
+.hud-sub {
+    font-size: 11px;
+    color: var(--text-secondary);
+}
+
+.sim-alarm-banner {
+    background: rgba(239, 68, 68, 0.2);
+    border: 1px solid var(--status-danger);
+    color: #fca5a5;
+    padding: 10px 14px;
+    border-radius: 4px;
+    font-weight: 600;
+    font-size: 12px;
+    animation: alarm-pulse 1s infinite alternate;
+}
+
+@keyframes alarm-pulse {
+    from { opacity: 0.75; }
+    to { opacity: 1.0; background: rgba(239, 68, 68, 0.35); }
+}

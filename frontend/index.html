@@ -33,6 +33,12 @@
             <label for="radius-slider">Turning Radius <span class="val" id="radius-val">50m</span></label>
             <input type="range" id="radius-slider" min="20" max="1000" step="10" value="50">
 
+            <label for="tide-slider">Water Level / Tide <span class="val" id="tide-val">+0.0m</span></label>
+            <input type="range" id="tide-slider" min="-1.5" max="3.0" step="0.1" value="0.0">
+
+            <label for="wave-slider">Wave Height (Hs) <span class="val" id="wave-val">0.0m</span></label>
+            <input type="range" id="wave-slider" min="0.0" max="3.5" step="0.1" value="0.0">
+
             <div class="metrics-grid">
                 <div class="metric-box">
                     <span class="metric-label">Dyn. Squat</span>
@@ -70,16 +76,19 @@
 
         <div class="panel-header">Route Planning</div>
         <div class="wp-container">
-            <div class="wp wp-start">
-                <div class="wp-indicator"></div>
-                <span id="start-coord">A: Not set</span>
-            </div>
-            <div class="wp wp-goal">
-                <div class="wp-indicator"></div>
-                <span id="goal-coord">B: Not set</span>
+            <div id="waypoints-list">
+                <div class="wp wp-start" id="wp-row-start">
+                    <div class="wp-indicator"></div>
+                    <span id="start-coord">A (Start): Not set</span>
+                </div>
+                <div class="wp wp-goal" id="wp-row-goal">
+                    <div class="wp-indicator"></div>
+                    <span id="goal-coord">B (Goal): Not set</span>
+                </div>
             </div>
             
-            <button id="clear-route" style="margin-top: 8px;">Clear Route</button>
+            <button id="add-wp-btn" style="margin-top: 8px; background: rgba(56, 189, 248, 0.15); border: 1px solid #38bdf8; color: #38bdf8;">+ Add Via Waypoint</button>
+            <button id="clear-route" style="margin-top: 6px;">Clear Route</button>
             <div id="status"></div>
         </div>
     </div>
@@ -92,6 +101,7 @@
                 <button class="drawer-tab active" id="tab-profile-btn">📊 Bathymetric Profile</button>
                 <button class="drawer-tab" id="tab-waypoints-btn">📋 Passage Plan (<span id="wp-badge">0 WP</span>)</button>
                 <button class="drawer-tab" id="tab-safety-btn">🛡️ ECDIS Safety Check (<span id="safety-badge" class="badge-safe">OK</span>)</button>
+                <button class="drawer-tab" id="tab-simulator-btn">🧭 Bridge Simulator</button>
             </div>
             <div class="drawer-actions" id="export-actions" style="display: none;">
                 <button class="export-btn" id="export-gpx-btn" title="Export standard GPX route">⬇ GPX</button>
@@ -130,6 +140,50 @@
             <div class="tab-pane" id="pane-safety">
                 <div class="safety-scroll" id="safety-dashboard-content">
                     <!-- Injected dynamically by app.js -->
+                </div>
+            </div>
+            <div class="tab-pane" id="pane-simulator">
+                <div class="simulator-container">
+                    <div class="sim-controls-bar">
+                        <button class="sim-btn sim-btn-play" id="sim-play-btn">▶ Start</button>
+                        <button class="sim-btn" id="sim-pause-btn" disabled>⏸ Pause</button>
+                        <button class="sim-btn" id="sim-reset-btn">⏹ Reset</button>
+                        <div class="sim-speed-select">
+                            <span style="font-size: 11px; color: var(--text-muted);">Speed:</span>
+                            <button class="sim-speed-btn active" data-speed="1">1x</button>
+                            <button class="sim-speed-btn" data-speed="5">5x</button>
+                            <button class="sim-speed-btn" data-speed="15">15x</button>
+                            <button class="sim-speed-btn" data-speed="60">60x</button>
+                        </div>
+                        <div class="sim-progress-box">
+                            <span id="sim-progress-text">0.0 / 0.0 NM (0%)</span>
+                            <div class="sim-progress-bar"><div class="sim-progress-fill" id="sim-progress-fill"></div></div>
+                        </div>
+                    </div>
+                    
+                    <div class="bridge-hud-grid">
+                        <div class="hud-card">
+                            <div class="hud-label">ECHO SOUNDER DEPTH</div>
+                            <div class="hud-val hud-depth" id="hud-depth-val">— m</div>
+                            <div class="hud-sub">Chart: <span id="hud-chart-depth">—</span> | Tide: <span id="hud-tide">—</span></div>
+                        </div>
+                        <div class="hud-card">
+                            <div class="hud-label">NET UNDER-KEEL (UKC)</div>
+                            <div class="hud-val" id="hud-ukc-val">— m</div>
+                            <div class="hud-sub" id="hud-ukc-status">STANDBY</div>
+                        </div>
+                        <div class="hud-card">
+                            <div class="hud-label">HEADING (HDG) / SOG</div>
+                            <div class="hud-val" id="hud-hdg-val">000°T</div>
+                            <div class="hud-sub">SOG: <span id="hud-sog-val">— kts</span></div>
+                        </div>
+                        <div class="hud-card">
+                            <div class="hud-label">NEXT WAYPOINT</div>
+                            <div class="hud-val" id="hud-next-wp-val">—</div>
+                            <div class="hud-sub">Dist: <span id="hud-wp-dist">—</span> | ETA: <span id="hud-wp-eta">—</span></div>
+                        </div>
+                    </div>
+                    <div id="sim-alarm-banner" class="sim-alarm-banner" style="display: none;"></div>
                 </div>
             </div>
         </div>

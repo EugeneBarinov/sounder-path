@@ -270,7 +270,10 @@ class Router:
                 n_samples = len(depths_along)
 
                 for i, d in enumerate(depths_along):
-                    sample_dist = total_distance_m + seg_len_m * (i / max(1, n_samples - 1))
+                    fraction = i / max(1, n_samples - 1)
+                    sample_dist = total_distance_m + seg_len_m * fraction
+                    sample_lat = lat0 + (lat1 - lat0) * fraction
+                    sample_lon = lon0 + (lon1 - lon0) * fraction
                     clearance = d - dynamic_draft - ukc
                     if clearance < min_clearance:
                         min_clearance = clearance
@@ -279,6 +282,8 @@ class Router:
                         "distance_from_start_m": round(sample_dist, 1),
                         "depth": round(d, 2),
                         "clearance": round(clearance, 2),
+                        "lat": round(sample_lat, 6),
+                        "lon": round(sample_lon, 6),
                     })
 
                 total_distance_m += seg_len_m
@@ -292,6 +297,8 @@ class Router:
                     "distance_from_start_m": round(total_distance_m, 1),
                     "depth": round(terminal_depth, 2),
                     "clearance": round(clearance, 2),
+                    "lat": round(lat0, 6),
+                    "lon": round(lon0, 6),
                 })
 
         distance_nm = total_distance_m / 1852.0
