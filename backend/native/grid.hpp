@@ -52,6 +52,10 @@ public:
             if (r == r1 && c == c1) return true;
 
             int e2 = 2 * err;
+            if (e2 > -dc && e2 < dr) {
+                // Supercover check: prevent diagonal cutting through obstacle corners
+                if (is_restricted(r + sr, c) || is_restricted(r, c + sc)) return false;
+            }
             if (e2 > -dc) {
                 err -= dc;
                 r += sr;

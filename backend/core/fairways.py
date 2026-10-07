@@ -96,10 +96,29 @@ def rasterize_fairway_weights(
             out_shape=(grid_rows, grid_cols),
             fill=1.0,
             transform=transform,
+            all_touched=True,
             dtype=np.float32,
         )
-        # Apply restrictions where res_weights > 1.0
         restricted_mask = res_weights > 1.0
-        weights[restricted_mask] = res_weights[restricted_mask]
+
+        # Navigational Safety Buffer: 1-cell CPA margin around restricted zones
+        # Guarantees vessels never clip polygon perimeters or corner vertices
+        dilated_mask = restricted_mask.copy()
+        for dr in (-1, 0, 1):
+            for dc in (-1, 0, 1):
+                if dr == 0 and dc == 0:
+                    continue
+                shifted = np.roll(np.roll(restricted_mask, dr, axis=0), dc, axis=1)
+                if dr < 0:
+                    shifted[dr:, :] = False
+                elif dr > 0:
+                    shifted[:dr, :] = False
+                if dc < 0:
+                    shifted[:, dc:] = False
+                elif dc > 0:
+                    shifted[:, :dc] = False
+                dilated_mask |= shifted
+
+        weights[dilated_mask] = 1000.0
 
     return weights

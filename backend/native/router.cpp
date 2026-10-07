@@ -132,6 +132,13 @@ NativeRouteResult NativeRouter::find_path(
                 continue;
             }
 
+            // Diagonal corner check: prevent cutting diagonally past obstacle corners
+            if (DIRS[i].dr != 0 && DIRS[i].dc != 0) {
+                if (grid->is_restricted(curr.r + DIRS[i].dr, curr.c) || grid->is_restricted(curr.r, curr.c + DIRS[i].dc)) {
+                    continue;
+                }
+            }
+
             size_t n_idx = static_cast<size_t>(nr) * cols + nc;
             float depth = grid->depths[n_idx];
 
@@ -333,11 +340,11 @@ NativeRouteResult NativeRouter::find_path(
                         double pt_lat = lat_i + py / m_per_deg_lat;
                         double pt_lon = lon_i + px / m_per_deg_lon;
 
-                        // Check bathymetric safety of arc point
+                        // Check bathymetric and navigational safety of arc point
                         int cell_r = static_cast<int>((grid->lat_max - pt_lat) / ((grid->lat_max - grid->lat_min) / rows));
                         int cell_c = static_cast<int>((pt_lon - grid->lon_min) / ((grid->lon_max - grid->lon_min) / cols));
                         if (cell_r >= 0 && cell_r < rows && cell_c >= 0 && cell_c < cols) {
-                            if (grid->depths[cell_r * cols + cell_c] <= min_depth) {
+                            if (grid->depths[cell_r * cols + cell_c] <= min_depth || grid->is_restricted(cell_r, cell_c)) {
                                 arc_safe = false;
                                 break;
                             }

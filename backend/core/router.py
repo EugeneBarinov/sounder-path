@@ -98,11 +98,15 @@ class Router:
             if r == r1 and c == c1:
                 return True
 
-            e2 = 2 * err
-            if e2 > -dc:
+            int_e2 = 2 * err
+            if int_e2 > -dc and int_e2 < dr:
+                # Supercover check: prevent diagonal cutting through obstacle corners
+                if self.grid.is_restricted(r + sr, c) or self.grid.is_restricted(r, c + sc):
+                    return False
+            if int_e2 > -dc:
                 err -= dc
                 r += sr
-            if e2 < dr:
+            if int_e2 < dr:
                 err += dr
                 c += sc
 
@@ -153,6 +157,10 @@ class Router:
                     continue
                 if (nr, nc) in closed_set:
                     continue
+
+                if dr != 0 and dc != 0:
+                    if self.grid.is_restricted(r + dr, c) or self.grid.is_restricted(r, c + dc):
+                        continue
 
                 depth = float(self.grid.depths[nr, nc])
                 if depth <= min_depth:
