@@ -10,17 +10,29 @@ PYBIND11_MODULE(seapath_native, m) {
     m.doc() = "SeaPath C++ native routing acceleration module";
 
     py::class_<NativeGrid, std::shared_ptr<NativeGrid>>(m, "NativeGrid")
-        .def(py::init([](int r, int c, double lat0, double lat1, double lon0, double lon1, py::array_t<float, py::array::c_style | py::array::forcecast> array) {
+        .def(py::init([](int r, int c, double lat0, double lat1, double lon0, double lon1,
+                         py::array_t<float, py::array::c_style | py::array::forcecast> array,
+                         py::object py_fw) {
             py::buffer_info info = array.request();
             if (info.ndim != 2 || info.shape[0] != r || info.shape[1] != c) {
                 throw std::runtime_error("Array dimensions must match specified rows and cols");
             }
-            return std::make_shared<NativeGrid>(r, c, lat0, lat1, lon0, lon1, static_cast<const float*>(info.ptr));
+            const float* fw_ptr = nullptr;
+            py::array_t<float, py::array::c_style | py::array::forcecast> fw_arr;
+            if (!py_fw.is_none()) {
+                fw_arr = py_fw.cast<py::array_t<float, py::array::c_style | py::array::forcecast>>();
+                py::buffer_info fw_info = fw_arr.request();
+                if (fw_info.ndim == 2 && fw_info.shape[0] == r && fw_info.shape[1] == c) {
+                    fw_ptr = static_cast<const float*>(fw_info.ptr);
+                }
+            }
+            return std::make_shared<NativeGrid>(r, c, lat0, lat1, lon0, lon1, static_cast<const float*>(info.ptr), fw_ptr);
         }),
         py::arg("rows"), py::arg("cols"),
         py::arg("lat_min"), py::arg("lat_max"),
         py::arg("lon_min"), py::arg("lon_max"),
-        py::arg("depths"))
+        py::arg("depths"),
+        py::arg("fairway_weights") = py::none())
         .def_readonly("rows", &NativeGrid::rows)
         .def_readonly("cols", &NativeGrid::cols);
 
@@ -28,8 +40,9 @@ PYBIND11_MODULE(seapath_native, m) {
         .def(py::init<std::shared_ptr<NativeGrid>>())
         .def_static("calculate_squat", &NativeRouter::calculate_squat, py::arg("speed_knots"), py::arg("block_coefficient") = 0.6)
         .def("find_path", [](const NativeRouter& self, int start_r, int start_c, int goal_r, int goal_c,
-                             double draft, double speed_knots, double ukc, double turning_radius_m) -> py::object {
-            NativeRouteResult res = self.find_path(start_r, start_c, goal_r, goal_c, draft, speed_knots, ukc, turning_radius_m);
+                             double draft, double speed_knots, double ukc, double turning_radius_m,
+                             double fairway_preference) -> py::object {
+            NativeRouteResult res = self.find_path(start_r, start_c, goal_r, goal_c, draft, speed_knots, ukc, turning_radius_m, fairway_preference);
             if (!res.success) {
                 return py::none();
             }
@@ -93,5 +106,6 @@ PYBIND11_MODULE(seapath_native, m) {
         py::arg("start_r"), py::arg("start_c"),
         py::arg("goal_r"), py::arg("goal_c"),
         py::arg("draft"), py::arg("speed_knots"), py::arg("ukc"),
-        py::arg("turning_radius_m") = 150.0);
+        py::arg("turning_radius_m") = 150.0,
+        py::arg("fairway_preference") = 1.0);
 }

@@ -93,7 +93,7 @@ class Router:
         while True:
             if not (0 <= r < self.grid.rows and 0 <= c < self.grid.cols):
                 return False
-            if float(self.grid.depths[r, c]) <= min_depth:
+            if float(self.grid.depths[r, c]) <= min_depth or self.grid.is_restricted(r, c):
                 return False
             if r == r1 and c == c1:
                 return True
@@ -116,10 +116,11 @@ class Router:
         speed_knots: float,
         ukc: float,
         turning_radius_m: float = 150.0,
+        fairway_preference: float = 1.0,
     ) -> Optional[Dict[str, Any]]:
         """
         Compute optimal safe passage plan using constrained A* search.
-        Evaluates dynamic draft, under-keel clearance, and coastal bathymetry corridors.
+        Evaluates dynamic draft, under-keel clearance, vector fairways, and restricted zones.
         """
         dynamic_draft = draft + self.calculate_squat(speed_knots)
         min_depth = dynamic_draft + ukc
@@ -157,13 +158,19 @@ class Router:
                 if depth <= min_depth:
                     continue
 
+                fw_factor = self.grid.get_fairway_weight(nr, nc)
+                if fw_factor >= 500.0:
+                    continue  # Restricted / danger area
+                if fairway_preference < 1.0 and fw_factor < 1.0:
+                    fw_factor = 1.0 - fairway_preference * (1.0 - fw_factor)
+
                 clearance = max(0.05, depth - min_depth)
                 # Asymptotic safety penalty when approaching minimum safe clearance
                 shallow_penalty = 8.0 / clearance
                 # Coastal fairway preference: discourages uncontrolled deep-trench routing
                 deep_penalty = ((depth - 150.0) / 100.0) * 2.0 if depth > 150.0 else 0.0
 
-                transition_cost = base_cost * (1.0 + shallow_penalty + deep_penalty)
+                transition_cost = base_cost * (1.0 + shallow_penalty + deep_penalty) * fw_factor
                 g_new = g_curr + transition_cost
 
                 if g_new < g_cost.get((nr, nc), math.inf):

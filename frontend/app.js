@@ -29,6 +29,9 @@ const ukcVal = document.getElementById('ukc-val');
 const radiusSlider = document.getElementById('radius-slider');
 const radiusVal = document.getElementById('radius-val');
 
+const toggleFairwaysCheckbox = document.getElementById('toggle-fairways');
+const prioritizeFairwaysCheckbox = document.getElementById('prioritize-fairways');
+
 const dynDraftVal = document.getElementById('dynamic-draft-val');
 const dangerVal = document.getElementById('danger-val');
 
@@ -52,6 +55,7 @@ let draft = parseFloat(draftSlider.value);
 let speedKnots = parseFloat(speedSlider.value);
 let baseUkc = parseFloat(ukcSlider.value);
 let turningRadius = radiusSlider ? parseFloat(radiusSlider.value) : 50.0;
+let fairwayPreference = prioritizeFairwaysCheckbox && prioritizeFairwaysCheckbox.checked ? 1.0 : 0.0;
 let dynamicSquat = 0.0;
 
 let startPoint = null;
@@ -248,6 +252,134 @@ map.on('load', () => {
         paint: { 'raster-opacity': 0.8 }
     }, 'route-layer');
 
+    // -------------------------------------------------------------------------
+    // S-57 / ENC Fairways, TSS, & Navigational Restrictions Layers
+    // -------------------------------------------------------------------------
+    fetch('/api/fairways')
+        .then(res => res.json())
+        .then(fairwaysData => {
+            map.addSource('fairways-data', {
+                type: 'geojson',
+                data: fairwaysData
+            });
+
+            // Fairways & TSS Corridors (Fill)
+            map.addLayer({
+                id: 'fairways-fill',
+                type: 'fill',
+                source: 'fairways-data',
+                filter: ['!=', ['get', 'category'], 'restricted'],
+                paint: {
+                    'fill-color': '#06b6d4',
+                    'fill-opacity': 0.12
+                }
+            }, 'route-layer');
+
+            // Fairways & TSS Corridors (Nautical Dashed Boundary)
+            map.addLayer({
+                id: 'fairways-line',
+                type: 'line',
+                source: 'fairways-data',
+                filter: ['!=', ['get', 'category'], 'restricted'],
+                paint: {
+                    'line-color': '#06b6d4',
+                    'line-width': 1.5,
+                    'line-dasharray': [4, 3],
+                    'line-opacity': 0.85
+                }
+            }, 'route-layer');
+
+            // Restricted / Danger Areas (Fill)
+            map.addLayer({
+                id: 'restricted-fill',
+                type: 'fill',
+                source: 'fairways-data',
+                filter: ['==', ['get', 'category'], 'restricted'],
+                paint: {
+                    'fill-color': '#ef4444',
+                    'fill-opacity': 0.18
+                }
+            }, 'route-layer');
+
+            // Restricted / Danger Areas (Boundary)
+            map.addLayer({
+                id: 'restricted-line',
+                type: 'line',
+                source: 'fairways-data',
+                filter: ['==', ['get', 'category'], 'restricted'],
+                paint: {
+                    'line-color': '#ef4444',
+                    'line-width': 2,
+                    'line-dasharray': [6, 3],
+                    'line-opacity': 0.95
+                }
+            }, 'route-layer');
+
+            // Interactive Nautical Feature Inspection Popup
+            const navPopup = new maplibregl.Popup({
+                closeButton: true,
+                closeOnClick: true
+            });
+
+            ['fairways-fill', 'restricted-fill'].forEach(layerId => {
+                map.on('click', layerId, (e) => {
+                    if (e.features && e.features.length) {
+                        const f = e.features[0];
+                        const p = f.properties;
+                        const isRestricted = p.category === 'restricted';
+                        const tagColor = isRestricted ? '#ef4444' : '#06b6d4';
+                        const tagTitle = isRestricted ? 'RESTRICTED / DANGER AREA' : (p.category === 'tss' ? 'TRAFFIC SEPARATION SCHEME' : 'NAVIGATION FAIRWAY');
+
+                        navPopup.setLngLat(e.lngLat)
+                            .setHTML(`
+                                <div style="font-size: 11px; line-height: 1.4; min-width: 200px;">
+                                    <div style="font-weight: 700; color: ${tagColor}; font-size: 10px; letter-spacing: 0.5px; margin-bottom: 2px;">
+                                        [${p.obj_type || 'NAV'}] ${tagTitle}
+                                    </div>
+                                    <div style="font-size: 12px; font-weight: 600; color: #fff; margin-bottom: 3px;">
+                                        ${p.name || 'Navigational Area'}
+                                    </div>
+                                    <div style="color: #94a3b8; font-size: 11px;">
+                                        ${p.description || p.restriction || ''}
+                                    </div>
+                                    ${p.min_depth_m ? `<div style="margin-top: 4px; font-family: monospace; color: #38bdf8;">Depth: ${p.min_depth_m}m</div>` : ''}
+                                </div>
+                            `)
+                            .addTo(map);
+                    }
+                });
+
+                map.on('mouseenter', layerId, () => {
+                    map.getCanvas().style.cursor = 'pointer';
+                });
+                map.on('mouseleave', layerId, () => {
+                    map.getCanvas().style.cursor = '';
+                });
+            });
+        })
+        .catch(err => console.warn('Could not load vector fairways:', err));
+
+    // Navigational Constraints Checkbox Handlers
+    if (toggleFairwaysCheckbox) {
+        toggleFairwaysCheckbox.addEventListener('change', (e) => {
+            const vis = e.target.checked ? 'visible' : 'none';
+            ['fairways-fill', 'fairways-line', 'restricted-fill', 'restricted-line'].forEach(id => {
+                if (map.getLayer(id)) {
+                    map.setLayoutProperty(id, 'visibility', vis);
+                }
+            });
+        });
+    }
+
+    if (prioritizeFairwaysCheckbox) {
+        prioritizeFairwaysCheckbox.addEventListener('change', (e) => {
+            fairwayPreference = e.target.checked ? 1.0 : 0.0;
+            if (startPoint && goalPoint) {
+                calculateRoute();
+            }
+        });
+    }
+
     updateVesselPhysics();
 });
 
@@ -308,7 +440,8 @@ window.calculateRoute = async function () {
             draft: draft,
             speed_knots: speedKnots,
             ukc: baseUkc,
-            turning_radius_m: turningRadius
+            turning_radius_m: turningRadius,
+            fairway_preference: fairwayPreference
         };
 
         const res = await fetch('/api/route', {

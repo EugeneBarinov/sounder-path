@@ -1,0 +1,240 @@
+{
+  "type": "FeatureCollection",
+  "name": "SeaPath_ECDIS_Fairways_and_Restrictions",
+  "crs": {
+    "type": "name",
+    "properties": { "name": "urn:ogc:def:crs:OGC:1.3:CRS84" }
+  },
+  "features": [
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "FW-01",
+        "name": "Yevpatoriya Port Approach Fairway",
+        "obj_type": "FAIRWY",
+        "category": "fairway",
+        "cost_factor": 0.35,
+        "width_m": 600,
+        "min_depth_m": 9.5,
+        "description": "Dredged commercial fairway into Yevpatoriya harbour roadstead"
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [33.340, 45.140],
+            [33.390, 45.190],
+            [33.402, 45.185],
+            [33.352, 45.135],
+            [33.340, 45.140]
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "FW-02",
+        "name": "Sevastopol Approach & Outer Fairway",
+        "obj_type": "TSSLPT",
+        "category": "tss",
+        "cost_factor": 0.35,
+        "width_m": 1200,
+        "min_depth_m": 25.0,
+        "description": "Designated deep-water approach fairway to Sevastopol Roadstead"
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [33.300, 44.520],
+            [33.480, 44.600],
+            [33.520, 44.620],
+            [33.515, 44.635],
+            [33.470, 44.615],
+            [33.290, 44.535],
+            [33.300, 44.520]
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "FW-03",
+        "name": "South Crimean Coastal Deep-Water Highway",
+        "obj_type": "TSSLPT",
+        "category": "tss",
+        "cost_factor": 0.40,
+        "width_m": 2500,
+        "min_depth_m": 50.0,
+        "description": "Primary commercial routing corridor south of Cape Sarych and Yalta"
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [33.450, 44.350],
+            [34.150, 44.380],
+            [34.850, 44.750],
+            [35.400, 44.950],
+            [35.420, 44.910],
+            [34.870, 44.710],
+            [34.160, 44.340],
+            [33.450, 44.310],
+            [33.450, 44.350]
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "FW-04",
+        "name": "Kerch Strait South Approach TSS",
+        "obj_type": "TSSLPT",
+        "category": "tss",
+        "cost_factor": 0.35,
+        "width_m": 1500,
+        "min_depth_m": 14.0,
+        "description": "Traffic separation scheme leading to Kerch-Yenikale canal southern entrance"
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [36.350, 44.950],
+            [36.500, 45.180],
+            [36.530, 45.170],
+            [36.380, 44.940],
+            [36.350, 44.950]
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "FW-05",
+        "name": "Novorossiysk Approach Fairway",
+        "obj_type": "FAIRWY",
+        "category": "fairway",
+        "cost_factor": 0.35,
+        "width_m": 1500,
+        "min_depth_m": 30.0,
+        "description": "Commercial vessel traffic corridor into Tsemes Bay"
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [37.700, 44.550],
+            [37.850, 44.680],
+            [37.880, 44.665],
+            [37.730, 44.535],
+            [37.700, 44.550]
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "FW-06",
+        "name": "Caucasian Coastal Transit Corridor (Tuapse - Sochi)",
+        "obj_type": "TSSLPT",
+        "category": "tss",
+        "cost_factor": 0.40,
+        "width_m": 3000,
+        "min_depth_m": 60.0,
+        "description": "Eastern Black Sea coastal shipping corridor connecting Novorossiysk, Tuapse, and Sochi"
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [38.000, 44.400],
+            [39.000, 44.050],
+            [39.700, 43.500],
+            [39.750, 43.470],
+            [39.040, 44.020],
+            [38.030, 44.370],
+            [38.000, 44.400]
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "RES-01",
+        "name": "Tarkhankut Marine Reserve (Protected Area)",
+        "obj_type": "RESARE",
+        "category": "restricted",
+        "cost_factor": 1000.0,
+        "restriction": "Prohibited for commercial vessel transit - Marine Protected Area",
+        "color": "#ef4444"
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [32.480, 45.300],
+            [32.550, 45.420],
+            [32.650, 45.400],
+            [32.580, 45.280],
+            [32.480, 45.300]
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "RES-02",
+        "name": "Kalamita Artillery Firing Range (Military Exercise Danger Area)",
+        "obj_type": "RESARE",
+        "category": "restricted",
+        "cost_factor": 1000.0,
+        "restriction": "Prohibited area - Navigational Danger Area (Military Exercise Zone)",
+        "color": "#f59e0b"
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [33.100, 44.850],
+            [33.300, 44.950],
+            [33.380, 44.880],
+            [33.180, 44.780],
+            [33.100, 44.850]
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "RES-03",
+        "name": "Cape Chauda Marine Weapon Practice Zone",
+        "obj_type": "RESARE",
+        "category": "restricted",
+        "cost_factor": 1000.0,
+        "restriction": "Temporary danger area - Live firing exercise sector",
+        "color": "#f59e0b"
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [35.650, 44.950],
+            [36.000, 45.020],
+            [36.050, 44.920],
+            [35.700, 44.850],
+            [35.650, 44.950]
+          ]
+        ]
+      }
+    }
+  ]
+}

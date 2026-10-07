@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field
 
 from backend.core.grid import BathymetricGrid
 from backend.core.router import Router
+from backend.core.fairways import rasterize_fairway_weights, load_fairways_geojson
 
 app = FastAPI(
     title="SeaPath ECDIS Engine",
@@ -59,6 +60,14 @@ _LOCAL_SURVEY_CSV = _RAW_DATA_DIR / "yevpatoriya_channel.csv"
 if _LOCAL_SURVEY_CSV.exists():
     full_grid.fuse_csv_data(_LOCAL_SURVEY_CSV)
 
+# Rasterize navigational fairways & restricted areas (RESARE)
+fairway_weights = rasterize_fairway_weights(
+    routing_grid.rows, routing_grid.cols,
+    routing_grid.lat_min, routing_grid.lat_max,
+    routing_grid.lon_min, routing_grid.lon_max
+)
+routing_grid.attach_fairways(fairway_weights)
+
 print(f"Grid active: Full resolution {full_grid.rows}x{full_grid.cols} | Routing {routing_grid.rows}x{routing_grid.cols}")
 
 try:
@@ -67,7 +76,8 @@ try:
         routing_grid.rows, routing_grid.cols,
         routing_grid.lat_min, routing_grid.lat_max,
         routing_grid.lon_min, routing_grid.lon_max,
-        routing_grid.depths
+        routing_grid.depths,
+        fairway_weights
     )
     router = seapath_native.NativeRouter(native_grid)
     print("[ROUTER] Activated high-performance C++ native navigation core (seapath_native)")
@@ -87,6 +97,7 @@ class RouteRequest(BaseModel):
     speed_knots: float = Field(..., ge=0.0, description="Planned vessel speed in knots")
     ukc: float = Field(..., ge=0.0, description="Required under-keel clearance margin in meters")
     turning_radius_m: float = Field(default=150.0, ge=10.0, description="Minimum vessel turning radius in meters")
+    fairway_preference: float = Field(default=1.0, ge=0.0, le=1.0, description="Navigational fairway attraction factor (0.0=neutral, 1.0=prioritize fairways)")
 
 
 # ---------------------------------------------------------------------------
@@ -101,14 +112,14 @@ def _snap_to_navigable(
 ) -> Tuple[Optional[int], Optional[int]]:
     """
     Breadth-first search to snap shoreline/berth coordinates to the nearest
-    navigable fairway node satisfying safety depth constraints.
+    navigable fairway node satisfying safety depth constraints and bypassing restricted zones.
     """
     queue = deque([(r, c)])
     visited = {(r, c)}
 
     while queue:
         cr, cc = queue.popleft()
-        if float(grid.depths[cr, cc]) >= min_depth:
+        if float(grid.depths[cr, cc]) >= min_depth and not grid.is_restricted(cr, cc):
             return cr, cc
 
         if max(abs(cr - r), abs(cc - c)) >= radius:
@@ -145,10 +156,16 @@ def get_grid_coverage():
     return routing_grid.to_geojson()
 
 
+@app.get("/api/fairways")
+def get_fairways():
+    """Returns vector fairways, TSS corridors, and navigational restriction polygons in GeoJSON format."""
+    return load_fairways_geojson()
+
+
 @app.post("/api/route")
 def calculate_route(req: RouteRequest):
     """
-    Calculates safe passage plan complying with draft, squat, and UKC constraints.
+    Calculates safe passage plan complying with draft, squat, UKC, and fairway constraints.
     Returns GeoJSON LineString route with continuous depth soundings profile.
     """
     if not _is_within_coverage(req.start_lon, req.start_lat, routing_grid):
@@ -180,6 +197,7 @@ def calculate_route(req: RouteRequest):
         speed_knots=req.speed_knots,
         ukc=req.ukc,
         turning_radius_m=req.turning_radius_m,
+        fairway_preference=req.fairway_preference,
     )
 
     if result is None:

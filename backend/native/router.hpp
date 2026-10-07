@@ -98,6 +98,7 @@ public:
         int start_r, int start_c,
         int goal_r, int goal_c,
         double draft, double speed_knots, double ukc,
-        double turning_radius_m = 150.0
+        double turning_radius_m = 150.0,
+        double fairway_preference = 1.0
     ) const;
 };

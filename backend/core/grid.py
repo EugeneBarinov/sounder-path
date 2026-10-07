@@ -6,7 +6,7 @@ Provides spatial conversions, conservative downsampling, Bresenham raycasting,
 and supplemental survey soundings data fusion.
 """
 
-from typing import Tuple, List, Dict, Any
+from typing import Tuple, List, Dict, Any, Optional
 import csv
 import os
 from pathlib import Path
@@ -28,6 +28,7 @@ class BathymetricGrid:
         lon_min: float,
         lon_max: float,
         depths: np.ndarray,
+        fairway_weights: Optional[np.ndarray] = None,
     ):
         self.lat_min = float(lat_min)
         self.lat_max = float(lat_max)
@@ -35,6 +36,26 @@ class BathymetricGrid:
         self.lon_max = float(lon_max)
         self.depths = depths
         self.rows, self.cols = depths.shape
+        self.fairway_weights = (
+            fairway_weights
+            if fairway_weights is not None
+            else np.ones((self.rows, self.cols), dtype=np.float32)
+        )
+
+    def get_fairway_weight(self, r: int, c: int) -> float:
+        """Returns fairway transit modifier for grid cell [0.3..1.0..1000.0]."""
+        if 0 <= r < self.rows and 0 <= c < self.cols:
+            return float(self.fairway_weights[r, c])
+        return 1.0
+
+    def is_restricted(self, r: int, c: int) -> bool:
+        """Returns True if cell is inside a prohibited/danger navigational zone."""
+        return self.get_fairway_weight(r, c) >= 500.0
+
+    def attach_fairways(self, fairway_weights: np.ndarray) -> None:
+        """Attach precomputed 2D fairway and navigational restrictions weights."""
+        if fairway_weights.shape == (self.rows, self.cols):
+            self.fairway_weights = fairway_weights
 
     @classmethod
     def load_from_geotiff(cls, filepath: str | Path) -> "BathymetricGrid":

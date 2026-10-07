@@ -194,3 +194,23 @@ button:hover {
     padding: 12px;
     display: none;
 }
+
+/* Navigational Constraints Checkboxes */
+.checkbox-label {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    font-size: 12px;
+    color: var(--text-secondary);
+    margin-bottom: 8px;
+    cursor: pointer;
+    user-select: none;
+}
+
+.checkbox-label input[type="checkbox"] {
+    accent-color: var(--accent-blue);
+    cursor: pointer;
+    width: 15px;
+    height: 15px;
+    margin: 0;
+}

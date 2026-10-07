@@ -14,13 +14,28 @@ public:
     double lon_min;
     double lon_max;
     std::vector<float> depths;
+    std::vector<float> fairway_weights;
 
-    NativeGrid(int r, int c, double lat0, double lat1, double lon0, double lon1, const float* data)
-        : rows(r), cols(c), lat_min(lat0), lat_max(lat1), lon_min(lon0), lon_max(lon1), depths(data, data + (r * c)) {}
+    NativeGrid(int r, int c, double lat0, double lat1, double lon0, double lon1, const float* data, const float* fw_data = nullptr)
+        : rows(r), cols(c), lat_min(lat0), lat_max(lat1), lon_min(lon0), lon_max(lon1), depths(data, data + (r * c)) {
+        if (fw_data != nullptr) {
+            fairway_weights.assign(fw_data, fw_data + (r * c));
+        }
+    }
 
     inline float depth(int r, int c) const {
         if (r < 0 || r >= rows || c < 0 || c >= cols) return 0.0f;
         return depths[r * cols + c];
+    }
+
+    inline float fairway_weight(int r, int c) const {
+        if (fairway_weights.empty() || r < 0 || r >= rows || c < 0 || c >= cols) return 1.0f;
+        return fairway_weights[r * cols + c];
+    }
+
+    inline bool is_restricted(int r, int c) const {
+        if (fairway_weights.empty() || r < 0 || r >= rows || c < 0 || c >= cols) return false;
+        return fairway_weights[r * cols + c] >= 500.0f;
     }
 
     inline bool line_of_sight(int r0, int c0, int r1, int c1, float min_depth) const {
@@ -33,7 +48,7 @@ public:
 
         while (true) {
             if (r < 0 || r >= rows || c < 0 || c >= cols) return false;
-            if (depths[r * cols + c] <= min_depth) return false;
+            if (depths[r * cols + c] <= min_depth || is_restricted(r, c)) return false;
             if (r == r1 && c == c1) return true;
 
             int e2 = 2 * err;

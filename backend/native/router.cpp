@@ -57,7 +57,8 @@ NativeRouteResult NativeRouter::find_path(
     int start_r, int start_c,
     int goal_r, int goal_c,
     double draft, double speed_knots, double ukc,
-    double turning_radius_m
+    double turning_radius_m,
+    double fairway_preference
 ) const {
     NativeRouteResult result;
     result.success = false;
@@ -138,6 +139,14 @@ NativeRouteResult NativeRouter::find_path(
                 continue;
             }
 
+            float fairway_w = grid->fairway_weight(nr, nc);
+            if (fairway_w >= 500.0f) {
+                continue; // Navigational danger / restricted area (RESARE)
+            }
+            if (fairway_preference < 1.0 && fairway_w < 1.0f) {
+                fairway_w = 1.0f - static_cast<float>(fairway_preference) * (1.0f - fairway_w);
+            }
+
             float clearance = std::max(0.05f, depth - min_depth);
             float shallow_penalty = 8.0f / clearance;
             float deep_penalty = (depth > 150.0f) ? ((depth - 150.0f) / 100.0f) * 2.0f : 0.0f;
@@ -161,7 +170,7 @@ NativeRouteResult NativeRouter::find_path(
                 }
             }
 
-            float step_cost = DIRS[i].cost * (1.0f + shallow_penalty + deep_penalty) + heading_penalty;
+            float step_cost = (DIRS[i].cost * (1.0f + shallow_penalty + deep_penalty) * fairway_w) + heading_penalty;
             float g_new = curr.g + step_cost;
 
             if (run_id[n_idx] != current_run || g_new < g_cost[n_idx]) {
