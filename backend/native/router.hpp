@@ -22,6 +22,8 @@ struct NavWaypoint {
     double leg_distance_nm;     // Distance to next waypoint in Nautical Miles
     double turn_angle_deg;      // Heading alteration angle at this waypoint (-180..+180°)
     double turn_radius_m;       // Turning radius arc applied at this waypoint
+    double rot_deg_min;         // Rate of Turn in degrees per minute
+    double wop_distance_m;      // Wheel Over Point distance before waypoint in meters
     double depth_at_waypoint;   // Seabed depth at waypoint
     double clearance_m;         // Under-keel clearance at waypoint
 };
@@ -99,6 +101,7 @@ public:
         int goal_r, int goal_c,
         double draft, double speed_knots, double ukc,
         double turning_radius_m = 150.0,
-        double fairway_preference = 1.0
+        double fairway_preference = 1.0,
+        double block_coefficient = 0.65
     ) const;
 };

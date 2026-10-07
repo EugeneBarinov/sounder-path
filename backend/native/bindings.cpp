@@ -41,8 +41,8 @@ PYBIND11_MODULE(seapath_native, m) {
         .def_static("calculate_squat", &NativeRouter::calculate_squat, py::arg("speed_knots"), py::arg("block_coefficient") = 0.6)
         .def("find_path", [](const NativeRouter& self, int start_r, int start_c, int goal_r, int goal_c,
                              double draft, double speed_knots, double ukc, double turning_radius_m,
-                             double fairway_preference) -> py::object {
-            NativeRouteResult res = self.find_path(start_r, start_c, goal_r, goal_c, draft, speed_knots, ukc, turning_radius_m, fairway_preference);
+                             double fairway_preference, double block_coefficient) -> py::object {
+            NativeRouteResult res = self.find_path(start_r, start_c, goal_r, goal_c, draft, speed_knots, ukc, turning_radius_m, fairway_preference, block_coefficient);
             if (!res.success) {
                 return py::none();
             }
@@ -70,6 +70,8 @@ PYBIND11_MODULE(seapath_native, m) {
                 w_dict["leg_distance_nm"] = wp.leg_distance_nm;
                 w_dict["turn_angle_deg"] = wp.turn_angle_deg;
                 w_dict["turn_radius_m"] = wp.turn_radius_m;
+                w_dict["rot_deg_min"] = wp.rot_deg_min;
+                w_dict["wop_distance_m"] = wp.wop_distance_m;
                 w_dict["depth_m"] = wp.depth_at_waypoint;
                 w_dict["clearance_m"] = wp.clearance_m;
                 py_wps.append(w_dict);
@@ -107,5 +109,6 @@ PYBIND11_MODULE(seapath_native, m) {
         py::arg("goal_r"), py::arg("goal_c"),
         py::arg("draft"), py::arg("speed_knots"), py::arg("ukc"),
         py::arg("turning_radius_m") = 150.0,
-        py::arg("fairway_preference") = 1.0);
+        py::arg("fairway_preference") = 1.0,
+        py::arg("block_coefficient") = 0.65);
 }

@@ -121,12 +121,13 @@ class Router:
         ukc: float,
         turning_radius_m: float = 150.0,
         fairway_preference: float = 1.0,
+        block_coefficient: float = 0.65,
     ) -> Optional[Dict[str, Any]]:
         """
         Compute optimal safe passage plan using constrained A* search.
         Evaluates dynamic draft, under-keel clearance, vector fairways, and restricted zones.
         """
-        dynamic_draft = draft + self.calculate_squat(speed_knots)
+        dynamic_draft = draft + self.calculate_squat(speed_knots, block_coefficient)
         min_depth = dynamic_draft + ukc
 
         rows, cols = self.grid.rows, self.grid.cols
@@ -307,6 +308,8 @@ class Router:
 
             turn_angle = 0.0
             turn_radius = 0.0
+            rot_deg_min = 0.0
+            wop_distance_m = 0.0
             if 0 < i < n_wp - 1:
                 r_prev, c_prev = path[i - 1]
                 lat_prev, lon_prev = self.grid.get_cell_coords(r_prev, c_prev)
@@ -314,8 +317,13 @@ class Router:
                 brg_out = leg_bearing
                 diff = (brg_out - brg_in + 180.0) % 360.0 - 180.0
                 turn_angle = abs(diff)
-                if turn_angle >= 4.0:
+                if turn_angle >= 0.5 and turning_radius_m > 10.0 and speed_knots > 0.0:
                     turn_radius = turning_radius_m
+                    rot = (5556.0 / math.pi) * (speed_knots / turning_radius_m)
+                    rot_deg_min = round(rot if diff >= 0.0 else -rot, 1)
+                    rad_half = math.radians(turn_angle / 2.0)
+                    v_ms = speed_knots * 0.514444
+                    wop_distance_m = round(turning_radius_m * math.tan(rad_half) + v_ms * 12.0, 1)
 
             waypoints.append({
                 "lat": round(lat, 6),
@@ -324,6 +332,8 @@ class Router:
                 "leg_distance_nm": round(leg_dist_nm, 2),
                 "turn_angle_deg": round(turn_angle, 1),
                 "turn_radius_m": round(turn_radius, 1),
+                "rot_deg_min": rot_deg_min,
+                "wop_distance_m": wop_distance_m,
                 "depth_m": round(depth, 1),
                 "clearance_m": round(clearance, 1),
             })

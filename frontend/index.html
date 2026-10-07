@@ -22,25 +22,33 @@
             </select>
 
             <label for="draft-slider">Static Draft <span class="val" id="draft-val">1.2m</span></label>
-            <input type="range" id="draft-slider" min="0.5" max="4.0" step="0.1" value="1.2">
+            <input type="range" id="draft-slider" min="0.5" max="18.0" step="0.1" value="1.2">
             
             <label for="speed-slider">Speed (Knots) <span class="val" id="speed-val">10 kts</span></label>
-            <input type="range" id="speed-slider" min="0" max="30" step="1" value="10">
+            <input type="range" id="speed-slider" min="0" max="35" step="1" value="10">
             
             <label for="ukc-slider">UKC Margin <span class="val" id="ukc-val">0.5m</span></label>
-            <input type="range" id="ukc-slider" min="0.0" max="2.0" step="0.1" value="0.5">
+            <input type="range" id="ukc-slider" min="0.0" max="4.0" step="0.1" value="0.5">
 
             <label for="radius-slider">Turning Radius <span class="val" id="radius-val">50m</span></label>
             <input type="range" id="radius-slider" min="20" max="1000" step="10" value="50">
 
             <div class="metrics-grid">
                 <div class="metric-box">
-                    <span class="metric-label">Dyn. Draft</span>
-                    <span class="metric-val val-warn" id="dynamic-draft-val">1.26m</span>
+                    <span class="metric-label">Dyn. Squat</span>
+                    <span class="metric-val" id="squat-val" style="color: var(--accent-blue);">0.05m</span>
                 </div>
                 <div class="metric-box">
-                    <span class="metric-label">Min Depth Req.</span>
-                    <span class="metric-val val-danger" id="danger-val">1.76m</span>
+                    <span class="metric-label">Block Coeff (Cb)</span>
+                    <span class="metric-val" id="cb-val" style="color: var(--accent-blue);">0.50</span>
+                </div>
+                <div class="metric-box">
+                    <span class="metric-label">Dyn. Draft</span>
+                    <span class="metric-val val-warn" id="dynamic-draft-val">1.25m</span>
+                </div>
+                <div class="metric-box">
+                    <span class="metric-label">Min Safe Depth</span>
+                    <span class="metric-val val-danger" id="danger-val">1.75m</span>
                 </div>
             </div>
         </div>
@@ -103,6 +111,8 @@
                                 <th>Dist (NM)</th>
                                 <th>Turn (°)</th>
                                 <th>Radius (m)</th>
+                                <th>ROT (°/min)</th>
+                                <th>WOP (m)</th>
                                 <th>Depth (m)</th>
                                 <th>UKC (m)</th>
                             </tr>

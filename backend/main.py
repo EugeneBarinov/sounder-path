@@ -99,6 +99,7 @@ class RouteRequest(BaseModel):
     ukc: float = Field(..., ge=0.0, description="Required under-keel clearance margin in meters")
     turning_radius_m: float = Field(default=150.0, ge=10.0, description="Minimum vessel turning radius in meters")
     fairway_preference: float = Field(default=1.0, ge=0.0, le=1.0, description="Navigational fairway attraction factor (0.0=neutral, 1.0=prioritize fairways)")
+    block_coefficient: float = Field(default=0.65, ge=0.3, le=0.95, description="Hull block coefficient Cb")
 
 
 class ExportRouteRequest(BaseModel):
@@ -183,7 +184,7 @@ def calculate_route(req: RouteRequest):
     if not _is_within_coverage(req.goal_lon, req.goal_lat, routing_grid):
         raise HTTPException(status_code=400, detail="Destination point is outside bathymetry coverage area.")
 
-    dynamic_squat = Router.calculate_squat(req.speed_knots)
+    dynamic_squat = Router.calculate_squat(req.speed_knots, req.block_coefficient)
     min_required_depth = req.draft + dynamic_squat + req.ukc
 
     start_r, start_c = routing_grid.lonlat_to_cell(req.start_lon, req.start_lat)
@@ -208,6 +209,7 @@ def calculate_route(req: RouteRequest):
         ukc=req.ukc,
         turning_radius_m=req.turning_radius_m,
         fairway_preference=req.fairway_preference,
+        block_coefficient=req.block_coefficient,
     )
 
     if result is None:
@@ -216,6 +218,7 @@ def calculate_route(req: RouteRequest):
     distance_nm = result["diagnostics"]["distance_nm"]
     eta_hours = round(distance_nm / req.speed_knots, 2) if req.speed_knots > 0 else None
     result["diagnostics"]["eta_hours"] = eta_hours
+    result["diagnostics"]["dynamic_squat_m"] = round(dynamic_squat, 2)
 
     return {
         "type": "Feature",

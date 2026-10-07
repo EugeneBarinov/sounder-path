@@ -58,12 +58,13 @@ NativeRouteResult NativeRouter::find_path(
     int goal_r, int goal_c,
     double draft, double speed_knots, double ukc,
     double turning_radius_m,
-    double fairway_preference
+    double fairway_preference,
+    double block_coefficient
 ) const {
     NativeRouteResult result;
     result.success = false;
 
-    double dynamic_squat = calculate_squat(speed_knots);
+    double dynamic_squat = calculate_squat(speed_knots, block_coefficient);
     double dynamic_draft = draft + dynamic_squat;
     float min_depth = static_cast<float>(dynamic_draft + ukc);
 
@@ -256,8 +257,26 @@ NativeRouteResult NativeRouter::find_path(
             while (diff > 180.0) diff -= 360.0;
             while (diff < -180.0) diff += 360.0;
             nav_wp.turn_angle_deg = std::round(diff * 10.0) / 10.0;
+
+            double abs_turn = std::abs(diff);
+            if (abs_turn >= 0.5 && turning_radius_m > 10.0 && speed_knots > 0.0) {
+                // Rate of Turn (ROT in deg/min): omega = V / R -> ROT = (5556 / pi) * (V_kts / R_m)
+                double rot = (5556.0 / 3.14159265358979323846) * (speed_knots / turning_radius_m);
+                nav_wp.rot_deg_min = std::round((diff >= 0.0 ? rot : -rot) * 10.0) / 10.0;
+
+                // Wheel Over Point (WOP in meters): R * tan(|theta| / 2) + V_ms * t_delay (12s lag)
+                double rad_half = (abs_turn * 3.14159265358979323846) / 360.0;
+                double v_ms = speed_knots * 0.514444;
+                double wop_m = turning_radius_m * std::tan(rad_half) + v_ms * 12.0;
+                nav_wp.wop_distance_m = std::round(wop_m * 10.0) / 10.0;
+            } else {
+                nav_wp.rot_deg_min = 0.0;
+                nav_wp.wop_distance_m = 0.0;
+            }
         } else {
             nav_wp.turn_angle_deg = 0.0;
+            nav_wp.rot_deg_min = 0.0;
+            nav_wp.wop_distance_m = 0.0;
         }
 
         result.waypoints.push_back(nav_wp);

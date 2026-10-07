@@ -34,6 +34,8 @@ const prioritizeFairwaysCheckbox = document.getElementById('prioritize-fairways'
 
 const dynDraftVal = document.getElementById('dynamic-draft-val');
 const dangerVal = document.getElementById('danger-val');
+const squatVal = document.getElementById('squat-val');
+const cbVal = document.getElementById('cb-val');
 
 const startCoordTxt = document.getElementById('start-coord');
 const goalCoordTxt = document.getElementById('goal-coord');
@@ -56,9 +58,9 @@ const wpBadge = document.getElementById('wp-badge');
 // Vessel Profiles
 // -----------------------------------------------------------------------------
 const VESSEL_PROFILES = {
-    yacht: { draft: 1.2, speed: 10, ukc: 0.5, radius: 50 },
-    ferry: { draft: 4.5, speed: 18, ukc: 1.0, radius: 250 },
-    cargo: { draft: 10.0, speed: 12, ukc: 2.0, radius: 500 }
+    yacht: { draft: 1.2, speed: 10, ukc: 0.5, radius: 50, cb: 0.50 },
+    ferry: { draft: 4.5, speed: 18, ukc: 1.0, radius: 250, cb: 0.65 },
+    cargo: { draft: 10.0, speed: 12, ukc: 2.0, radius: 500, cb: 0.82 }
 };
 
 // State
@@ -67,6 +69,7 @@ let speedKnots = parseFloat(speedSlider.value);
 let baseUkc = parseFloat(ukcSlider.value);
 let turningRadius = radiusSlider ? parseFloat(radiusSlider.value) : 50.0;
 let fairwayPreference = prioritizeFairwaysCheckbox && prioritizeFairwaysCheckbox.checked ? 1.0 : 0.0;
+let currentCb = 0.50;
 let dynamicSquat = 0.0;
 
 let startPoint = null;
@@ -141,14 +144,34 @@ const chartInstance = new Chart(ctx, {
 // -----------------------------------------------------------------------------
 function updateVesselPhysics() {
     // Open-water Barrass squat formula: (Cb * V^2) / 100
-    const blockCoefficient = 0.6;
-    dynamicSquat = (blockCoefficient * Math.pow(speedKnots, 2)) / 100.0;
+    dynamicSquat = (currentCb * Math.pow(speedKnots, 2)) / 100.0;
 
     const dynamicDraft = draft + dynamicSquat;
     const requiredDepth = dynamicDraft + baseUkc;
 
-    dynDraftVal.innerText = dynamicDraft.toFixed(2) + 'm';
-    dangerVal.innerText = requiredDepth.toFixed(2) + 'm';
+    if (squatVal) squatVal.innerText = dynamicSquat.toFixed(2) + 'm';
+    if (cbVal) cbVal.innerText = currentCb.toFixed(2);
+    if (dynDraftVal) dynDraftVal.innerText = dynamicDraft.toFixed(2) + 'm';
+    if (dangerVal) dangerVal.innerText = requiredDepth.toFixed(2) + 'm';
+}
+
+// -----------------------------------------------------------------------------
+// Reactive Route Recalculation Debouncer
+// -----------------------------------------------------------------------------
+let recalcDebounceTimer = null;
+function triggerRouteRecalculation(immediate = false) {
+    if (!startPoint || !goalPoint) return;
+    if (recalcDebounceTimer) {
+        clearTimeout(recalcDebounceTimer);
+        recalcDebounceTimer = null;
+    }
+    if (immediate) {
+        calculateRoute();
+    } else {
+        recalcDebounceTimer = setTimeout(() => {
+            calculateRoute();
+        }, 180);
+    }
 }
 
 // -----------------------------------------------------------------------------
@@ -171,11 +194,11 @@ if (vesselSelect) {
     vesselSelect.addEventListener('change', (e) => {
         const profile = VESSEL_PROFILES[e.target.value];
         if (profile) {
-            draftSlider.max = Math.max(15.0, profile.draft * 2).toString();
             draftSlider.value = profile.draft;
             speedSlider.value = profile.speed;
             ukcSlider.value = profile.ukc;
             if (radiusSlider) radiusSlider.value = profile.radius;
+            currentCb = profile.cb || 0.65;
 
             draft = profile.draft;
             speedKnots = profile.speed;
@@ -188,14 +211,15 @@ if (vesselSelect) {
             if (radiusVal) radiusVal.innerText = Math.round(turningRadius) + 'm';
 
             updateVesselPhysics();
-            if (startPoint && goalPoint) {
-                calculateRoute();
-            }
+            triggerRouteRecalculation(true);
         }
     });
 
     const markCustomProfile = () => {
         vesselSelect.value = 'custom';
+        if (draft < 2.5) currentCb = 0.50;
+        else if (draft < 7.0) currentCb = 0.65;
+        else currentCb = 0.82;
     };
 
     draftSlider.addEventListener('input', (e) => {
@@ -203,6 +227,10 @@ if (vesselSelect) {
         draftVal.innerText = draft.toFixed(1) + 'm';
         markCustomProfile();
         updateVesselPhysics();
+        triggerRouteRecalculation(false);
+    });
+    draftSlider.addEventListener('change', () => {
+        triggerRouteRecalculation(true);
     });
 
     speedSlider.addEventListener('input', (e) => {
@@ -210,6 +238,10 @@ if (vesselSelect) {
         speedVal.innerText = speedKnots + ' kts';
         markCustomProfile();
         updateVesselPhysics();
+        triggerRouteRecalculation(false);
+    });
+    speedSlider.addEventListener('change', () => {
+        triggerRouteRecalculation(true);
     });
 
     ukcSlider.addEventListener('input', (e) => {
@@ -217,6 +249,10 @@ if (vesselSelect) {
         ukcVal.innerText = baseUkc.toFixed(1) + 'm';
         markCustomProfile();
         updateVesselPhysics();
+        triggerRouteRecalculation(false);
+    });
+    ukcSlider.addEventListener('change', () => {
+        triggerRouteRecalculation(true);
     });
 
     if (radiusSlider) {
@@ -224,6 +260,10 @@ if (vesselSelect) {
             turningRadius = parseFloat(e.target.value);
             if (radiusVal) radiusVal.innerText = Math.round(turningRadius) + 'm';
             markCustomProfile();
+            triggerRouteRecalculation(false);
+        });
+        radiusSlider.addEventListener('change', () => {
+            triggerRouteRecalculation(true);
         });
     }
 }
@@ -491,7 +531,19 @@ function renderWaypointsTable(waypoints) {
         const brgTxt = isLast ? '—' : `${brgVal.toFixed(1)}°T`;
         const distTxt = isLast ? '—' : `${distVal.toFixed(2)}`;
         const turnTxt = (idx === 0 || isLast || turnVal < 0.5) ? '0.0°' : `${turnVal.toFixed(1)}°`;
-        const radTxt = (radVal > 0 && !isLast && idx > 0) ? `${Math.round(radVal)}m` : '—';
+        const rotVal = wp.rot_deg_min !== undefined ? wp.rot_deg_min : 0.0;
+        const wopVal = wp.wop_distance_m !== undefined ? wp.wop_distance_m : 0.0;
+
+        let rotTxt = '—';
+        if (!isLast && idx > 0 && Math.abs(turnVal) >= 0.5 && rotVal !== 0.0) {
+            rotTxt = `${rotVal > 0 ? '+' : ''}${rotVal.toFixed(1)}°/m`;
+        }
+
+        let wopTxt = '—';
+        if (!isLast && idx > 0 && wopVal > 0) {
+            wopTxt = `${Math.round(wopVal)}m`;
+        }
+
         const depthTxt = `${depthVal.toFixed(1)}m`;
 
         let clrClass = 'val-clearance-safe';
@@ -510,6 +562,8 @@ function renderWaypointsTable(waypoints) {
             <td>${distTxt}</td>
             <td>${turnTxt}</td>
             <td>${radTxt}</td>
+            <td>${rotTxt}</td>
+            <td>${wopTxt}</td>
             <td>${depthTxt}</td>
             <td>${clrTxt}</td>
         `;
@@ -621,7 +675,8 @@ window.calculateRoute = async function () {
             speed_knots: speedKnots,
             ukc: baseUkc,
             turning_radius_m: turningRadius,
-            fairway_preference: fairwayPreference
+            fairway_preference: fairwayPreference,
+            block_coefficient: currentCb
         };
 
         const res = await fetch('/api/route', {

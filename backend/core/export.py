@@ -63,10 +63,13 @@ def export_to_gpx(
         turn_ang = wp.get("turn_angle_deg", 0.0)
         radius = wp.get("turn_radius_m", 0.0)
 
+        rot = wp.get("rot_deg_min", 0.0)
+        wop = wp.get("wop_distance_m", 0.0)
+
         cmt = ET.SubElement(rtept, "cmt")
         cmt.text = (
             f"Course: {brg:.1f}°T | Leg: {dist:.2f} NM | "
-            f"Depth: {depth:.1f}m | UKC: {ukc_val:.1f}m | Turn: {turn_ang:.1f}° (R={radius:.0f}m)"
+            f"Depth: {depth:.1f}m | UKC: {ukc_val:.1f}m | Turn: {turn_ang:.1f}° (R={radius:.0f}m, ROT={rot:.1f}°/min, WOP={wop:.0f}m)"
         )
 
     # Detailed track (high-resolution bathymetric trajectory)
@@ -118,12 +121,17 @@ def export_to_rtz(
         lon = wp["lon"]
         radius_m = wp.get("turn_radius_m", 150.0)
         radius_nm = radius_m / 1852.0
+        rot_val = wp.get("rot_deg_min", 0.0)
 
-        wp_el = ET.SubElement(waypoints_el, "waypoint", {
+        wp_attrs = {
             "id": str(idx),
             "name": f"WP{idx:02d}",
             "radius": f"{radius_nm:.3f}",
-        })
+        }
+        if abs(rot_val) > 0.1:
+            wp_attrs["rot"] = f"{abs(rot_val):.1f}"
+
+        wp_el = ET.SubElement(waypoints_el, "waypoint", wp_attrs)
 
         ET.SubElement(wp_el, "position", {
             "lat": f"{lat:.6f}",
