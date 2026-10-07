@@ -1,28 +1,28 @@
 /**
- * SeaPath ECDIS - Professional Marine Navigation & Passage Planning Interface
- * ============================================================================
- * Implements IMO Resolution A.893(21), IEC 61174:2015, and PIANC MarCom WG 121 standards:
- * - Reactive multi-waypoint passage planning with draggable chart markers.
- * - Dynamic Under-Keel Clearance (PIANC DUKC): Squat, Turning Heel, Wave response, Tide level.
- * - Swept safety corridors (XTD) and circular turn arcs with Wheel Over Points (WOP).
- * - Choke point / bottleneck localization with speed adaptation & tidal window advisories.
- * - Real-time ECDIS Bridge Simulator with virtual echo sounder & bridge telemetry HUD.
+ * SeaPath ECDIS - Профессиональный модуль морской навигации и планирования переходов
+ * =================================================================================
+ * Соответствует стандартам IMO Res. A.893(21), IEC 61174:2015 и PIANC MarCom WG 121:
+ * - Реактивная многоточечная штурманская прокладка с перетаскиванием путевых точек на карте.
+ * - Гидродинамический бюджет глубин (PIANC DUKC): проседание (Squat), крен на циркуляции, волнение, прилив.
+ * - Полоса безопасности (XTD) и сопрягающие дуги циркуляции с точками перекладки руля (WOP).
+ * - Локализация лимитирующих отмелей (Bottleneck) с рекомендациями адаптации скорости и приливными окнами.
+ * - Навигационный симулятор мостика в реальном времени с виртуальным эхолотом и телеметрией.
  */
 
 // -----------------------------------------------------------------------------
-// 1. MapLibre Chart Initialization
+// 1. Инициализация морской карты MapLibre GL
 // -----------------------------------------------------------------------------
 const map = new maplibregl.Map({
     container: 'map',
     style: 'https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json',
-    center: [36.0, 44.8], // Black Sea & Crimean Fairways
-    zoom: 7.5,
+    center: [34.5, 44.8], // Региональный обзор побережья Крыма и Черного моря
+    zoom: 8.0,
     pitch: 0,
     attributionControl: false
 });
 
 // -----------------------------------------------------------------------------
-// 2. UI Element References
+// 2. Ссылки на элементы интерфейса
 // -----------------------------------------------------------------------------
 const draftSlider = document.getElementById('draft-slider');
 const draftVal = document.getElementById('draft-val');
@@ -72,7 +72,7 @@ const drawerCloseBtn = document.getElementById('drawer-close-btn');
 const waypointsTbody = document.getElementById('waypoints-tbody');
 const wpBadge = document.getElementById('wp-badge');
 
-// Simulator HUD Controls
+// Приборы симулятора мостика
 const simPlayBtn = document.getElementById('sim-play-btn');
 const simPauseBtn = document.getElementById('sim-pause-btn');
 const simResetBtn = document.getElementById('sim-reset-btn');
@@ -92,7 +92,7 @@ const hudWpEta = document.getElementById('hud-wp-eta');
 const simAlarmBanner = document.getElementById('sim-alarm-banner');
 
 // -----------------------------------------------------------------------------
-// 3. Vessel Profiles & Navigation State
+// 3. Пресеты судов и состояние навигации
 // -----------------------------------------------------------------------------
 const VESSEL_PROFILES = {
     yacht: { draft: 1.2, speed: 10, ukc: 0.5, radius: 50, cb: 0.50 },
@@ -111,7 +111,7 @@ let fairwayPreference = prioritizeFairwaysCheckbox && prioritizeFairwaysCheckbox
 let currentCb = 0.50;
 let dynamicSquat = 0.0;
 
-// Multi-waypoint state
+// Список путевых точек
 let plannedWaypoints = []; // [{ id: number, coords: [lon, lat], marker: Marker, role: 'start'|'via'|'goal' }]
 let nextWpId = 1;
 let isAddingViaMode = false;
@@ -119,7 +119,7 @@ let currentRouteData = null;
 let activeWpMarker = null;
 
 // -----------------------------------------------------------------------------
-// 4. Depth Profile Chart Setup (Chart.js)
+// 4. График батиметрического профиля (Chart.js)
 // -----------------------------------------------------------------------------
 const ctx = document.getElementById('depth-chart').getContext('2d');
 Chart.defaults.color = '#94a3b8';
@@ -131,7 +131,7 @@ const chartInstance = new Chart(ctx, {
         labels: [],
         datasets: [
             {
-                label: 'Seafloor Bathymetry (m)',
+                label: 'Рельеф морского дна (м)',
                 data: [],
                 borderColor: '#38bdf8',
                 backgroundColor: 'rgba(56, 189, 248, 0.15)',
@@ -140,7 +140,7 @@ const chartInstance = new Chart(ctx, {
                 pointRadius: 0
             },
             {
-                label: 'Vessel Keel Safety Limit (Draft + Squat + UKC)',
+                label: 'Изобат безопасности киля (Осадка + Squat + UKC)',
                 data: [],
                 borderColor: '#ef4444',
                 borderDash: [5, 5],
@@ -158,11 +158,11 @@ const chartInstance = new Chart(ctx, {
         scales: {
             y: {
                 reverse: true,
-                title: { display: true, text: 'Depth (Meters below LAT)' },
+                title: { display: true, text: 'Глубина (Метры от нуля глубин LAT)' },
                 grid: { color: 'rgba(255, 255, 255, 0.05)' }
             },
             x: {
-                title: { display: true, text: 'Cumulative Distance along Track' },
+                title: { display: true, text: 'Пройденная дистанция по маршруту' },
                 grid: { display: false },
                 ticks: { maxTicksLimit: 12, color: '#94a3b8' }
             }
@@ -180,19 +180,19 @@ const chartInstance = new Chart(ctx, {
 });
 
 // -----------------------------------------------------------------------------
-// 5. Vessel Hydrodynamics & PIANC DUKC Budget
+// 5. Расчет гидродинамических параметров судна
 // -----------------------------------------------------------------------------
 function updateVesselPhysics() {
-    // Open-water Barrass squat formula: (Cb * V^2) / 100
+    // Формула проседания Баррасса: (Cb * V^2) / 100
     dynamicSquat = (currentCb * Math.pow(speedKnots, 2)) / 100.0;
     const waveAllowance = 0.35 * waveHeightM;
     const dynamicDraft = draft + dynamicSquat + waveAllowance;
     const requiredChartDepth = Math.max(0.5, dynamicDraft + baseUkc - tideOffsetM);
 
-    if (squatVal) squatVal.innerText = dynamicSquat.toFixed(2) + 'm';
+    if (squatVal) squatVal.innerText = dynamicSquat.toFixed(2) + 'м';
     if (cbVal) cbVal.innerText = currentCb.toFixed(2);
-    if (dynDraftVal) dynDraftVal.innerText = dynamicDraft.toFixed(2) + 'm';
-    if (dangerVal) dangerVal.innerText = requiredChartDepth.toFixed(2) + 'm';
+    if (dynDraftVal) dynDraftVal.innerText = dynamicDraft.toFixed(2) + 'м';
+    if (dangerVal) dangerVal.innerText = requiredChartDepth.toFixed(2) + 'м';
 }
 
 let recalcDebounceTimer = null;
@@ -222,7 +222,7 @@ function formatCoordinates(lat, lon) {
 }
 
 // -----------------------------------------------------------------------------
-// 6. Parameter Event Listeners
+// 6. Обработчики изменений параметров
 // -----------------------------------------------------------------------------
 if (vesselSelect) {
     vesselSelect.addEventListener('change', (e) => {
@@ -239,10 +239,10 @@ if (vesselSelect) {
             baseUkc = profile.ukc;
             turningRadius = profile.radius;
 
-            draftVal.innerText = draft.toFixed(1) + 'm';
-            speedVal.innerText = speedKnots + ' kts';
-            ukcVal.innerText = baseUkc.toFixed(1) + 'm';
-            if (radiusVal) radiusVal.innerText = Math.round(turningRadius) + 'm';
+            draftVal.innerText = draft.toFixed(1) + 'м';
+            speedVal.innerText = speedKnots + ' уз';
+            ukcVal.innerText = baseUkc.toFixed(1) + 'м';
+            if (radiusVal) radiusVal.innerText = Math.round(turningRadius) + 'м';
 
             updateVesselPhysics();
             triggerRouteRecalculation(true);
@@ -258,7 +258,7 @@ if (vesselSelect) {
 
     draftSlider.addEventListener('input', (e) => {
         draft = parseFloat(e.target.value);
-        draftVal.innerText = draft.toFixed(1) + 'm';
+        draftVal.innerText = draft.toFixed(1) + 'м';
         markCustomProfile();
         updateVesselPhysics();
         triggerRouteRecalculation(false);
@@ -267,7 +267,7 @@ if (vesselSelect) {
 
     speedSlider.addEventListener('input', (e) => {
         speedKnots = parseFloat(e.target.value);
-        speedVal.innerText = speedKnots + ' kts';
+        speedVal.innerText = speedKnots + ' уз';
         markCustomProfile();
         updateVesselPhysics();
         triggerRouteRecalculation(false);
@@ -276,7 +276,7 @@ if (vesselSelect) {
 
     ukcSlider.addEventListener('input', (e) => {
         baseUkc = parseFloat(e.target.value);
-        ukcVal.innerText = baseUkc.toFixed(1) + 'm';
+        ukcVal.innerText = baseUkc.toFixed(1) + 'м';
         markCustomProfile();
         updateVesselPhysics();
         triggerRouteRecalculation(false);
@@ -286,7 +286,7 @@ if (vesselSelect) {
     if (radiusSlider) {
         radiusSlider.addEventListener('input', (e) => {
             turningRadius = parseFloat(e.target.value);
-            if (radiusVal) radiusVal.innerText = Math.round(turningRadius) + 'm';
+            if (radiusVal) radiusVal.innerText = Math.round(turningRadius) + 'м';
             markCustomProfile();
             triggerRouteRecalculation(false);
         });
@@ -296,7 +296,7 @@ if (vesselSelect) {
     if (tideSlider) {
         tideSlider.addEventListener('input', (e) => {
             tideOffsetM = parseFloat(e.target.value);
-            if (tideVal) tideVal.innerText = `${tideOffsetM >= 0 ? '+' : ''}${tideOffsetM.toFixed(1)}m`;
+            if (tideVal) tideVal.innerText = `${tideOffsetM >= 0 ? '+' : ''}${tideOffsetM.toFixed(1)}м`;
             updateVesselPhysics();
             triggerRouteRecalculation(false);
         });
@@ -306,7 +306,7 @@ if (vesselSelect) {
     if (waveSlider) {
         waveSlider.addEventListener('input', (e) => {
             waveHeightM = parseFloat(e.target.value);
-            if (waveVal) waveVal.innerText = `${waveHeightM.toFixed(1)}m`;
+            if (waveVal) waveVal.innerText = `${waveHeightM.toFixed(1)}м`;
             updateVesselPhysics();
             triggerRouteRecalculation(false);
         });
@@ -317,7 +317,7 @@ if (vesselSelect) {
         xtdSlider.addEventListener('input', (e) => {
             portXtdM = parseFloat(e.target.value);
             const nm = (portXtdM / 1852.0).toFixed(2);
-            if (xtdVal) xtdVal.innerText = `${Math.round(portXtdM)}m (${nm} NM)`;
+            if (xtdVal) xtdVal.innerText = `${Math.round(portXtdM)}м (${nm} ММ)`;
             triggerRouteRecalculation(false);
         });
         xtdSlider.addEventListener('change', () => triggerRouteRecalculation(true));
@@ -325,10 +325,10 @@ if (vesselSelect) {
 }
 
 // -----------------------------------------------------------------------------
-// 7. Map Chart Layers (Heatmap, Fairways, Corridors, Turn Arcs, Bottleneck)
+// 7. Слои навигационной карты (Батиметрия, Фарватеры, Коридор XTD, Дуги циркуляции)
 // -----------------------------------------------------------------------------
 map.on('load', () => {
-    // 1. Bathymetric Safety Corridor Layer
+    // 1. Слой полосы безопасности (XTD)
     map.addSource('route-corridor', {
         type: 'geojson',
         data: { type: 'FeatureCollection', features: [] }
@@ -356,7 +356,7 @@ map.on('load', () => {
         }
     });
 
-    // 2. Primary Route Track Layer
+    // 2. Основная линия маршрута
     map.addSource('route', {
         type: 'geojson',
         data: { type: 'FeatureCollection', features: [] }
@@ -374,7 +374,7 @@ map.on('load', () => {
         }
     });
 
-    // 3. Fillet Circular Turn Arcs & WOP Markers Layers
+    // 3. Дуги циркуляции и точки перекладки руля (WOP)
     map.addSource('turn-arcs', {
         type: 'geojson',
         data: { type: 'FeatureCollection', features: [] }
@@ -405,7 +405,7 @@ map.on('load', () => {
         }
     });
 
-    // 4. Critical Bottleneck Point Layer
+    // 4. Маркер лимитирующей банки (Bottleneck)
     map.addSource('bottleneck-point', {
         type: 'geojson',
         data: { type: 'FeatureCollection', features: [] }
@@ -423,26 +423,29 @@ map.on('load', () => {
         }
     });
 
-    // 5. High-Resolution Bathymetry Heatmap
+    // 5. Батиметрическая растровая подложка с ТОЧНЫМИ географическими координатами
+    // Координаты рассчитаны строго из метаданных GeoTIFF E8_2024.tif (EPSG:3857)
+    const exactHeatmapCoords = [
+        [33.122917, 47.300000], // Top-Left: Северо-Западная точка морского сектора
+        [41.000046, 47.300000], // Top-Right: Северо-Восточная точка (Тамань / Азов)
+        [41.000046, 43.122706], // Bottom-Right: Юго-Восточная точка
+        [33.122917, 43.122706]  // Bottom-Left: Юго-Западная точка
+    ];
+
     map.addSource('depth-heatmap', {
         type: 'image',
         url: '/heatmap.png',
-        coordinates: [
-            [33.15, 45.40],
-            [33.85, 45.40],
-            [33.85, 44.35],
-            [33.15, 44.35]
-        ]
+        coordinates: exactHeatmapCoords
     });
 
     map.addLayer({
         id: 'depth-heatmap-layer',
         type: 'raster',
         source: 'depth-heatmap',
-        paint: { 'raster-opacity': 0.8 }
+        paint: { 'raster-opacity': 0.82 }
     }, 'route-corridor-fill');
 
-    // 6. Vector Fairways & TSS Corridors
+    // 6. Векторные фарватеры, системы разделения движения (TSS) и запретные зоны
     fetch('/api/fairways')
         .then(res => res.json())
         .then(fairwaysData => {
@@ -493,7 +496,7 @@ map.on('load', () => {
                 }
             }, 'route-corridor-fill');
         })
-        .catch(err => console.warn('Could not load vector fairways:', err));
+        .catch(err => console.warn('Не удалось загрузить векторные фарватеры:', err));
 
     if (toggleFairwaysCheckbox) {
         toggleFairwaysCheckbox.addEventListener('change', (e) => {
@@ -515,7 +518,7 @@ map.on('load', () => {
 });
 
 // -----------------------------------------------------------------------------
-// 8. Interactive Multi-Waypoint Management & Drag-and-Drop
+// 8. Управление путевыми точками и перетаскивание (Drag-and-Drop)
 // -----------------------------------------------------------------------------
 function createWaypointMarker(wpObj) {
     const el = document.createElement('div');
@@ -554,8 +557,8 @@ function renderWaypointsListUI() {
 
     if (plannedWaypoints.length === 0) {
         waypointsListContainer.innerHTML = `
-            <div class="wp wp-start"><div class="wp-indicator"></div><span>A (Start): Click on chart</span></div>
-            <div class="wp wp-goal"><div class="wp-indicator"></div><span>B (Goal): Click on chart</span></div>
+            <div class="wp wp-start"><div class="wp-indicator"></div><span>A (Отход): Кликните на карте</span></div>
+            <div class="wp wp-goal"><div class="wp-indicator"></div><span>B (Приход): Кликните на карте</span></div>
         `;
         return;
     }
@@ -565,13 +568,13 @@ function renderWaypointsListUI() {
         row.className = 'wp-item-row';
 
         let badgeColor = '#f59e0b';
-        let label = `WP${idx + 1}`;
+        let label = `РТ${idx + 1}`;
         if (wp.role === 'start') {
             badgeColor = '#10b981';
-            label = 'A (Start)';
+            label = 'A (Отход)';
         } else if (wp.role === 'goal') {
             badgeColor = '#ef4444';
-            label = 'B (Goal)';
+            label = 'B (Приход)';
         }
 
         const coordStr = formatCoordinates(wp.coords[1], wp.coords[0]);
@@ -581,7 +584,7 @@ function renderWaypointsListUI() {
                 <span style="font-weight: 600;">${label}</span>
                 <span style="color: #94a3b8; font-family: monospace;">${coordStr}</span>
             </div>
-            ${plannedWaypoints.length > 2 ? `<button class="wp-item-del-btn" data-id="${wp.id}" title="Remove waypoint">✕</button>` : ''}
+            ${plannedWaypoints.length > 2 ? `<button class="wp-item-del-btn" data-id="${wp.id}" title="Удалить путевую точку">✕</button>` : ''}
         `;
 
         const delBtn = row.querySelector('.wp-item-del-btn');
@@ -610,7 +613,6 @@ function addWaypoint(coords, role = 'via') {
     wp.marker = createWaypointMarker(wp);
 
     if (role === 'via' && plannedWaypoints.length >= 2) {
-        // Insert right before the goal waypoint
         plannedWaypoints.splice(plannedWaypoints.length - 1, 0, wp);
     } else {
         plannedWaypoints.push(wp);
@@ -650,7 +652,7 @@ function clearRouteData() {
 
     renderWaypointsListUI();
     renderWaypointsTable([]);
-    renderSafetyDashboard(null);
+    renderSafetyDashboard(null, null, null);
 
     if (bottomDrawer) bottomDrawer.style.display = 'none';
     if (exportActions) exportActions.style.display = 'none';
@@ -666,12 +668,12 @@ if (addWpBtn) {
     addWpBtn.addEventListener('click', () => {
         isAddingViaMode = !isAddingViaMode;
         if (isAddingViaMode) {
-            addWpBtn.innerText = 'Click on chart to add WP (Cancel)';
+            addWpBtn.innerText = 'Кликните на карте для добавления РТ (Отмена)';
             addWpBtn.style.background = 'rgba(245, 158, 11, 0.25)';
             addWpBtn.style.borderColor = '#f59e0b';
             addWpBtn.style.color = '#fbbf24';
         } else {
-            addWpBtn.innerText = '+ Add Via Waypoint';
+            addWpBtn.innerText = '+ Добавить путевую точку';
             addWpBtn.style.background = 'rgba(56, 189, 248, 0.15)';
             addWpBtn.style.borderColor = '#38bdf8';
             addWpBtn.style.color = '#38bdf8';
@@ -685,7 +687,7 @@ map.on('click', (e) => {
     if (isAddingViaMode) {
         addWaypoint(coords, 'via');
         isAddingViaMode = false;
-        addWpBtn.innerText = '+ Add Via Waypoint';
+        addWpBtn.innerText = '+ Добавить путевую точку';
         addWpBtn.style.background = 'rgba(56, 189, 248, 0.15)';
         addWpBtn.style.borderColor = '#38bdf8';
         addWpBtn.style.color = '#38bdf8';
@@ -700,7 +702,7 @@ map.on('click', (e) => {
 });
 
 // -----------------------------------------------------------------------------
-// 9. Drawer Tabs & Panel Controls
+// 9. Переключение вкладок нижней панели (Drawer)
 // -----------------------------------------------------------------------------
 const drawerTabs = [
     { btn: tabProfileBtn, pane: paneProfile },
@@ -729,18 +731,18 @@ if (drawerCloseBtn) {
 }
 
 // -----------------------------------------------------------------------------
-// 10. Waypoints Table Rendering (Passage Plan)
+// 10. Отрисовка таблицы путевых точек (План перехода)
 // -----------------------------------------------------------------------------
 function renderWaypointsTable(waypoints) {
     if (!waypointsTbody) return;
     waypointsTbody.innerHTML = '';
 
     if (!waypoints || !waypoints.length) {
-        if (wpBadge) wpBadge.innerText = '0 WP';
+        if (wpBadge) wpBadge.innerText = '0 РТ';
         return;
     }
 
-    if (wpBadge) wpBadge.innerText = `${waypoints.length} WP`;
+    if (wpBadge) wpBadge.innerText = `${waypoints.length} РТ`;
 
     waypoints.forEach((wp, idx) => {
         const tr = document.createElement('tr');
@@ -757,31 +759,31 @@ function renderWaypointsTable(waypoints) {
         const brgTxt = isLast ? '—' : `${brgVal.toFixed(1)}°T`;
         const distTxt = isLast ? '—' : `${distVal.toFixed(2)}`;
         const turnTxt = (idx === 0 || isLast || turnVal < 0.5) ? '0.0°' : `${turnVal.toFixed(1)}°`;
-        const radTxt = (idx === 0 || isLast || radVal <= 0) ? '—' : `${Math.round(radVal)}m`;
+        const radTxt = (idx === 0 || isLast || radVal <= 0) ? '—' : `${Math.round(radVal)}м`;
         const rotVal = wp.rot_deg_min !== undefined ? wp.rot_deg_min : 0.0;
         const wopVal = wp.wop_distance_m !== undefined ? wp.wop_distance_m : 0.0;
 
         let rotTxt = '—';
         if (!isLast && idx > 0 && Math.abs(turnVal) >= 0.5 && rotVal !== 0.0) {
-            rotTxt = `${rotVal > 0 ? '+' : ''}${rotVal.toFixed(1)}°/m`;
+            rotTxt = `${rotVal > 0 ? '+' : ''}${rotVal.toFixed(1)}°/мин`;
         }
 
         let wopTxt = '—';
         if (!isLast && idx > 0 && wopVal > 0) {
-            wopTxt = `${Math.round(wopVal)}m`;
+            wopTxt = `${Math.round(wopVal)}м`;
         }
 
-        const depthTxt = `${depthVal.toFixed(1)}m`;
+        const depthTxt = `${depthVal.toFixed(1)}м`;
         let clrClass = 'val-clearance-safe';
         if (clrVal < 0.5) clrClass = 'val-clearance-crit';
         else if (clrVal < 1.5) clrClass = 'val-clearance-warn';
-        const clrTxt = `<span class="${clrClass}">${clrVal.toFixed(2)}m</span>`;
+        const clrTxt = `<span class="${clrClass}">${clrVal.toFixed(2)}м</span>`;
 
         const latDmm = formatCoordinates(wp.lat, wp.lon).split(' ')[0];
         const lonDmm = formatCoordinates(wp.lat, wp.lon).split(' ')[1];
 
         tr.innerHTML = `
-            <td><b>WP${idx + 1}</b></td>
+            <td><b>РТ${idx + 1}</b></td>
             <td>${latDmm}</td>
             <td>${lonDmm}</td>
             <td>${brgTxt}</td>
@@ -819,16 +821,16 @@ function renderWaypointsTable(waypoints) {
 }
 
 // -----------------------------------------------------------------------------
-// 11. Route Calculation & API Interaction
+// 11. Вызов API и расчет безопасного маршрута
 // -----------------------------------------------------------------------------
 window.calculateRoute = async function () {
     if (plannedWaypoints.length < 2) {
-        statusMsg.innerText = 'Please designate departure (A) and destination (B) waypoints.';
+        statusMsg.innerText = 'Пожалуйста, укажите точки отхода (A) и прихода (B) на карте.';
         statusMsg.style.color = 'var(--status-warning)';
         return;
     }
 
-    statusMsg.innerText = 'Computing safe passage plan...';
+    statusMsg.innerText = 'Расчет безопасного маршрута перехода...';
     statusMsg.style.color = 'var(--accent-blue)';
 
     try {
@@ -865,7 +867,7 @@ window.calculateRoute = async function () {
                 map.getSource('turn-arcs').setData(data.turn_arcs || { type: 'FeatureCollection', features: [] });
             }
 
-            // Update bottleneck marker on map
+            // Маркер лимитирующей банки (Bottleneck)
             if (map.getSource('bottleneck-point')) {
                 const bPt = data.bottleneck && data.bottleneck.shallowest_point;
                 if (bPt && bPt.lon && bPt.lat) {
@@ -880,15 +882,15 @@ window.calculateRoute = async function () {
             }
 
             const p = data.properties;
-            const distNm = p.distance_nm !== undefined ? p.distance_nm.toFixed(1) + ' NM' : '—';
-            const eta = (p.eta_hours !== null && p.eta_hours !== undefined) ? p.eta_hours.toFixed(1) + ' h' : '— (Stationary)';
-            const clearance = p.min_clearance_m !== undefined ? p.min_clearance_m.toFixed(2) + ' m' : '—';
+            const distNm = p.distance_nm !== undefined ? p.distance_nm.toFixed(1) + ' ММ' : '—';
+            const eta = (p.eta_hours !== null && p.eta_hours !== undefined) ? p.eta_hours.toFixed(1) + ' ч' : '—';
+            const clearance = p.min_clearance_m !== undefined ? p.min_clearance_m.toFixed(2) + ' м' : '—';
             const waypointsCount = p.waypoints || (data.waypoints ? data.waypoints.length : '—');
 
             statusMsg.innerHTML =
-                `✓ <b>${distNm}</b> &nbsp;|&nbsp; ETA <b>${eta}</b>` +
-                ` &nbsp;|&nbsp; Min UKC <b>${clearance}</b>` +
-                ` &nbsp;|&nbsp; ${waypointsCount} waypoints`;
+                `✓ <b>${distNm}</b> &nbsp;|&nbsp; Время перехода: <b>${eta}</b>` +
+                ` &nbsp;|&nbsp; Мин. UKC: <b>${clearance}</b>` +
+                ` &nbsp;|&nbsp; ${waypointsCount} РТ`;
             statusMsg.style.color = 'var(--status-success)';
 
             renderWaypointsTable(data.waypoints || []);
@@ -904,7 +906,7 @@ window.calculateRoute = async function () {
             initSimulator(data);
         } else {
             const err = await res.json().catch(() => ({}));
-            statusMsg.innerText = '❌ ' + (err.detail || 'No navigable passage found.');
+            statusMsg.innerText = '❌ ' + (err.detail || 'Безопасный проход не найден при текущих параметрах осадки.');
             statusMsg.style.color = 'var(--status-danger)';
             map.getSource('route').setData({ type: 'FeatureCollection', features: [] });
             if (map.getSource('route-corridor')) map.getSource('route-corridor').setData({ type: 'FeatureCollection', features: [] });
@@ -915,8 +917,8 @@ window.calculateRoute = async function () {
             stopSimulator();
         }
     } catch (err) {
-        console.error('Passage plan calculation failure:', err);
-        statusMsg.innerText = 'Communication error with navigation server.';
+        console.error('Ошибка расчета маршрута:', err);
+        statusMsg.innerText = 'Ошибка связи с навигационным сервером.';
         statusMsg.style.color = 'var(--status-danger)';
     }
 };
@@ -924,7 +926,7 @@ window.calculateRoute = async function () {
 function renderProfileChart(profile, safeDepthLimit) {
     chartInstance.data.labels = profile.map((p) => {
         const nm = (p.distance_from_start_m / 1852.0).toFixed(1);
-        return `${nm} NM`;
+        return `${nm} ММ`;
     });
 
     chartInstance.data.datasets[0].data = profile.map((p) => p.depth);
@@ -941,14 +943,14 @@ function renderProfileChart(profile, safeDepthLimit) {
 }
 
 // -----------------------------------------------------------------------------
-// 12. ECDIS Route Safety Verification Dashboard Rendering
+// 12. Отрисовка панели аудита безопасности ECDIS (IEC 61174)
 // -----------------------------------------------------------------------------
 function renderSafetyDashboard(safetyData, bottleneckData, dukcData) {
     if (!safetyDashboard) return;
     if (!safetyData) {
-        safetyDashboard.innerHTML = '<div style="color: #94a3b8; padding: 10px;">No safety audit data available.</div>';
+        safetyDashboard.innerHTML = '<div style="color: #94a3b8; padding: 10px;">Данные проверки безопасности недоступны.</div>';
         if (safetyBadge) {
-            safetyBadge.innerText = 'OK';
+            safetyBadge.innerText = 'НОРМА';
             safetyBadge.className = 'badge-safe';
         }
         return;
@@ -956,13 +958,13 @@ function renderSafetyDashboard(safetyData, bottleneckData, dukcData) {
 
     if (safetyBadge) {
         if (safetyData.status === 'CRITICAL_HAZARD') {
-            safetyBadge.innerText = 'DANGER';
+            safetyBadge.innerText = 'ОПАСНОСТЬ';
             safetyBadge.className = 'badge-danger';
         } else if (safetyData.status === 'WARNING_ADVISORY') {
-            safetyBadge.innerText = `${safetyData.alarms_count} WARN`;
+            safetyBadge.innerText = `${safetyData.alarms_count} ПРЕДУПР.`;
             safetyBadge.className = 'badge-warn';
         } else {
-            safetyBadge.innerText = 'PASSED';
+            safetyBadge.innerText = 'НОРМА';
             safetyBadge.className = 'badge-safe';
         }
     }
@@ -971,46 +973,55 @@ function renderSafetyDashboard(safetyData, bottleneckData, dukcData) {
         ? 'safety-banner-danger'
         : (safetyData.status === 'WARNING_ADVISORY' ? 'safety-banner-warning' : 'safety-banner-passed');
 
+    let summaryText = safetyData.summary;
+    if (safetyData.status === 'CRITICAL_HAZARD') {
+        summaryText = 'Проверка безопасности ECDIS: ОТКЛОНЕНО. Обнаружен пробой безопасной глубины под килем.';
+    } else if (safetyData.status === 'WARNING_ADVISORY') {
+        summaryText = `Проверка безопасности ECDIS: ВНИМАНИЕ. Обнаружено ${safetyData.alarms_count} навигационных предупреждений.`;
+    } else {
+        summaryText = 'Проверка безопасности ECDIS: ПРОЙДЕНА. 100% соответствие запаса под килем и пределов маневрирования.';
+    }
+
     const m = safetyData.metrics || {};
     let html = `
         <div class="safety-status-banner ${bannerClass}">
-            <span>${safetyData.summary}</span>
-            <span style="font-size: 10px; opacity: 0.8;">IEC 61174:2015 §6.8 / PIANC MarCom WG 121</span>
+            <span>${summaryText}</span>
+            <span style="font-size: 10px; opacity: 0.8;">Стандарты IEC 61174:2015 §6.8 / PIANC MarCom WG 121</span>
         </div>
         <div class="safety-metrics-grid">
             <div class="metric-box">
-                <span class="metric-label">Safety Contour Depth</span>
-                <span class="metric-val" style="color: #38bdf8;">${m.safety_depth_m !== undefined ? m.safety_depth_m.toFixed(2) + 'm' : '—'}</span>
+                <span class="metric-label">Глубина изобата безоп.</span>
+                <span class="metric-val" style="color: #38bdf8;">${m.safety_depth_m !== undefined ? m.safety_depth_m.toFixed(2) + 'м' : '—'}</span>
             </div>
             <div class="metric-box">
-                <span class="metric-label">Dyn. Squat (PIANC)</span>
-                <span class="metric-val" style="color: #38bdf8;">${m.dynamic_squat_m !== undefined ? m.dynamic_squat_m.toFixed(2) + 'm' : '—'}</span>
+                <span class="metric-label">Динам. Squat (PIANC)</span>
+                <span class="metric-val" style="color: #38bdf8;">${m.dynamic_squat_m !== undefined ? m.dynamic_squat_m.toFixed(2) + 'м' : '—'}</span>
             </div>
             <div class="metric-box">
-                <span class="metric-label">Min Seafloor UKC</span>
-                <span class="metric-val ${m.min_clearance_m < 0 ? 'val-danger' : (m.min_clearance_m < 0.5 ? 'val-warn' : '')}" style="${m.min_clearance_m >= 0.5 ? 'color: #10b981;' : ''}">${m.min_clearance_m !== undefined ? m.min_clearance_m.toFixed(2) + 'm' : '—'}</span>
+                <span class="metric-label">Мин. запас UKC над дном</span>
+                <span class="metric-val ${m.min_clearance_m < 0 ? 'val-danger' : (m.min_clearance_m < 0.5 ? 'val-warn' : '')}" style="${m.min_clearance_m >= 0.5 ? 'color: #10b981;' : ''}">${m.min_clearance_m !== undefined ? m.min_clearance_m.toFixed(2) + 'м' : '—'}</span>
             </div>
             <div class="metric-box">
-                <span class="metric-label">Bridge ROT Limit</span>
-                <span class="metric-val" style="color: #94a3b8;">${m.rot_threshold_deg_min !== undefined ? m.rot_threshold_deg_min + '°/min' : '—'}</span>
+                <span class="metric-label">Мостиковый предел ROT</span>
+                <span class="metric-val" style="color: #94a3b8;">${m.rot_threshold_deg_min !== undefined ? m.rot_threshold_deg_min + '°/мин' : '—'}</span>
             </div>
         </div>
     `;
 
-    // Bottleneck & Choke Point Analysis Card
+    // Карточка лимитирующей банки (Bottleneck)
     if (bottleneckData && bottleneckData.shallowest_point) {
         const b = bottleneckData.shallowest_point;
         const isHazard = bottleneckData.is_grounding_hazard;
         html += `
             <div class="bottleneck-card ${isHazard ? '' : 'bottleneck-safe'}">
                 <div class="bottleneck-header">
-                    <span>${isHazard ? '⚠️ CRITICAL PASSAGE CHOKE POINT DETECTED' : '✓ CONTROLLING PASSAGE SOUNDING (BOTTLENECK)'}</span>
-                    <span>Chainage: ${b.distance_nm} NM</span>
+                    <span>${isHazard ? '⚠️ КРИТИЧЕСКИЙ ЛИМИТИРУЮЩИЙ СТВОР (ОТМЕЛЬ)' : '✓ КОНТРОЛЬНЫЙ ЛИМИТИРУЮЩИЙ СТВОР МАРШРУТА'}</span>
+                    <span>Дистанция: ${b.distance_nm} ММ</span>
                 </div>
                 <div style="font-size: 11.5px; color: var(--text-secondary); line-height: 1.4;">
-                    Chart Depth: <b>${b.chart_depth_m}m</b> (Eff. with Tide: <b>${b.effective_depth_m}m</b>) |
-                    Net Seafloor UKC: <b style="color: ${b.net_clearance_m < 0 ? '#ef4444' : '#10b981'};">${b.net_clearance_m}m</b> |
-                    Max Allowable Static Draft: <b>${bottleneckData.max_allowable_draft_m}m</b>
+                    Глубина по карте: <b>${b.chart_depth_m}м</b> (с учетом прилива: <b>${b.effective_depth_m}м</b>) |
+                    Чистый запас UKC: <b style="color: ${b.net_clearance_m < 0 ? '#ef4444' : '#10b981'};">${b.net_clearance_m}м</b> |
+                    Макс. безопасная осадка: <b>${bottleneckData.max_allowable_draft_m}м</b>
                 </div>
         `;
 
@@ -1018,9 +1029,10 @@ function renderSafetyDashboard(safetyData, bottleneckData, dukcData) {
             const sa = bottleneckData.speed_adaptation;
             html += `
                 <div class="advisory-box">
-                    <b>💡 Speed Adaptation Advisory:</b> ${sa.advisory}
+                    <b>💡 Рекомендация по адаптации скорости:</b>
+                    Снизьте скорость с ${sa.current_speed_knots} уз до ${sa.recommended_speed_knots} уз на лимитирующем участке (${b.distance_nm} ММ от старта), чтобы уменьшить гидродинамическое проседание (Squat) на ${sa.squat_reduction_m}м и восстановить безопасный запас UKC.
                     <button id="apply-safe-speed-btn" style="margin-left: 8px; padding: 2px 8px; font-size: 11px; background: #38bdf8; color: #0f172a; border: none; border-radius: 2px; font-weight: 600; cursor: pointer;">
-                        Apply ${sa.recommended_speed_knots} kts
+                        Применить ${sa.recommended_speed_knots} уз
                     </button>
                 </div>
             `;
@@ -1030,7 +1042,7 @@ function renderSafetyDashboard(safetyData, bottleneckData, dukcData) {
             const tw = bottleneckData.tidal_window;
             html += `
                 <div class="tidal-box">
-                    <b>🌊 M2 Tidal Window Analysis:</b> ${tw.notes}
+                    <b>🌊 Расчет приливного окна M2:</b> ${tw.notes}
                 </div>
             `;
         }
@@ -1038,39 +1050,58 @@ function renderSafetyDashboard(safetyData, bottleneckData, dukcData) {
         html += `</div>`;
     }
 
-    // Dynamic Under-Keel Clearance (PIANC DUKC Budget)
+    // Гидродинамический баланс DUKC
     if (dukcData) {
         html += `
             <div style="background: rgba(15, 23, 42, 0.6); border: 1px solid var(--border-color); border-radius: 4px; padding: 10px 12px; margin-bottom: 10px; font-size: 11.5px;">
-                <div style="font-weight: 600; color: #38bdf8; margin-bottom: 6px;">📐 PIANC DUKC DYNAMIC MOTION BUDGET</div>
+                <div style="font-weight: 600; color: #38bdf8; margin-bottom: 6px;">📐 ГИДРОДИНАМИЧЕСКИЙ БАЛАНС ДВИЖЕНИЯ PIANC DUKC</div>
                 <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; color: var(--text-secondary);">
-                    <div>Static Draft: <b>${dukcData.static_draft_m}m</b></div>
-                    <div>PIANC Squat: <b>${dukcData.dynamic_squat_m}m</b></div>
-                    <div>Turning Heel Sinkage: <b>+${dukcData.heel_sinkage_m}m</b> (${dukcData.heel_angle_deg}°)</div>
-                    <div>Wave Response (Hs): <b>+${dukcData.wave_allowance_m}m</b></div>
-                    <div>Total Dynamic Draft: <b style="color: #f59e0b;">${dukcData.total_dynamic_draft_m}m</b></div>
-                    <div>Effective Seafloor Depth: <b style="color: #38bdf8;">${dukcData.effective_depth_m}m</b></div>
+                    <div>Статическая осадка: <b>${dukcData.static_draft_m}м</b></div>
+                    <div>Проседание Squat: <b>${dukcData.dynamic_squat_m}м</b></div>
+                    <div>Циркуляционный крен: <b>+${dukcData.heel_sinkage_m}м</b> (${dukcData.heel_angle_deg}°)</div>
+                    <div>Волновой запас (Hs): <b>+${dukcData.wave_allowance_m}м</b></div>
+                    <div>Полная динамическая осадка: <b style="color: #f59e0b;">${dukcData.total_dynamic_draft_m}м</b></div>
+                    <div>Эффективная глубина моря: <b style="color: #38bdf8;">${dukcData.effective_depth_m}м</b></div>
                 </div>
             </div>
         `;
     }
 
-    // Navigational Alarms
+    // Список навигационных алертов
     if (safetyData.alarms && safetyData.alarms.length) {
         html += '<div class="alarms-list">';
         safetyData.alarms.forEach(a => {
             const cardClass = a.severity === 'CRITICAL' ? 'alarm-critical' : 'alarm-warning';
+            let ruTitle = a.title;
+            let ruDetail = a.detail;
+
+            if (a.code === 'ALM-01-GROUNDING-HAZARD') {
+                ruTitle = 'Опасность посадки на мель';
+                ruDetail = `Глубина дна пробивает изобат безопасности судна на дистанции ${a.distance_nm} ММ.`;
+            } else if (a.code === 'ALM-02-CRITICAL-UKC') {
+                ruTitle = 'Критически малый запас под килем';
+                ruDetail = `Фактический клиренс под килем менее допустимого предела (0.35м) на дистанции ${a.distance_nm} ММ.`;
+            } else if (a.code === 'ALM-03-EXCESSIVE-ROT') {
+                ruTitle = `Высокая угловая скорость поворота (ROT) на РТ${a.waypoint_index || ''}`;
+            }
+
             html += `
                 <div class="alarm-card ${cardClass}">
                     <div class="alarm-header">
-                        <span class="alarm-title">${a.title}</span>
+                        <span class="alarm-title">${ruTitle}</span>
                         <span class="alarm-code">[${a.code}]</span>
                     </div>
-                    <div class="alarm-detail">${a.detail}</div>
+                    <div class="alarm-detail">${ruDetail}</div>
                 </div>
             `;
         });
         html += '</div>';
+    } else {
+        html += `
+            <div style="background: rgba(16, 185, 129, 0.08); border: 1px solid rgba(16, 185, 129, 0.2); padding: 14px; border-radius: 4px; color: #a7f3d0; line-height: 1.5;">
+                ✓ <b>Аудит безопасности пройден:</b> Линия перехода и полоса безопасности (XTD) сохраняют требуемый запас под килем (UKC) на всех батиметрических промерах. Запретные зоны не нарушены. Угловые скорости поворотов соответствуют мостиковым нормам.
+            </div>
+        `;
     }
 
     safetyDashboard.innerHTML = html;
@@ -1081,7 +1112,7 @@ function renderSafetyDashboard(safetyData, bottleneckData, dukcData) {
             const safeV = bottleneckData.speed_adaptation.recommended_speed_knots;
             speedSlider.value = safeV;
             speedKnots = safeV;
-            speedVal.innerText = safeV + ' kts';
+            speedVal.innerText = safeV + ' уз';
             updateVesselPhysics();
             calculateRoute();
         });
@@ -1089,7 +1120,7 @@ function renderSafetyDashboard(safetyData, bottleneckData, dukcData) {
 }
 
 // -----------------------------------------------------------------------------
-// 13. ECDIS Route Playback & Bridge Simulator Engine (Direction E)
+// 13. Симулятор проводки судна и приборы мостика
 // -----------------------------------------------------------------------------
 let simState = {
     isRunning: false,
@@ -1121,7 +1152,7 @@ function playBridgeChime() {
         osc.start();
         osc.stop(audioCtx.currentTime + 0.4);
     } catch (e) {
-        // audio might be blocked by browser autoplay policy
+        // браузерная блокировка аудио без взаимодействия
     }
 }
 
@@ -1169,7 +1200,7 @@ function stopSimulator() {
     simState.vesselMarker = null;
 
     if (simPlayBtn) {
-        simPlayBtn.innerText = '▶ Start';
+        simPlayBtn.innerText = '▶ Старт';
         simPlayBtn.disabled = false;
     }
     if (simPauseBtn) simPauseBtn.disabled = true;
@@ -1219,7 +1250,7 @@ function updateSimulatorHUD(distM) {
         if (svg) svg.style.transform = `rotate(${pos.heading}deg)`;
     }
 
-    // Interpolate depth sounding from profile
+    // Интерполяция глубины по профилю
     let curDepth = 15.0;
     let curClearance = 5.0;
     const prof = simState.profile;
@@ -1233,21 +1264,21 @@ function updateSimulatorHUD(distM) {
         }
     }
 
-    if (hudDepthVal) hudDepthVal.innerText = `${(curDepth + tideOffsetM).toFixed(1)} m`;
-    if (hudChartDepth) hudChartDepth.innerText = `${curDepth.toFixed(1)}m`;
-    if (hudTide) hudTide.innerText = `${tideOffsetM >= 0 ? '+' : ''}${tideOffsetM.toFixed(1)}m`;
+    if (hudDepthVal) hudDepthVal.innerText = `${(curDepth + tideOffsetM).toFixed(1)} м`;
+    if (hudChartDepth) hudChartDepth.innerText = `${curDepth.toFixed(1)}м`;
+    if (hudTide) hudTide.innerText = `${tideOffsetM >= 0 ? '+' : ''}${tideOffsetM.toFixed(1)}м`;
     if (hudUkcVal) {
-        hudUkcVal.innerText = `${curClearance.toFixed(2)} m`;
+        hudUkcVal.innerText = `${curClearance.toFixed(2)} м`;
         hudUkcVal.style.color = curClearance < 0.5 ? '#ef4444' : (curClearance < 1.5 ? '#f59e0b' : '#10b981');
     }
     if (hudUkcStatus) {
-        hudUkcStatus.innerText = curClearance < 0 ? 'CRITICAL GROUNDING DANGER' : (curClearance < 0.5 ? 'MARGINAL CLEARANCE' : 'SAFE NAVIGATION');
+        hudUkcStatus.innerText = curClearance < 0 ? 'КРИТИЧЕСКАЯ ОПАСНОСТЬ МЕЛИ' : (curClearance < 0.5 ? 'МАЛЫЙ ЗАПАС' : 'БЕЗОПАСНЫЙ ХОД');
         hudUkcStatus.style.color = curClearance < 0.5 ? '#ef4444' : '#10b981';
     }
     if (hudHdgVal) hudHdgVal.innerText = `${Math.round(pos.heading).toString().padStart(3, '0')}°T`;
-    if (hudSogVal) hudSogVal.innerText = `${speedKnots.toFixed(1)} kts`;
+    if (hudSogVal) hudSogVal.innerText = `${speedKnots.toFixed(1)} уз`;
 
-    // Next Waypoint & Wheel Over Point (WOP) Advisory
+    // Расчет следующей путевой точки и точки перекладки руля (WOP)
     let nextWp = null;
     let distToNextWp = 0;
     let cumWpDist = 0;
@@ -1269,20 +1300,19 @@ function updateSimulatorHUD(distM) {
         const etaRemSec = Math.floor(etaSec % 60);
         const etaStr = `${etaMins.toString().padStart(2, '0')}:${etaRemSec.toString().padStart(2, '0')}`;
 
-        if (hudNextWpVal) hudNextWpVal.innerText = `WP${nextWp.index || '—'}`;
-        if (hudWpDist) hudWpDist.innerText = `${distNm} NM`;
+        if (hudNextWpVal) hudNextWpVal.innerText = `РТ${nextWp.index || '—'}`;
+        if (hudWpDist) hudWpDist.innerText = `${distNm} ММ`;
         if (hudWpEta) hudWpEta.innerText = etaStr;
 
-        // Check if vessel is approaching Wheel Over Point (WOP)
         const wopDistM = nextWp.wop_distance_m || 0;
         const isApproachingWop = (distToNextWp <= wopDistM + 250 && distToNextWp >= wopDistM - 50);
 
         if (isApproachingWop && simAlarmBanner && Math.abs(nextWp.turn_angle_deg || 0) >= 4.0) {
             simAlarmBanner.style.display = 'block';
             simAlarmBanner.innerHTML = `
-                ⚠️ <b>EXECUTE WHEEL OVER:</b> Approaching WP${nextWp.index}!
-                Alter course to ${nextWp.rot_deg_min > 0 ? 'Starboard' : 'Port'} (${nextWp.leg_bearing_deg}°T) —
-                Rate of Turn: <b>${Math.abs(nextWp.rot_deg_min)}°/min</b> (Radius: ${nextWp.turn_radius_m}m)
+                ⚠️ <b>ПЕРЕКЛАДКА РУЛЯ (WOP):</b> Подход к РТ${nextWp.index}!
+                Поворот на ${nextWp.rot_deg_min > 0 ? 'Правый' : 'Левый'} борт (${nextWp.leg_bearing_deg}°T) —
+                Угловая скорость ROT: <b>${Math.abs(nextWp.rot_deg_min)}°/мин</b> (Радиус: ${nextWp.turn_radius_m}м)
             `;
             playBridgeChime();
         } else if (simAlarmBanner && !isApproachingWop) {
@@ -1290,13 +1320,13 @@ function updateSimulatorHUD(distM) {
         }
     }
 
-    // Progress bar
+    // Прогресс симуляции
     const progressPct = simState.totalDistanceM > 0 ? Math.min(100, (distM / simState.totalDistanceM) * 100) : 0;
     if (simProgressFill) simProgressFill.style.width = `${progressPct.toFixed(1)}%`;
     if (simProgressText) {
         const curNm = (distM / 1852.0).toFixed(1);
         const totNm = (simState.totalDistanceM / 1852.0).toFixed(1);
-        simProgressText.innerText = `${curNm} / ${totNm} NM (${Math.round(progressPct)}%)`;
+        simProgressText.innerText = `${curNm} / ${totNm} ММ (${Math.round(progressPct)}%)`;
     }
 }
 
@@ -1316,7 +1346,7 @@ function simAnimationFrame(timestamp) {
         updateSimulatorHUD(simState.currentDistanceM);
         simState.isRunning = false;
         if (simPlayBtn) {
-            simPlayBtn.innerText = '▶ Replay';
+            simPlayBtn.innerText = '▶ Повтор';
             simPlayBtn.disabled = false;
         }
         if (simPauseBtn) simPauseBtn.disabled = true;
@@ -1325,7 +1355,7 @@ function simAnimationFrame(timestamp) {
             simAlarmBanner.style.background = 'rgba(16, 185, 129, 0.2)';
             simAlarmBanner.style.borderColor = 'var(--status-success)';
             simAlarmBanner.style.color = '#6ee7b7';
-            simAlarmBanner.innerHTML = '🏁 <b>PASSAGE COMPLETED:</b> Vessel safely arrived at final destination.';
+            simAlarmBanner.innerHTML = '🏁 <b>ПЕРЕХОД ЗАВЕРШЕН:</b> Судно благополучно прибыло в порт назначения.';
         }
         return;
     }
@@ -1337,7 +1367,7 @@ function simAnimationFrame(timestamp) {
 if (simPlayBtn) {
     simPlayBtn.addEventListener('click', () => {
         if (!currentRouteData) {
-            alert('Please compute a route on the chart before starting simulation.');
+            alert('Пожалуйста, постройте маршрут на карте перед запуском симулятора.');
             return;
         }
         if (simState.currentDistanceM >= simState.totalDistanceM) {
@@ -1346,7 +1376,7 @@ if (simPlayBtn) {
         simState.isRunning = true;
         simState.lastTimestamp = null;
         simPlayBtn.disabled = true;
-        simPlayBtn.innerText = '▶ Running';
+        simPlayBtn.innerText = '▶ В движении';
         if (simPauseBtn) simPauseBtn.disabled = false;
         simState.animFrameId = requestAnimationFrame(simAnimationFrame);
     });
@@ -1357,7 +1387,7 @@ if (simPauseBtn) {
         simState.isRunning = false;
         if (simState.animFrameId) cancelAnimationFrame(simState.animFrameId);
         simPlayBtn.disabled = false;
-        simPlayBtn.innerText = '▶ Resume';
+        simPlayBtn.innerText = '▶ Продолжить';
         simPauseBtn.disabled = true;
     });
 }
@@ -1368,7 +1398,7 @@ if (simResetBtn) {
         simState.currentDistanceM = 0;
         if (simState.animFrameId) cancelAnimationFrame(simState.animFrameId);
         simPlayBtn.disabled = false;
-        simPlayBtn.innerText = '▶ Start';
+        simPlayBtn.innerText = '▶ Старт';
         if (simPauseBtn) simPauseBtn.disabled = true;
         updateSimulatorHUD(0);
         if (simAlarmBanner) simAlarmBanner.style.display = 'none';
@@ -1384,7 +1414,7 @@ simSpeedBtns.forEach(btn => {
 });
 
 // -----------------------------------------------------------------------------
-// 14. Route Export Helpers (GPX & RTZ 1.1)
+// 14. Экспорт маршрута (GPX и IEC 61174 RTZ 1.1)
 // -----------------------------------------------------------------------------
 async function triggerDownload(url, filename, payload) {
     try {
@@ -1393,7 +1423,7 @@ async function triggerDownload(url, filename, payload) {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(payload)
         });
-        if (!res.ok) throw new Error('Export request failed: ' + res.status);
+        if (!res.ok) throw new Error('Запрос экспорта завершился с ошибкой: ' + res.status);
         const blob = await res.blob();
         const blobUrl = window.URL.createObjectURL(blob);
         const a = document.createElement('a');
@@ -1404,8 +1434,8 @@ async function triggerDownload(url, filename, payload) {
         a.remove();
         window.URL.revokeObjectURL(blobUrl);
     } catch (e) {
-        console.error('Export error:', e);
-        alert('Failed to export route: ' + e.message);
+        console.error('Ошибка экспорта:', e);
+        alert('Не удалось экспортировать маршрут: ' + e.message);
     }
 }
 
