@@ -38,8 +38,19 @@ const dangerVal = document.getElementById('danger-val');
 const startCoordTxt = document.getElementById('start-coord');
 const goalCoordTxt = document.getElementById('goal-coord');
 const statusMsg = document.getElementById('status');
-const chartPanel = document.getElementById('chart-panel');
 const vesselSelect = document.getElementById('vessel-profile');
+
+const bottomDrawer = document.getElementById('bottom-drawer');
+const tabProfileBtn = document.getElementById('tab-profile-btn');
+const tabWaypointsBtn = document.getElementById('tab-waypoints-btn');
+const paneProfile = document.getElementById('pane-profile');
+const paneWaypoints = document.getElementById('pane-waypoints');
+const exportActions = document.getElementById('export-actions');
+const exportGpxBtn = document.getElementById('export-gpx-btn');
+const exportRtzBtn = document.getElementById('export-rtz-btn');
+const drawerCloseBtn = document.getElementById('drawer-close-btn');
+const waypointsTbody = document.getElementById('waypoints-tbody');
+const wpBadge = document.getElementById('wp-badge');
 
 // -----------------------------------------------------------------------------
 // Vessel Profiles
@@ -62,6 +73,8 @@ let startPoint = null;
 let goalPoint = null;
 let startMarker = null;
 let goalMarker = null;
+let currentRouteData = null;
+let activeWpMarker = null;
 
 // -----------------------------------------------------------------------------
 // Depth Profile Chart Setup (Chart.js)
@@ -404,19 +417,186 @@ map.on('click', (e) => {
 document.getElementById('clear-route').addEventListener('click', () => {
     if (startMarker) startMarker.remove();
     if (goalMarker) goalMarker.remove();
+    if (activeWpMarker) activeWpMarker.remove();
 
     startPoint = null;
     goalPoint = null;
     startMarker = null;
     goalMarker = null;
+    activeWpMarker = null;
+    currentRouteData = null;
 
     startCoordTxt.innerText = 'A: Not set';
     goalCoordTxt.innerText = 'B: Not set';
 
     map.getSource('route').setData({ type: 'FeatureCollection', features: [] });
-    chartPanel.style.display = 'none';
+    if (bottomDrawer) bottomDrawer.style.display = 'none';
+    if (exportActions) exportActions.style.display = 'none';
+    if (waypointsTbody) waypointsTbody.innerHTML = '';
+    if (wpBadge) wpBadge.innerText = '0 WP';
     statusMsg.innerText = '';
 });
+
+// -----------------------------------------------------------------------------
+// Drawer Tabs & Panel Controls
+// -----------------------------------------------------------------------------
+if (tabProfileBtn && tabWaypointsBtn) {
+    tabProfileBtn.addEventListener('click', () => {
+        tabProfileBtn.classList.add('active');
+        tabWaypointsBtn.classList.remove('active');
+        paneProfile.classList.add('active');
+        paneWaypoints.classList.remove('active');
+    });
+
+    tabWaypointsBtn.addEventListener('click', () => {
+        tabWaypointsBtn.classList.add('active');
+        tabProfileBtn.classList.remove('active');
+        paneWaypoints.classList.add('active');
+        paneProfile.classList.remove('active');
+    });
+}
+
+if (drawerCloseBtn) {
+    drawerCloseBtn.addEventListener('click', () => {
+        if (bottomDrawer) bottomDrawer.style.display = 'none';
+    });
+}
+
+// -----------------------------------------------------------------------------
+// Waypoints Table Rendering (Passage Plan)
+// -----------------------------------------------------------------------------
+function renderWaypointsTable(waypoints) {
+    if (!waypointsTbody) return;
+    waypointsTbody.innerHTML = '';
+
+    if (!waypoints || !waypoints.length) {
+        if (wpBadge) wpBadge.innerText = '0 WP';
+        return;
+    }
+
+    if (wpBadge) wpBadge.innerText = `${waypoints.length} WP`;
+
+    waypoints.forEach((wp, idx) => {
+        const tr = document.createElement('tr');
+        tr.dataset.wpIndex = idx;
+
+        const isLast = (idx === waypoints.length - 1);
+        const brgVal = wp.leg_bearing_deg !== undefined ? wp.leg_bearing_deg : 0.0;
+        const distVal = wp.leg_distance_nm !== undefined ? wp.leg_distance_nm : 0.0;
+        const turnVal = wp.turn_angle_deg !== undefined ? wp.turn_angle_deg : 0.0;
+        const radVal = wp.turn_radius_m !== undefined ? wp.turn_radius_m : 0.0;
+        const depthVal = wp.depth_m !== undefined ? wp.depth_m : 0.0;
+        const clrVal = wp.clearance_m !== undefined ? wp.clearance_m : 0.0;
+
+        const brgTxt = isLast ? '—' : `${brgVal.toFixed(1)}°T`;
+        const distTxt = isLast ? '—' : `${distVal.toFixed(2)}`;
+        const turnTxt = (idx === 0 || isLast || turnVal < 0.5) ? '0.0°' : `${turnVal.toFixed(1)}°`;
+        const radTxt = (radVal > 0 && !isLast && idx > 0) ? `${Math.round(radVal)}m` : '—';
+        const depthTxt = `${depthVal.toFixed(1)}m`;
+
+        let clrClass = 'val-clearance-safe';
+        if (clrVal < 0.5) clrClass = 'val-clearance-crit';
+        else if (clrVal < 1.5) clrClass = 'val-clearance-warn';
+        const clrTxt = `<span class="${clrClass}">${clrVal.toFixed(2)}m</span>`;
+
+        const latDmm = formatCoordinates(wp.lat, wp.lon).split(' ')[0];
+        const lonDmm = formatCoordinates(wp.lat, wp.lon).split(' ')[1];
+
+        tr.innerHTML = `
+            <td><b>WP${idx + 1}</b></td>
+            <td>${latDmm}</td>
+            <td>${lonDmm}</td>
+            <td>${brgTxt}</td>
+            <td>${distTxt}</td>
+            <td>${turnTxt}</td>
+            <td>${radTxt}</td>
+            <td>${depthTxt}</td>
+            <td>${clrTxt}</td>
+        `;
+
+        tr.addEventListener('click', () => {
+            document.querySelectorAll('#waypoints-tbody tr').forEach(r => r.classList.remove('active-wp-row'));
+            tr.classList.add('active-wp-row');
+
+            if (activeWpMarker) activeWpMarker.remove();
+
+            const el = document.createElement('div');
+            el.style.width = '20px';
+            el.style.height = '20px';
+            el.style.borderRadius = '50%';
+            el.style.border = '2px solid #38bdf8';
+            el.style.boxShadow = '0 0 10px #38bdf8';
+            el.style.background = 'rgba(56, 189, 248, 0.3)';
+
+            activeWpMarker = new maplibregl.Marker({ element: el })
+                .setLngLat([wp.lon, wp.lat])
+                .addTo(map);
+
+            map.flyTo({
+                center: [wp.lon, wp.lat],
+                zoom: Math.max(map.getZoom(), 10.0),
+                speed: 1.2
+            });
+        });
+
+        waypointsTbody.appendChild(tr);
+    });
+}
+
+// -----------------------------------------------------------------------------
+// Route Export Helpers (GPX & RTZ)
+// -----------------------------------------------------------------------------
+async function triggerDownload(url, filename, payload) {
+    try {
+        const res = await fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+        if (!res.ok) throw new Error('Export request failed: ' + res.status);
+        const blob = await res.blob();
+        const blobUrl = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = blobUrl;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        window.URL.revokeObjectURL(blobUrl);
+    } catch (e) {
+        console.error('Export error:', e);
+        alert('Failed to export route: ' + e.message);
+    }
+}
+
+if (exportGpxBtn) {
+    exportGpxBtn.addEventListener('click', () => {
+        if (!currentRouteData || !currentRouteData.waypoints) return;
+        const payload = {
+            waypoints: currentRouteData.waypoints,
+            route: currentRouteData.geometry.coordinates,
+            draft: draft,
+            speed_knots: speedKnots,
+            ukc: baseUkc,
+            route_name: 'SeaPath_Passage_Plan'
+        };
+        triggerDownload('/api/export/gpx', 'seapath_passage_plan.gpx', payload);
+    });
+}
+
+if (exportRtzBtn) {
+    exportRtzBtn.addEventListener('click', () => {
+        if (!currentRouteData || !currentRouteData.waypoints) return;
+        const payload = {
+            waypoints: currentRouteData.waypoints,
+            draft: draft,
+            speed_knots: speedKnots,
+            ukc: baseUkc,
+            route_name: 'SeaPath_Passage_Plan'
+        };
+        triggerDownload('/api/export/rtz', 'seapath_passage_plan.rtz', payload);
+    });
+}
 
 // -----------------------------------------------------------------------------
 // Route Calculation & Rendering
@@ -452,13 +632,14 @@ window.calculateRoute = async function () {
 
         if (res.ok) {
             const data = await res.json();
+            currentRouteData = data;
             map.getSource('route').setData(data);
 
             const p = data.properties;
             const distNm = p.distance_nm !== undefined ? p.distance_nm.toFixed(1) + ' NM' : '—';
             const eta = (p.eta_hours !== null && p.eta_hours !== undefined) ? p.eta_hours.toFixed(1) + ' h' : '— (Stationary)';
             const clearance = p.min_clearance_m !== undefined ? p.min_clearance_m.toFixed(2) + ' m' : '—';
-            const waypointsCount = p.waypoints || '—';
+            const waypointsCount = p.waypoints || (data.waypoints ? data.waypoints.length : '—');
 
             statusMsg.innerHTML =
                 `✓ <b>${distNm}</b> &nbsp;|&nbsp; ETA <b>${eta}</b>` +
@@ -466,16 +647,22 @@ window.calculateRoute = async function () {
                 ` &nbsp;|&nbsp; ${waypointsCount} waypoints`;
             statusMsg.style.color = 'var(--status-success)';
 
+            renderWaypointsTable(data.waypoints || []);
+
             if (data.profile && data.profile.length) {
                 renderProfileChart(data.profile, payload.draft + dynamicSquat + payload.ukc);
-                chartPanel.style.display = 'block';
             }
+
+            if (bottomDrawer) bottomDrawer.style.display = 'flex';
+            if (exportActions) exportActions.style.display = 'inline-flex';
         } else {
             const err = await res.json().catch(() => ({}));
             statusMsg.innerText = '❌ ' + (err.detail || 'No navigable passage found.');
             statusMsg.style.color = 'var(--status-danger)';
             map.getSource('route').setData({ type: 'FeatureCollection', features: [] });
-            chartPanel.style.display = 'none';
+            if (bottomDrawer) bottomDrawer.style.display = 'none';
+            if (exportActions) exportActions.style.display = 'none';
+            currentRouteData = null;
         }
     } catch (err) {
         console.error('Passage plan calculation failure:', err);

@@ -181,19 +181,193 @@ button:hover {
     line-height: 1.4;
 }
 
-/* Bathymetric Depth Profile Chart */
-#chart-panel {
+/* ECDIS Bottom Drawer: Tabbed Profile & Passage Plan */
+#bottom-drawer {
     position: absolute;
     bottom: 0;
     left: 280px;
     right: 0;
-    height: 200px;
+    height: 250px;
     background: var(--bg-surface);
     border-top: 1px solid var(--border-color);
     z-index: 10;
-    padding: 12px;
+    display: none;
+    flex-direction: column;
+}
+
+.drawer-header {
+    height: 36px;
+    background: var(--bg-panel);
+    border-bottom: 1px solid var(--border-color);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0 12px;
+}
+
+.drawer-tabs {
+    display: flex;
+    gap: 4px;
+    height: 100%;
+    align-items: flex-end;
+}
+
+.drawer-tab {
+    width: auto;
+    background: transparent;
+    border: none;
+    border-bottom: 2px solid transparent;
+    color: var(--text-secondary);
+    padding: 8px 14px;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    cursor: pointer;
+    border-radius: 0;
+    transition: all 0.15s ease;
+}
+
+.drawer-tab:hover {
+    color: var(--text-primary);
+    background: rgba(255, 255, 255, 0.04);
+}
+
+.drawer-tab.active {
+    color: var(--accent-blue);
+    border-bottom-color: var(--accent-blue);
+    background: rgba(77, 170, 252, 0.08);
+}
+
+.drawer-actions {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+}
+
+.export-btn {
+    width: auto;
+    padding: 4px 10px;
+    background: #2a2a2b;
+    border: 1px solid #444;
+    color: #e0e0e0;
+    font-size: 11px;
+    font-weight: 600;
+    border-radius: 2px;
+    cursor: pointer;
+    text-transform: uppercase;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    transition: all 0.15s ease;
+}
+
+.export-btn:hover {
+    background: var(--accent-blue);
+    border-color: var(--accent-blue);
+    color: #000;
+}
+
+.drawer-toggle-btn {
+    width: 24px;
+    height: 24px;
+    padding: 0;
+    background: transparent;
+    border: none;
+    color: var(--text-muted);
+    font-size: 14px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.drawer-toggle-btn:hover {
+    color: var(--text-primary);
+    background: rgba(255, 255, 255, 0.05);
+}
+
+.drawer-content {
+    flex: 1;
+    position: relative;
+    overflow: hidden;
+}
+
+.tab-pane {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    padding: 10px 14px;
     display: none;
 }
+
+.tab-pane.active {
+    display: block;
+}
+
+.table-scroll {
+    width: 100%;
+    height: 100%;
+    overflow-y: auto;
+}
+
+/* Monospace ECDIS Table */
+.ecdis-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-family: Consolas, "SF Mono", Monaco, monospace;
+    font-size: 11.5px;
+    color: #cbd5e1;
+    text-align: right;
+}
+
+.ecdis-table th {
+    position: sticky;
+    top: 0;
+    background: #18181b;
+    color: #94a3b8;
+    padding: 6px 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    font-size: 10.5px;
+    letter-spacing: 0.5px;
+    border-bottom: 1px solid #333;
+    z-index: 2;
+}
+
+.ecdis-table th:first-child,
+.ecdis-table td:first-child,
+.ecdis-table th:nth-child(2),
+.ecdis-table td:nth-child(2),
+.ecdis-table th:nth-child(3),
+.ecdis-table td:nth-child(3) {
+    text-align: left;
+}
+
+.ecdis-table td {
+    padding: 5px 10px;
+    border-bottom: 1px solid #27272a;
+}
+
+.ecdis-table tbody tr {
+    cursor: pointer;
+    transition: background 0.1s ease;
+}
+
+.ecdis-table tbody tr:hover {
+    background: rgba(77, 170, 252, 0.1);
+}
+
+.ecdis-table tbody tr.active-wp-row {
+    background: rgba(77, 170, 252, 0.2);
+    outline: 1px solid var(--accent-blue);
+}
+
+.val-clearance-safe { color: var(--status-success); font-weight: 600; }
+.val-clearance-warn { color: var(--status-warning); font-weight: 600; }
+.val-clearance-crit { color: var(--status-danger); font-weight: 600; }
 
 /* Navigational Constraints Checkboxes */
 .checkbox-label {

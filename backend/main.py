@@ -7,9 +7,9 @@ and real-time under-keel clearance (UKC) analysis.
 
 from collections import deque
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Optional, Tuple, List, Dict, Any
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -17,6 +17,7 @@ from pydantic import BaseModel, Field
 from backend.core.grid import BathymetricGrid
 from backend.core.router import Router
 from backend.core.fairways import rasterize_fairway_weights, load_fairways_geojson
+from backend.core.export import export_to_gpx, export_to_rtz
 
 app = FastAPI(
     title="SeaPath ECDIS Engine",
@@ -98,6 +99,15 @@ class RouteRequest(BaseModel):
     ukc: float = Field(..., ge=0.0, description="Required under-keel clearance margin in meters")
     turning_radius_m: float = Field(default=150.0, ge=10.0, description="Minimum vessel turning radius in meters")
     fairway_preference: float = Field(default=1.0, ge=0.0, le=1.0, description="Navigational fairway attraction factor (0.0=neutral, 1.0=prioritize fairways)")
+
+
+class ExportRouteRequest(BaseModel):
+    waypoints: List[Dict[str, Any]]
+    route: List[List[float]] = Field(default_factory=list)
+    draft: float = 1.2
+    speed_knots: float = 10.0
+    ukc: float = 0.5
+    route_name: Optional[str] = "SeaPath_Passage_Plan"
 
 
 # ---------------------------------------------------------------------------
@@ -217,6 +227,41 @@ def calculate_route(req: RouteRequest):
         "profile": result["profile"],
         "waypoints": result.get("waypoints", []),
     }
+
+
+@app.post("/api/export/gpx")
+def export_gpx(req: ExportRouteRequest):
+    """Generates and downloads standard GPX 1.1 file for GPS and marine chart plotters."""
+    xml_content = export_to_gpx(
+        waypoints=req.waypoints,
+        route_coords=req.route,
+        draft=req.draft,
+        speed_knots=req.speed_knots,
+        ukc=req.ukc,
+        route_name=req.route_name or "SeaPath_Passage_Plan",
+    )
+    return Response(
+        content=xml_content,
+        media_type="application/gpx+xml",
+        headers={"Content-Disposition": f"attachment; filename={req.route_name or 'passage_plan'}.gpx"},
+    )
+
+
+@app.post("/api/export/rtz")
+def export_rtz(req: ExportRouteRequest):
+    """Generates and downloads standard RTZ 1.1 (IEC 61174) XML for commercial ECDIS systems."""
+    xml_content = export_to_rtz(
+        waypoints=req.waypoints,
+        draft=req.draft,
+        speed_knots=req.speed_knots,
+        ukc=req.ukc,
+        route_name=req.route_name or "SeaPath_Passage_Plan",
+    )
+    return Response(
+        content=xml_content,
+        media_type="application/xml",
+        headers={"Content-Disposition": f"attachment; filename={req.route_name or 'passage_plan'}.rtz"},
+    )
 
 
 # ---------------------------------------------------------------------------

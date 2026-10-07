@@ -75,8 +75,45 @@
 
     <div id="map"></div>
 
-    <div id="chart-panel">
-        <canvas id="depth-chart"></canvas>
+    <div id="bottom-drawer">
+        <div class="drawer-header">
+            <div class="drawer-tabs">
+                <button class="drawer-tab active" id="tab-profile-btn">📊 Bathymetric Profile</button>
+                <button class="drawer-tab" id="tab-waypoints-btn">📋 Passage Plan (<span id="wp-badge">0 WP</span>)</button>
+            </div>
+            <div class="drawer-actions" id="export-actions" style="display: none;">
+                <button class="export-btn" id="export-gpx-btn" title="Export standard GPX route">⬇ GPX</button>
+                <button class="export-btn" id="export-rtz-btn" title="Export IEC 61174 RTZ route for ECDIS">⬇ RTZ (ECDIS)</button>
+                <button class="drawer-toggle-btn" id="drawer-close-btn" title="Close Panel">✕</button>
+            </div>
+        </div>
+        <div class="drawer-content">
+            <div class="tab-pane active" id="pane-profile">
+                <canvas id="depth-chart"></canvas>
+            </div>
+            <div class="tab-pane" id="pane-waypoints">
+                <div class="table-scroll">
+                    <table class="ecdis-table" id="passage-plan-table">
+                        <thead>
+                            <tr>
+                                <th>WP</th>
+                                <th>Latitude</th>
+                                <th>Longitude</th>
+                                <th>Course (°T)</th>
+                                <th>Dist (NM)</th>
+                                <th>Turn (°)</th>
+                                <th>Radius (m)</th>
+                                <th>Depth (m)</th>
+                                <th>UKC (m)</th>
+                            </tr>
+                        </thead>
+                        <tbody id="waypoints-tbody">
+                            <!-- Injected dynamically -->
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
     </div>
 
     <script src="app.js"></script>
