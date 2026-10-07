@@ -92,12 +92,8 @@ const hudWpEta = document.getElementById('hud-wp-eta');
 const simAlarmBanner = document.getElementById('sim-alarm-banner');
 
 // Элементы плавающей панели ECDIS Topbar
-const topbarClearRouteBtn = document.getElementById('topbar-clear-route');
 const topbarAddWpBtn = document.getElementById('topbar-add-wp');
 const toolEblVrmBtn = document.getElementById('tool-ebl-vrm');
-const themeToggleBtn = document.getElementById('theme-toggle-btn');
-const themeStatusTag = document.getElementById('theme-status-tag');
-const soundToggleBtn = document.getElementById('sound-toggle-btn');
 const hudCursorCoords = document.getElementById('hud-cursor-coords');
 const hudCursorDepth = document.getElementById('hud-cursor-depth');
 
@@ -113,63 +109,7 @@ const eblSpdRef = document.getElementById('ebl-spd-ref');
 const eblPromptText = document.getElementById('ebl-prompt-text');
 
 // -----------------------------------------------------------------------------
-// Звуковая сигнализация эхолота и опасных глубин (Web Audio API)
-// -----------------------------------------------------------------------------
-class MarineAudioAlerts {
-    constructor() {
-        this.ctx = null;
-        this.enabled = true;
-    }
-    init() {
-        if (!this.ctx) {
-            const AudioCtx = window.AudioContext || window.webkitAudioContext;
-            if (AudioCtx) this.ctx = new AudioCtx();
-        }
-        if (this.ctx && this.ctx.state === 'suspended') {
-            this.ctx.resume();
-        }
-    }
-    playSonarPing() {
-        if (!this.enabled) return;
-        this.init();
-        if (!this.ctx) return;
-        try {
-            const osc = this.ctx.createOscillator();
-            const gain = this.ctx.createGain();
-            osc.type = 'sine';
-            osc.frequency.setValueAtTime(880, this.ctx.currentTime);
-            osc.frequency.exponentialRampToValueAtTime(440, this.ctx.currentTime + 0.18);
-            gain.gain.setValueAtTime(0.12, this.ctx.currentTime);
-            gain.gain.exponentialRampToValueAtTime(0.001, this.ctx.currentTime + 0.22);
-            osc.connect(gain);
-            gain.connect(this.ctx.destination);
-            osc.start();
-            osc.stop(this.ctx.currentTime + 0.25);
-        } catch (_) {}
-    }
-    playShallowAlarm() {
-        if (!this.enabled) return;
-        this.init();
-        if (!this.ctx) return;
-        try {
-            const now = this.ctx.currentTime;
-            [0, 0.14].forEach((offset, idx) => {
-                const osc = this.ctx.createOscillator();
-                const gain = this.ctx.createGain();
-                osc.type = 'triangle';
-                osc.frequency.setValueAtTime(idx === 0 ? 660 : 880, now + offset);
-                gain.gain.setValueAtTime(0.20, now + offset);
-                gain.gain.exponentialRampToValueAtTime(0.001, now + offset + 0.12);
-                osc.connect(gain);
-                gain.connect(this.ctx.destination);
-                osc.start(now + offset);
-                osc.stop(now + offset + 0.14);
-            });
-        } catch (_) {}
-    }
-}
-const marineAudio = new MarineAudioAlerts();
-// -----------------------------------------------------------------------------
+// 3. Пресеты судов и состояние навигации
 const VESSEL_PROFILES = {
     yacht: { draft: 1.2, speed: 10, ukc: 0.5, radius: 50, cb: 0.50 },
     ferry: { draft: 4.5, speed: 18, ukc: 1.0, radius: 250, cb: 0.65 },
@@ -1060,9 +1000,6 @@ function updateEblVrm(targetCoords) {
 if (clearRouteBtn) {
     clearRouteBtn.addEventListener('click', clearRouteData);
 }
-if (topbarClearRouteBtn) {
-    topbarClearRouteBtn.addEventListener('click', clearRouteData);
-}
 
 function toggleAddWaypointMode() {
     isAddingViaMode = !isAddingViaMode;
@@ -1086,24 +1023,6 @@ if (topbarAddWpBtn) topbarAddWpBtn.addEventListener('click', toggleAddWaypointMo
 
 if (toolEblVrmBtn) toolEblVrmBtn.addEventListener('click', toggleEblVrmMode);
 if (eblCloseBtn) eblCloseBtn.addEventListener('click', closeEblVrm);
-
-if (themeToggleBtn) {
-    themeToggleBtn.addEventListener('click', () => {
-        const isDay = document.body.classList.toggle('ecdis-day-mode');
-        themeToggleBtn.innerText = isDay ? '🌓 Режим: День' : '🌓 Режим: Ночь';
-        if (themeStatusTag) {
-            themeStatusTag.innerText = isDay ? 'ДЕНЬ' : 'НОЧЬ';
-        }
-    });
-}
-
-if (soundToggleBtn) {
-    soundToggleBtn.addEventListener('click', () => {
-        marineAudio.enabled = !marineAudio.enabled;
-        soundToggleBtn.innerText = marineAudio.enabled ? '🔔 Звук: Вкл' : '🔕 Звук: Выкл';
-        soundToggleBtn.style.opacity = marineAudio.enabled ? '1.0' : '0.6';
-    });
-}
 
 window.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
@@ -1577,10 +1496,6 @@ let simState = {
     vesselMarker: null
 };
 
-function playBridgeChime() {
-    marineAudio.playShallowAlarm();
-}
-
 function initVesselSimulatorMarker() {
     if (simState.vesselMarker) return simState.vesselMarker;
     const el = document.createElement('div');
@@ -1739,7 +1654,6 @@ function updateSimulatorHUD(distM) {
                 Поворот на ${nextWp.rot_deg_min > 0 ? 'Правый' : 'Левый'} борт (${nextWp.leg_bearing_deg}°T) —
                 Угловая скорость ROT: <b>${Math.abs(nextWp.rot_deg_min)}°/мин</b> (Радиус: ${nextWp.turn_radius_m}м)
             `;
-            playBridgeChime();
         } else if (simAlarmBanner && !isApproachingWop) {
             simAlarmBanner.style.display = 'none';
         }
