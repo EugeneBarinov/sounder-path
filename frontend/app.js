@@ -26,6 +26,8 @@ const speedSlider = document.getElementById('speed-slider');
 const speedVal = document.getElementById('speed-val');
 const ukcSlider = document.getElementById('ukc-slider');
 const ukcVal = document.getElementById('ukc-val');
+const radiusSlider = document.getElementById('radius-slider');
+const radiusVal = document.getElementById('radius-val');
 
 const dynDraftVal = document.getElementById('dynamic-draft-val');
 const dangerVal = document.getElementById('danger-val');
@@ -40,15 +42,16 @@ const vesselSelect = document.getElementById('vessel-profile');
 // Vessel Profiles
 // -----------------------------------------------------------------------------
 const VESSEL_PROFILES = {
-    yacht: { draft: 1.2, speed: 10, ukc: 0.5 },
-    ferry: { draft: 4.5, speed: 18, ukc: 1.0 },
-    cargo: { draft: 10.0, speed: 12, ukc: 2.0 }
+    yacht: { draft: 1.2, speed: 10, ukc: 0.5, radius: 50 },
+    ferry: { draft: 4.5, speed: 18, ukc: 1.0, radius: 250 },
+    cargo: { draft: 10.0, speed: 12, ukc: 2.0, radius: 500 }
 };
 
 // State
 let draft = parseFloat(draftSlider.value);
 let speedKnots = parseFloat(speedSlider.value);
 let baseUkc = parseFloat(ukcSlider.value);
+let turningRadius = radiusSlider ? parseFloat(radiusSlider.value) : 50.0;
 let dynamicSquat = 0.0;
 
 let startPoint = null;
@@ -155,14 +158,17 @@ if (vesselSelect) {
             draftSlider.value = profile.draft;
             speedSlider.value = profile.speed;
             ukcSlider.value = profile.ukc;
+            if (radiusSlider) radiusSlider.value = profile.radius;
 
             draft = profile.draft;
             speedKnots = profile.speed;
             baseUkc = profile.ukc;
+            turningRadius = profile.radius;
 
             draftVal.innerText = draft.toFixed(1) + 'm';
             speedVal.innerText = speedKnots + ' kts';
             ukcVal.innerText = baseUkc.toFixed(1) + 'm';
+            if (radiusVal) radiusVal.innerText = Math.round(turningRadius) + 'm';
 
             updateVesselPhysics();
             if (startPoint && goalPoint) {
@@ -195,6 +201,14 @@ if (vesselSelect) {
         markCustomProfile();
         updateVesselPhysics();
     });
+
+    if (radiusSlider) {
+        radiusSlider.addEventListener('input', (e) => {
+            turningRadius = parseFloat(e.target.value);
+            if (radiusVal) radiusVal.innerText = Math.round(turningRadius) + 'm';
+            markCustomProfile();
+        });
+    }
 }
 
 // -----------------------------------------------------------------------------
@@ -293,7 +307,8 @@ window.calculateRoute = async function () {
             goal_lat: goalPoint[1],
             draft: draft,
             speed_knots: speedKnots,
-            ukc: baseUkc
+            ukc: baseUkc,
+            turning_radius_m: turningRadius
         };
 
         const res = await fetch('/api/route', {

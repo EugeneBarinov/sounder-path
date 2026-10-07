@@ -38,6 +38,16 @@ def haversine_distance_m(lat1: float, lon1: float, lat2: float, lon2: float) -> 
     return r * c
 
 
+def calculate_bearing_deg(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Calculate initial geodetic bearing (true course) in degrees [0, 360)."""
+    phi1, phi2 = math.radians(lat1), math.radians(lat2)
+    dlambda = math.radians(lon2 - lon1)
+    y = math.sin(dlambda) * math.cos(phi2)
+    x = math.cos(phi1) * math.sin(phi2) - math.sin(phi1) * math.cos(phi2) * math.cos(dlambda)
+    brg = math.degrees(math.atan2(y, x))
+    return (brg + 360.0) % 360.0
+
+
 def _heuristic(r1: int, c1: int, r2: int, c2: int) -> float:
     """Euclidean distance heuristic for uniform grid cells."""
     return math.hypot(r1 - r2, c1 - c2)
@@ -105,6 +115,7 @@ class Router:
         draft: float,
         speed_knots: float,
         ukc: float,
+        turning_radius_m: float = 150.0,
     ) -> Optional[Dict[str, Any]]:
         """
         Compute optimal safe passage plan using constrained A* search.
@@ -131,7 +142,9 @@ class Router:
             closed_set.add((r, c))
 
             if r == goal_r and c == goal_c:
-                return self._build_result(came_from, r, c, dynamic_draft, ukc, min_depth)
+                return self._build_result(
+                    came_from, r, c, dynamic_draft, ukc, min_depth, speed_knots, turning_radius_m
+                )
 
             for dr, dc, base_cost in _DIRECTIONS:
                 nr, nc = r + dr, c + dc
@@ -200,6 +213,8 @@ class Router:
         dynamic_draft: float,
         ukc: float,
         min_depth: float,
+        speed_knots: float,
+        turning_radius_m: float,
     ) -> Dict[str, Any]:
         """Reconstruct waypoints, compute geodetic distances, and build depth soundings profile."""
         raw_path: List[Tuple[int, int]] = []
@@ -256,13 +271,56 @@ class Router:
                 })
 
         distance_nm = total_distance_m / 1852.0
+        eta_hours = (distance_nm / speed_knots) if speed_knots > 0.0 else None
+
+        # Build structured passage plan waypoints
+        waypoints: List[Dict[str, Any]] = []
+        n_wp = len(path)
+        for i in range(n_wp):
+            r, c = path[i]
+            lat, lon = self.grid.get_cell_coords(r, c)
+            depth = float(self.grid.depths[r, c])
+            clearance = depth - dynamic_draft - ukc
+
+            leg_bearing = 0.0
+            leg_dist_nm = 0.0
+            if i < n_wp - 1:
+                r_next, c_next = path[i + 1]
+                lat_next, lon_next = self.grid.get_cell_coords(r_next, c_next)
+                leg_bearing = calculate_bearing_deg(lat, lon, lat_next, lon_next)
+                leg_dist_nm = haversine_distance_m(lat, lon, lat_next, lon_next) / 1852.0
+
+            turn_angle = 0.0
+            turn_radius = 0.0
+            if 0 < i < n_wp - 1:
+                r_prev, c_prev = path[i - 1]
+                lat_prev, lon_prev = self.grid.get_cell_coords(r_prev, c_prev)
+                brg_in = calculate_bearing_deg(lat_prev, lon_prev, lat, lon)
+                brg_out = leg_bearing
+                diff = (brg_out - brg_in + 180.0) % 360.0 - 180.0
+                turn_angle = abs(diff)
+                if turn_angle >= 4.0:
+                    turn_radius = turning_radius_m
+
+            waypoints.append({
+                "lat": round(lat, 6),
+                "lon": round(lon, 6),
+                "leg_bearing_deg": round(leg_bearing, 1),
+                "leg_distance_nm": round(leg_dist_nm, 2),
+                "turn_angle_deg": round(turn_angle, 1),
+                "turn_radius_m": round(turn_radius, 1),
+                "depth_m": round(depth, 1),
+                "clearance_m": round(clearance, 1),
+            })
 
         return {
             "route": coordinates,
             "profile": profile,
+            "waypoints": waypoints,
             "diagnostics": {
                 "distance_m": round(total_distance_m, 0),
                 "distance_nm": round(distance_nm, 2),
+                "eta_hours": round(eta_hours, 2) if eta_hours is not None else None,
                 "min_clearance_m": round(min_clearance, 2),
                 "dynamic_draft_m": round(dynamic_draft, 2),
                 "waypoints": len(path),

@@ -60,7 +60,20 @@ if _LOCAL_SURVEY_CSV.exists():
     full_grid.fuse_csv_data(_LOCAL_SURVEY_CSV)
 
 print(f"Grid active: Full resolution {full_grid.rows}x{full_grid.cols} | Routing {routing_grid.rows}x{routing_grid.cols}")
-router = Router(routing_grid)
+
+try:
+    import seapath_native
+    native_grid = seapath_native.NativeGrid(
+        routing_grid.rows, routing_grid.cols,
+        routing_grid.lat_min, routing_grid.lat_max,
+        routing_grid.lon_min, routing_grid.lon_max,
+        routing_grid.depths
+    )
+    router = seapath_native.NativeRouter(native_grid)
+    print("[ROUTER] Activated high-performance C++ native navigation core (seapath_native)")
+except Exception as _err:
+    router = Router(routing_grid)
+    print(f"[ROUTER] Running Python reference router ({_err})")
 
 # ---------------------------------------------------------------------------
 # Models
@@ -73,6 +86,7 @@ class RouteRequest(BaseModel):
     draft: float = Field(..., gt=0.0, description="Static ship draft in meters")
     speed_knots: float = Field(..., ge=0.0, description="Planned vessel speed in knots")
     ukc: float = Field(..., ge=0.0, description="Required under-keel clearance margin in meters")
+    turning_radius_m: float = Field(default=150.0, ge=10.0, description="Minimum vessel turning radius in meters")
 
 
 # ---------------------------------------------------------------------------
@@ -165,6 +179,7 @@ def calculate_route(req: RouteRequest):
         draft=req.draft,
         speed_knots=req.speed_knots,
         ukc=req.ukc,
+        turning_radius_m=req.turning_radius_m,
     )
 
     if result is None:
@@ -182,6 +197,7 @@ def calculate_route(req: RouteRequest):
             "coordinates": result["route"],
         },
         "profile": result["profile"],
+        "waypoints": result.get("waypoints", []),
     }
 
 
