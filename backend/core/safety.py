@@ -106,6 +106,7 @@ def verify_ecdis_route_safety(
     dynamic_draft_m: Optional[float] = None,
     corridor_feature: Optional[Dict[str, Any]] = None,
     grid: Optional[Any] = None,
+    requested_radius_m: Optional[float] = None,
 ) -> Dict[str, Any]:
     """
     Automated ECDIS Route Checking per IEC 61174:2015.
@@ -113,8 +114,9 @@ def verify_ecdis_route_safety(
     1. Safety Contour violations (Depth < Dynamic Draft + UKC).
     2. Critical UKC warnings (Clearance < 0.35m margin).
     3. Maximum Rate of Turn (ROT) feasibility based on vessel speed.
-    4. Proximity to military / ecological restricted zones (RESARE).
-    5. Cross-track safety corridor (XTD) boundary penetration into shoals.
+    4. Turning radius leg constraints against vessel minimum radius.
+    5. Proximity to military / ecological restricted zones (RESARE).
+    6. Cross-track safety corridor (XTD) boundary penetration into shoals.
     """
     alarms: List[Dict[str, Any]] = []
     safety_depth = min_chart_depth_m if min_chart_depth_m is not None else (draft + dynamic_squat + ukc)
@@ -173,24 +175,46 @@ def verify_ecdis_route_safety(
                 "waypoint_index": idx,
             })
 
-    # 3. Cross-Track Safety Corridor (XTD) Boundary Penetration Check
-    if corridor_feature and grid:
+        if requested_radius_m is not None and requested_radius_m > 10.0 and turn >= 5.0:
+            actual_r = wp.get("turn_radius_m", requested_radius_m)
+            if actual_r < requested_radius_m * 0.85:
+                alarms.append({
+                    "severity": "WARNING",
+                    "code": "ALM-05-RADIUS-RESTRICTION",
+                    "title": f"Turn Radius Restriction at WP{idx}",
+                    "detail": (
+                        f"Available leg length restricts effective turning radius to {actual_r:.0f}m "
+                        f"(below commanded vessel minimum {requested_radius_m:.0f}m). "
+                        f"Ship maneuvering envelope may be exceeded."
+                    ),
+                    "waypoint_index": idx,
+                })
+
+    # 3. Continuous Cross-Track Safety Corridor (XTD) Perimeter Scanning
+    if corridor_feature and grid and hasattr(grid, "lonlat_to_cell") and hasattr(grid, "sample_depth_along_segment"):
         ring = corridor_feature.get("geometry", {}).get("coordinates", [[]])[0]
-        for pt in ring:
-            lon_c, lat_c = pt[0], pt[1]
-            if hasattr(grid, "lonlat_to_cell") and hasattr(grid, "get_depth"):
-                r_c, c_c = grid.lonlat_to_cell(lon_c, lat_c)
-                d_c = grid.get_depth(r_c, c_c)
-                if d_c <= safety_depth or grid.is_restricted(r_c, c_c):
+        hazard_found = False
+        for k in range(len(ring) - 1):
+            if hazard_found:
+                break
+            p0 = ring[k]
+            p1 = ring[k + 1]
+            r0, c0 = grid.lonlat_to_cell(p0[0], p0[1])
+            r1, c1 = grid.lonlat_to_cell(p1[0], p1[1])
+            edge_depths = grid.sample_depth_along_segment(r0, c0, r1, c1)
+            for d_edge in edge_depths:
+                if d_edge <= safety_depth:
                     alarms.append({
                         "severity": "WARNING",
                         "code": "ALM-04-XTD-CORRIDOR-HAZARD",
                         "title": "Safety Corridor Boundary Shoal / Hazard",
                         "detail": (
-                            f"Cross-track limit (XTD) intersects shallow water ({d_c:.1f}m <= {safety_depth:.1f}m) "
-                            f"or restricted zone at ({lon_c:.3f}, {lat_c:.3f}). Consider reducing XTD width."
+                            f"Continuous cross-track boundary (XTD) intersects shoal ({d_edge:.1f}m <= {safety_depth:.1f}m) "
+                            f"along segment between ({p0[0]:.3f}, {p0[1]:.3f}) and ({p1[0]:.3f}, {p1[1]:.3f}). "
+                            f"Consider reducing XTD width."
                         ),
                     })
+                    hazard_found = True
                     break
 
     # 3. Overall ECDIS Status Assessment

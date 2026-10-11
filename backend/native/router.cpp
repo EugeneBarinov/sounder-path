@@ -7,6 +7,7 @@ struct PQNode {
     float g;
     int32_t r;
     int32_t c;
+    uint8_t dir; // 0..7 incoming direction, 8 for start node
 
     bool operator>(const PQNode& other) const {
         return f > other.f;
@@ -15,7 +16,8 @@ struct PQNode {
 
 NativeRouter::NativeRouter(std::shared_ptr<NativeGrid> g)
     : grid(g), current_run(1) {
-    size_t total = static_cast<size_t>(grid->rows) * static_cast<size_t>(grid->cols);
+    // 3D State Lattice: 8 discrete incoming headings + 1 start state (9 states per cell)
+    size_t total = static_cast<size_t>(grid->rows) * static_cast<size_t>(grid->cols) * 9;
     g_cost.resize(total, std::numeric_limits<float>::infinity());
     came_from.resize(total, -1);
     run_id.resize(total, 0);
@@ -67,10 +69,6 @@ NativeRouteResult NativeRouter::find_path(
     result.success = false;
 
     // -- Шаг 0. Защита от выхода за сетку ----------------------------------
-    // Что делаем: проверяем, что старт и финиш внутри [0,rows)x[0,cols).
-    // Зачем: раньше OOB-индексы уходили в start_idx/goal_idx (size_t) и давали
-    // чтение чужой памяти / падение. Теперь сразу возвращаем success=false,
-    // Python-биндинг превратит это в None → API вернёт 400, а не 500.
     int rows = grid->rows;
     int cols = grid->cols;
     if (start_r < 0 || start_r >= rows || start_c < 0 || start_c >= cols ||
@@ -79,15 +77,9 @@ NativeRouteResult NativeRouter::find_path(
     }
 
     // -- Шаг 1. Бюджет глубины: канон снаружи или legacy внутри -------------
-    // Каноническая ветка: gateway уже посчитал min_chart_depth =
-    // draft+squat+heel+wave+effective_ukc. Роутер — чистый исполнитель.
-    // Legacy-ветка (оба NaN): считаем сами только squat по Баррассу,
-    // h/T=(draft+ukc)/draft — как было до унификации.
     double dynamic_draft;
     float min_depth;
     if (!std::isnan(min_chart_depth_m) && !std::isnan(dynamic_draft_m)) {
-        // Canonical budget from Python gateway (dukc.compute_search_budget):
-        // min_chart_depth already includes squat + heel + wave + effective UKC.
         dynamic_draft = dynamic_draft_m;
         min_depth = static_cast<float>(min_chart_depth_m);
     } else {
@@ -112,12 +104,13 @@ NativeRouteResult NativeRouter::find_path(
 
     std::priority_queue<PQNode, std::vector<PQNode>, std::greater<PQNode>> open_heap;
 
-    size_t start_idx = static_cast<size_t>(start_r) * cols + start_c;
-    g_cost[start_idx] = 0.0f;
-    came_from[start_idx] = -1;
-    run_id[start_idx] = current_run;
+    // Start state: cell (start_r, start_c), incoming heading index 8 (omnidirectional start)
+    size_t start_state = (static_cast<size_t>(start_r) * cols + start_c) * 9 + 8;
+    g_cost[start_state] = 0.0f;
+    came_from[start_state] = -1;
+    run_id[start_state] = current_run;
 
-    open_heap.push({0.0f, 0.0f, start_r, start_c});
+    open_heap.push({0.0f, 0.0f, start_r, start_c, 8});
 
     static const struct { int dr; int dc; float cost; } DIRS[8] = {
         {-1,  0, 1.0f},
@@ -131,30 +124,30 @@ NativeRouteResult NativeRouter::find_path(
     };
 
     bool reached_goal = false;
-    size_t goal_idx = static_cast<size_t>(goal_r) * cols + goal_c;
+    int32_t final_goal_state = -1;
 
     while (!open_heap.empty()) {
         PQNode curr = open_heap.top();
         open_heap.pop();
 
-        size_t curr_idx = static_cast<size_t>(curr.r) * cols + curr.c;
+        size_t curr_state = (static_cast<size_t>(curr.r) * cols + curr.c) * 9 + curr.dir;
 
-        if (curr.g > g_cost[curr_idx]) {
+        if (curr.g > g_cost[curr_state]) {
             continue;
         }
 
         if (curr.r == goal_r && curr.c == goal_c) {
             reached_goal = true;
+            final_goal_state = static_cast<int32_t>(curr_state);
             break;
         }
 
         // Kinematic vector of incoming motion
-        int32_t prev_idx = came_from[curr_idx];
+        bool has_incoming_dir = (curr.dir < 8);
         int in_dr = 0, in_dc = 0;
-        bool has_prev = (prev_idx != -1);
-        if (has_prev) {
-            in_dr = curr.r - (prev_idx / cols);
-            in_dc = curr.c - (prev_idx % cols);
+        if (has_incoming_dir) {
+            in_dr = DIRS[curr.dir].dr;
+            in_dc = DIRS[curr.dir].dc;
         }
 
         for (int i = 0; i < 8; ++i) {
@@ -175,8 +168,8 @@ NativeRouteResult NativeRouter::find_path(
                 }
             }
 
-            size_t n_idx = static_cast<size_t>(nr) * cols + nc;
-            float depth = grid->depths[n_idx];
+            size_t n_cell_idx = static_cast<size_t>(nr) * cols + nc;
+            float depth = grid->depths[n_cell_idx];
 
             if (depth <= min_depth) {
                 continue;
@@ -194,13 +187,13 @@ NativeRouteResult NativeRouter::find_path(
             float shallow_penalty = 8.0f / clearance;
             float deep_penalty = (depth > 150.0f) ? ((depth - 150.0f) / 100.0f) * 2.0f : 0.0f;
 
-            // Heading Alteration Penalty (Ship Kinematics)
+            // Heading Alteration Penalty (Ship Kinematics in State Lattice)
             float heading_penalty = 0.0f;
-            if (has_prev) {
+            if (has_incoming_dir) {
                 int out_dr = DIRS[i].dr;
                 int out_dc = DIRS[i].dc;
                 float dot = static_cast<float>(in_dr * out_dr + in_dc * out_dc);
-                float mag1 = std::hypot(static_cast<float>(in_dr), static_cast<float>(in_dc));
+                float mag1 = DIRS[curr.dir].cost;
                 float mag2 = DIRS[i].cost;
                 float cos_theta = dot / (mag1 * mag2);
 
@@ -216,14 +209,16 @@ NativeRouteResult NativeRouter::find_path(
             float step_cost = (DIRS[i].cost * (1.0f + shallow_penalty + deep_penalty) * fairway_w) + heading_penalty;
             float g_new = curr.g + step_cost;
 
-            if (run_id[n_idx] != current_run || g_new < g_cost[n_idx]) {
-                run_id[n_idx] = current_run;
-                g_cost[n_idx] = g_new;
-                came_from[n_idx] = static_cast<int32_t>(curr_idx);
+            size_t n_state = n_cell_idx * 9 + static_cast<size_t>(i);
+
+            if (run_id[n_state] != current_run || g_new < g_cost[n_state]) {
+                run_id[n_state] = current_run;
+                g_cost[n_state] = g_new;
+                came_from[n_state] = static_cast<int32_t>(curr_state);
 
                 // Admissible heuristic scaled by minimum possible fairway discount (0.30)
                 float h = 0.30f * std::hypot(static_cast<float>(nr - goal_r), static_cast<float>(nc - goal_c));
-                open_heap.push({g_new + h, g_new, nr, nc});
+                open_heap.push({g_new + h, g_new, nr, nc, static_cast<uint8_t>(i)});
             }
         }
     }
@@ -232,13 +227,14 @@ NativeRouteResult NativeRouter::find_path(
         return result;
     }
 
-    // 1. Reconstruct raw discrete path
+    // 1. Reconstruct raw discrete path from final state lattice node
     std::vector<std::pair<int, int>> raw_path;
-    int32_t curr_pos = static_cast<int32_t>(goal_idx);
+    int32_t curr_pos = final_goal_state;
 
     while (curr_pos != -1) {
-        int r = curr_pos / cols;
-        int c = curr_pos % cols;
+        size_t cell_idx = static_cast<size_t>(curr_pos) / 9;
+        int r = static_cast<int>(cell_idx / cols);
+        int c = static_cast<int>(cell_idx % cols);
         raw_path.push_back({r, c});
         curr_pos = came_from[curr_pos];
     }
@@ -382,58 +378,62 @@ NativeRouteResult NativeRouter::find_path(
                 double safe_t_dist = std::min(tangent_dist, max_t_dist);
                 double effective_r = safe_t_dist / tan_half;
 
-                // Entry and exit tangent points
-                double t1_x = u1_x * safe_t_dist, t1_y = u1_y * safe_t_dist;
-                double t2_x = u2_x * safe_t_dist, t2_y = u2_y * safe_t_dist;
+                // Ship maneuvering safety: only generate fillet arc if available leg distance
+                // permits at least 85% of commanded turning radius (IMO Res. MSC.137(76)).
+                if (safe_t_dist >= tangent_dist * 0.85) {
+                    // Entry and exit tangent points
+                    double t1_x = u1_x * safe_t_dist, t1_y = u1_y * safe_t_dist;
+                    double t2_x = u2_x * safe_t_dist, t2_y = u2_y * safe_t_dist;
 
-                // Arc center
-                double bisect_x = u1_x + u2_x, bisect_y = u1_y + u2_y;
-                double bisect_len = std::hypot(bisect_x, bisect_y);
-                if (bisect_len > 0.001) {
-                    double bx = bisect_x / bisect_len;
-                    double by = bisect_y / bisect_len;
-                    double center_dist = effective_r / std::sin(gamma / 2.0);
-                    double cx = bx * center_dist;
-                    double cy = by * center_dist;
+                    // Arc center
+                    double bisect_x = u1_x + u2_x, bisect_y = u1_y + u2_y;
+                    double bisect_len = std::hypot(bisect_x, bisect_y);
+                    if (bisect_len > 0.001) {
+                        double bx = bisect_x / bisect_len;
+                        double by = bisect_y / bisect_len;
+                        double center_dist = effective_r / std::sin(gamma / 2.0);
+                        double cx = bx * center_dist;
+                        double cy = by * center_dist;
 
-                    // Dense interpolation (12 points) along the turning arc
-                    std::vector<std::pair<double, double>> arc_geo_points;
-                    bool arc_safe = true;
+                        // Dense continuous interpolation (24 steps) along the turning arc
+                        std::vector<std::pair<double, double>> arc_geo_points;
+                        bool arc_safe = true;
 
-                    for (int step = 0; step <= 12; ++step) {
-                        double t = static_cast<double>(step) / 12.0;
-                        // Linear blend from T1 to T2 projected from Center C
-                        double chord_x = t1_x + (t2_x - t1_x) * t;
-                        double chord_y = t1_y + (t2_y - t1_y) * t;
-                        double rad_x = chord_x - cx;
-                        double rad_y = chord_y - cy;
-                        double rad_len = std::hypot(rad_x, rad_y);
+                        for (int step = 0; step <= 24; ++step) {
+                            double t = static_cast<double>(step) / 24.0;
+                            // Linear blend from T1 to T2 projected from Center C
+                            double chord_x = t1_x + (t2_x - t1_x) * t;
+                            double chord_y = t1_y + (t2_y - t1_y) * t;
+                            double rad_x = chord_x - cx;
+                            double rad_y = chord_y - cy;
+                            double rad_len = std::hypot(rad_x, rad_y);
 
-                        double px = cx + (rad_x / rad_len) * effective_r;
-                        double py = cy + (rad_y / rad_len) * effective_r;
+                            double px = cx + (rad_x / rad_len) * effective_r;
+                            double py = cy + (rad_y / rad_len) * effective_r;
 
-                        double pt_lat = lat_i + py / m_per_deg_lat;
-                        double pt_lon = lon_i + px / m_per_deg_lon;
+                            double pt_lat = lat_i + py / m_per_deg_lat;
+                            double pt_lon = lon_i + px / m_per_deg_lon;
 
-                        // Check bathymetric and navigational safety of arc point
-                        int cell_r = static_cast<int>((grid->lat_max - pt_lat) / ((grid->lat_max - grid->lat_min) / rows));
-                        int cell_c = static_cast<int>((pt_lon - grid->lon_min) / ((grid->lon_max - grid->lon_min) / cols));
-                        if (cell_r < 0 || cell_r >= rows || cell_c < 0 || cell_c >= cols) {
-                            arc_safe = false; // Point leaves grid bounds
-                            break;
+                            // Check bathymetric and navigational safety of arc point
+                            int cell_r = static_cast<int>((grid->lat_max - pt_lat) / ((grid->lat_max - grid->lat_min) / rows));
+                            int cell_c = static_cast<int>((pt_lon - grid->lon_min) / ((grid->lon_max - grid->lon_min) / cols));
+                            if (cell_r < 0 || cell_r >= rows || cell_c < 0 || cell_c >= cols) {
+                                arc_safe = false; // Point leaves grid bounds
+                                break;
+                            }
+                            if (grid->depths[cell_r * cols + cell_c] <= min_depth || grid->is_restricted(cell_r, cell_c)) {
+                                arc_safe = false;
+                                break;
+                            }
+                            arc_geo_points.push_back({pt_lon, pt_lat});
                         }
-                        if (grid->depths[cell_r * cols + cell_c] <= min_depth || grid->is_restricted(cell_r, cell_c)) {
-                            arc_safe = false;
-                            break;
-                        }
-                        arc_geo_points.push_back({pt_lon, pt_lat});
-                    }
 
-                    if (arc_safe) {
-                        for (const auto& ap : arc_geo_points) {
-                            result.route_coordinates.push_back(ap);
+                        if (arc_safe) {
+                            for (const auto& ap : arc_geo_points) {
+                                result.route_coordinates.push_back(ap);
+                            }
+                            continue;
                         }
-                        continue;
                     }
                 }
             }

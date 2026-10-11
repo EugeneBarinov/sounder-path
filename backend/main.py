@@ -487,6 +487,7 @@ def calculate_route(req: RouteRequest):
         dynamic_draft_m=search_dynamic_draft,
         corridor_feature=corridor_feature,
         grid=routing_grid,
+        requested_radius_m=req.turning_radius_m,
     )
 
     # 4. Bottleneck & Choke Point Analysis + Speed Adaptation Advisory

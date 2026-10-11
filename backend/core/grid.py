@@ -265,7 +265,14 @@ class BathymetricGrid:
                 c = int((lon - self.lon_min) / lon_step)
 
                 if 0 <= r < self.rows and 0 <= c < self.cols:
-                    self.depths[r, c] = depth
+                    curr_d = float(self.depths[r, c])
+                    # IHO S-44 Shoal-bias safety rule:
+                    # In navigable water, retain the shallower (more hazardous) depth to prevent grounding.
+                    # In zero-depth/land cells, allow surveyed dredged channel soundings to establish navigable path.
+                    if curr_d > 0.0 and depth > 0.0:
+                        self.depths[r, c] = min(curr_d, depth)
+                    else:
+                        self.depths[r, c] = depth
 
     def to_geojson(self) -> Dict[str, Any]:
         """Export grid boundary coverage as a GeoJSON FeatureCollection."""

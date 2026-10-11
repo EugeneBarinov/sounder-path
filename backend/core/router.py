@@ -188,25 +188,33 @@ class Router:
         ):
             return None
 
-        # Priority queue entries: (f_score, g_score, row, col)
-        open_heap: List[Tuple[float, float, int, int]] = []
-        heapq.heappush(open_heap, (0.0, 0.0, start_r, start_c))
+        # Priority queue entries: (f_score, g_score, row, col, dir_idx)
+        # dir_idx = 8 represents the start state without incoming heading
+        open_heap: List[Tuple[float, float, int, int, int]] = []
+        start_state = (start_r, start_c, 8)
+        heapq.heappush(open_heap, (0.0, 0.0, start_r, start_c, 8))
 
-        g_cost: Dict[Tuple[int, int], float] = {(start_r, start_c): 0.0}
-        came_from: Dict[Tuple[int, int], Tuple[int, int]] = {}
+        g_cost: Dict[Tuple[int, int, int], float] = {start_state: 0.0}
+        came_from: Dict[Tuple[int, int, int], Optional[Tuple[int, int, int]]] = {start_state: None}
 
         while open_heap:
-            _, g_curr, r, c = heapq.heappop(open_heap)
+            _, g_curr, r, c, dir_curr = heapq.heappop(open_heap)
+            curr_state = (r, c, dir_curr)
 
-            if g_curr > g_cost.get((r, c), math.inf):
+            if g_curr > g_cost.get(curr_state, math.inf):
                 continue
 
             if r == goal_r and c == goal_c:
                 return self._build_result(
-                    came_from, r, c, dynamic_draft, ukc, min_depth, speed_knots, turning_radius_m
+                    came_from, curr_state, dynamic_draft, ukc, min_depth, speed_knots, turning_radius_m
                 )
 
-            for dr, dc, base_cost in _DIRECTIONS:
+            has_incoming_dir = (dir_curr < 8)
+            in_dr, in_dc = (0, 0)
+            if has_incoming_dir:
+                in_dr, in_dc = _DIRECTIONS[dir_curr][0], _DIRECTIONS[dir_curr][1]
+
+            for i, (dr, dc, base_cost) in enumerate(_DIRECTIONS):
                 nr, nc = r + dr, c + dc
                 if not (0 <= nr < rows and 0 <= nc < cols):
                     continue
@@ -238,14 +246,29 @@ class Router:
                 # Coastal fairway preference: discourages uncontrolled deep-trench routing
                 deep_penalty = ((depth - 150.0) / 100.0) * 2.0 if depth > 150.0 else 0.0
 
-                transition_cost = base_cost * (1.0 + shallow_penalty + deep_penalty) * fw_factor
-                g_new = g_curr + transition_cost
+                # Heading Alteration Penalty (Ship Kinematics in 3D State Lattice)
+                heading_penalty = 0.0
+                if has_incoming_dir:
+                    dot = float(in_dr * dr + in_dc * dc)
+                    mag1 = _DIRECTIONS[dir_curr][2]
+                    mag2 = base_cost
+                    cos_theta = dot / (mag1 * mag2)
 
-                if g_new < g_cost.get((nr, nc), math.inf):
-                    g_cost[(nr, nc)] = g_new
-                    came_from[(nr, nc)] = (r, c)
+                    if cos_theta < 0.99:
+                        if cos_theta >= 0.0:
+                            heading_penalty = 0.35 * (1.0 - cos_theta)
+                        else:
+                            heading_penalty = 1.8 + 1.2 * (-cos_theta)
+
+                transition_cost = (base_cost * (1.0 + shallow_penalty + deep_penalty) * fw_factor) + heading_penalty
+                g_new = g_curr + transition_cost
+                next_state = (nr, nc, i)
+
+                if g_new < g_cost.get(next_state, math.inf):
+                    g_cost[next_state] = g_new
+                    came_from[next_state] = curr_state
                     f_score = g_new + 0.30 * _heuristic(nr, nc, goal_r, goal_c)
-                    heapq.heappush(open_heap, (f_score, g_new, nr, nc))
+                    heapq.heappush(open_heap, (f_score, g_new, nr, nc, i))
 
         return None
 
@@ -282,9 +305,8 @@ class Router:
 
     def _build_result(
         self,
-        came_from: Dict[Tuple[int, int], Tuple[int, int]],
-        goal_r: int,
-        goal_c: int,
+        came_from: Dict[Tuple[int, int, int], Optional[Tuple[int, int, int]]],
+        goal_state: Tuple[int, int, int],
         dynamic_draft: float,
         ukc: float,
         min_depth: float,
@@ -293,11 +315,10 @@ class Router:
     ) -> Dict[str, Any]:
         """Reconstruct waypoints, compute geodetic distances, and build depth soundings profile."""
         raw_path: List[Tuple[int, int]] = []
-        curr = (goal_r, goal_c)
-        while curr in came_from:
-            raw_path.append(curr)
-            curr = came_from[curr]
-        raw_path.append(curr)
+        curr: Optional[Tuple[int, int, int]] = goal_state
+        while curr is not None:
+            raw_path.append((curr[0], curr[1]))
+            curr = came_from.get(curr)
         raw_path.reverse()
 
         path = self._string_pull(raw_path, min_depth)
