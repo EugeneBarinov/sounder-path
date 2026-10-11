@@ -93,12 +93,15 @@ class BathymetricGrid:
             raise FileNotFoundError(f"Bathymetry dataset not found at: {path}")
 
         with rasterio.open(path) as src:
+            if src.crs is None:
+                raise ValueError(f"GeoTIFF dataset at {path} has no defined Coordinate Reference System (CRS).")
+
             is_wgs84 = False
-            if src.crs is not None and hasattr(src.crs, "to_epsg"):
+            if hasattr(src.crs, "to_epsg"):
                 epsg_code = src.crs.to_epsg()
                 is_wgs84 = (epsg_code == 4326)
 
-            if not is_wgs84 and src.crs is not None:
+            if not is_wgs84:
                 # Automatic on-the-fly reprojection to WGS84 (EPSG:4326)
                 from rasterio.warp import calculate_default_transform, reproject, Resampling
                 target_crs = "EPSG:4326"
@@ -116,10 +119,12 @@ class BathymetricGrid:
                     resampling=Resampling.bilinear,
                 )
                 nodata_val = src.nodata if src.nodata is not None else -9999.0
-                nodata_mask = (destination == nodata_val) | np.isnan(destination)
+                finite_mask = np.isfinite(destination)
+                nodata_mask = (destination == nodata_val) | (~finite_mask)
+                destination = np.where(finite_mask, destination, 0.0)
                 land_mask = (~nodata_mask) & (destination > 0.0)
                 depths = -destination
-                depths = np.nan_to_num(depths, nan=0.0)
+                depths = np.nan_to_num(depths, nan=0.0, posinf=0.0, neginf=0.0)
                 depths = np.where((depths < 0.0) | land_mask | nodata_mask, 0.0, depths)
 
                 lon_min = dst_transform.c
@@ -146,13 +151,16 @@ class BathymetricGrid:
 
             nodata_mask = np.ma.getmaskarray(raw_data)
             unmasked_elev = raw_data.filled(0.0).astype(np.float32)
+            finite_mask = np.isfinite(unmasked_elev)
+            nodata_mask = nodata_mask | (~finite_mask)
+            unmasked_elev = np.where(finite_mask, unmasked_elev, 0.0)
 
             # Terrestrial elevation above sea level is dry land
             land_mask = (~nodata_mask) & (unmasked_elev > 0.0)
 
             # Invert negative elevation to positive water depth
             depths = -unmasked_elev
-            depths = np.nan_to_num(depths, nan=0.0)
+            depths = np.nan_to_num(depths, nan=0.0, posinf=0.0, neginf=0.0)
 
             # Mask terrestrial elevation and nodata pixels to 0.0m
             depths = np.where((depths < 0.0) | land_mask | nodata_mask, 0.0, depths)
@@ -248,7 +256,7 @@ class BathymetricGrid:
             nodata_blocks = cropped_nodata.reshape(h // factor, factor, w // factor, factor)
             coarse_nodata = nodata_blocks.any(axis=(1, 3))
 
-        return BathymetricGrid(
+        grid_obj = BathymetricGrid(
             lat_min=cropped_lat_min,
             lat_max=self.lat_max,
             lon_min=self.lon_min,
@@ -258,6 +266,8 @@ class BathymetricGrid:
             land_mask=coarse_land,
             nodata_mask=coarse_nodata,
         )
+        grid_obj.is_synthetic = getattr(self, "is_synthetic", False)
+        return grid_obj
 
     def get_cell_coords(self, r: int, c: int) -> Tuple[float, float]:
         """Convert grid index (row, col) to center coordinates (lat, lon)."""
@@ -333,6 +343,10 @@ class BathymetricGrid:
                     lat = float(lat_val)
                     lon = float(lon_val)
                     depth = float(depth_val)
+                    if not (np.isfinite(lat) and np.isfinite(lon) and np.isfinite(depth)):
+                        continue
+                    if depth < 0.0 or depth > 11000.0:
+                        continue
                 except (ValueError, TypeError):
                     continue
 

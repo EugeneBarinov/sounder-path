@@ -84,13 +84,23 @@ def generate_safety_corridor_polygon(
     last_lon, last_lat = route_coords[-1][0], route_coords[-1][1]
     last_brg = bearings[-1]
     m_per_deg_lon_last = METERS_PER_DEG_LAT * math.cos(last_lat * DEG_TO_RAD)
+    hdg_rad_last = last_brg * DEG_TO_RAD
+    ux_last, uy_last = math.sin(hdg_rad_last), math.cos(hdg_rad_last)
+    nx_last, ny_last = uy_last, -ux_last  # Starboard normal
+
     for step in range(1, 8):
         frac = step / 8.0
-        ang_deg = (last_brg - 90.0) + frac * 180.0
-        ang_rad = ang_deg * DEG_TO_RAD
-        r_xtd = (1.0 - frac) * port_xtd_m + frac * stbd_xtd_m
-        lat_c = last_lat + (r_xtd * math.cos(ang_rad)) / METERS_PER_DEG_LAT
-        lon_c = last_lon + (r_xtd * math.sin(ang_rad)) / m_per_deg_lon_last
+        rel_ang_rad = (-0.5 + frac) * math.pi
+        # Longitudinal forward displacement along track
+        fwd_dist = 0.5 * (port_xtd_m + stbd_xtd_m) * math.cos(rel_ang_rad)
+        # Lateral displacement: port if rel_ang_rad < 0, else stbd
+        lat_dist = port_xtd_m * math.sin(rel_ang_rad) if rel_ang_rad < 0 else stbd_xtd_m * math.sin(rel_ang_rad)
+
+        dx_m = fwd_dist * ux_last + lat_dist * nx_last
+        dy_m = fwd_dist * uy_last + lat_dist * ny_last
+
+        lat_c = last_lat + dy_m / METERS_PER_DEG_LAT
+        lon_c = last_lon + dx_m / m_per_deg_lon_last
         bow_endcap.append([round(lon_c, 6), round(lat_c, 6)])
 
     # Rounded endcap at initial waypoint (0) sweeping clockwise from starboard to port around stern
@@ -98,13 +108,21 @@ def generate_safety_corridor_polygon(
     first_lon, first_lat = route_coords[0][0], route_coords[0][1]
     first_brg = bearings[0]
     m_per_deg_lon_first = METERS_PER_DEG_LAT * math.cos(first_lat * DEG_TO_RAD)
+    hdg_rad_first = first_brg * DEG_TO_RAD
+    ux_first, uy_first = math.sin(hdg_rad_first), math.cos(hdg_rad_first)
+    nx_first, ny_first = uy_first, -ux_first
+
     for step in range(1, 8):
         frac = step / 8.0
-        ang_deg = (first_brg + 90.0) + frac * 180.0
-        ang_rad = ang_deg * DEG_TO_RAD
-        r_xtd = (1.0 - frac) * stbd_xtd_m + frac * port_xtd_m
-        lat_c = first_lat + (r_xtd * math.cos(ang_rad)) / METERS_PER_DEG_LAT
-        lon_c = first_lon + (r_xtd * math.sin(ang_rad)) / m_per_deg_lon_first
+        rel_ang_rad = (0.5 - frac) * math.pi
+        aft_dist = -0.5 * (port_xtd_m + stbd_xtd_m) * math.cos(rel_ang_rad)
+        lat_dist = stbd_xtd_m * math.sin(rel_ang_rad) if rel_ang_rad > 0 else port_xtd_m * math.sin(rel_ang_rad)
+
+        dx_m = aft_dist * ux_first + lat_dist * nx_first
+        dy_m = aft_dist * uy_first + lat_dist * ny_first
+
+        lat_c = first_lat + dy_m / METERS_PER_DEG_LAT
+        lon_c = first_lon + dx_m / m_per_deg_lon_first
         stern_endcap.append([round(lon_c, 6), round(lat_c, 6)])
 
     # Assemble polygon: left forward -> bow endcap -> right backward -> stern endcap -> close
@@ -134,7 +152,8 @@ def scan_corridor_raster_swath(
 ) -> List[Dict[str, Any]]:
     """
     Exhaustively scans the entire 2D area (raster swath) of the Cross-Track Safety Corridor (XTD).
-    Checks every grid cell within [port_xtd, stbd_xtd] bounds along each leg for shoals and hazards.
+    Checks 100% of grid cells within [port_xtd, stbd_xtd] bounds along each leg without premature exit.
+    Classifies hazards by type: SHALLOW_WATER, LAND, RESTRICTED_ZONE, NODATA_UNVERIFIED.
     """
     if len(route_coords) < 2 or not hasattr(grid, "lonlat_to_cell") or not hasattr(grid, "get_cell_coords"):
         return []
@@ -184,9 +203,10 @@ def scan_corridor_raster_swath(
 
         # Unverified data coverage detection: corridor leaves bathymetry dataset
         if min_lat < grid.lat_min or max_lat > grid.lat_max or min_lon < grid.lon_min or max_lon > grid.lon_max:
-            if not any(h.get("is_unverified_coverage") for h in hazards):
+            if not any(h.get("hazard_type") == "NODATA_UNVERIFIED" for h in hazards):
                 hazards.append({
                     "is_unverified_coverage": True,
+                    "hazard_type": "NODATA_UNVERIFIED",
                     "lon": round(lon0, 6),
                     "lat": round(lat0, 6),
                     "depth": 0.0,
@@ -229,6 +249,13 @@ def scan_corridor_raster_swath(
                     is_restricted = grid.is_restricted(r, c)
 
                     if depth_val <= safety_depth or is_restricted:
+                        if is_restricted:
+                            h_type = "RESTRICTED_ZONE"
+                        elif depth_val <= 0.0:
+                            h_type = "LAND"
+                        else:
+                            h_type = "SHALLOW_WATER"
+
                         hazards.append({
                             "r": r,
                             "c": c,
@@ -237,11 +264,16 @@ def scan_corridor_raster_swath(
                             "depth": round(depth_val, 2),
                             "xtd_offset_m": round(d_xtd, 1),
                             "is_restricted": is_restricted,
+                            "hazard_type": h_type,
                         })
-                        if len(hazards) >= 10:  # Sample up to 10 prominent hazards
-                            return hazards
 
-    return hazards
+    # Sort hazards by severity: unverified first, then shallowest depth, then restricted
+    hazards.sort(key=lambda h: (
+        0 if h.get("is_unverified_coverage") else 1,
+        h.get("depth", 0.0),
+        0 if h.get("is_restricted") else 1
+    ))
+    return hazards[:30]
 
 
 def verify_ecdis_route_safety(
@@ -400,6 +432,15 @@ def verify_ecdis_route_safety(
                 "hazard_location": [worst_h["lon"], worst_h["lat"]],
             })
 
+    is_grid_available = (grid is not None and hasattr(grid, "lonlat_to_cell") and len(active_route_coords) >= 2)
+    if not is_grid_available:
+        alarms.append({
+            "severity": "WARNING",
+            "code": "ALM-07-GRID-UNAVAILABLE",
+            "title": "Bathymetric Raster Grid Unavailable",
+            "detail": "No raster grid was supplied; 2D corridor area verification could not be evaluated.",
+        })
+
     # 4. Overall ECDIS Status Assessment
     has_critical = any(a["severity"] == "CRITICAL" for a in alarms)
     has_warning = any(a["severity"] == "WARNING" for a in alarms)
@@ -427,6 +468,6 @@ def verify_ecdis_route_safety(
             "dynamic_squat_m": round(dynamic_squat, 2),
             "min_clearance_m": round(min_observed_clearance, 2) if min_observed_clearance != math.inf else 0.0,
             "rot_threshold_deg_min": rot_threshold,
-            "corridor_checked_2d_raster": True,
+            "corridor_checked_2d_raster": is_grid_available,
         },
     }

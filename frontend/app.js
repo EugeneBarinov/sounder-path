@@ -429,12 +429,18 @@ map.on('load', () => {
                     datasetBadge.style.color = '#fbbf24';
                     datasetBadge.innerText = '⚠️ DEMO (СИНТЕТИКА)';
                     datasetBadge.title = 'Синтетическая сетка глубин: поместите E8_2024.tif в data/raw/ для навигации по реальному растру.';
+                    if (map.getLayer('depth-heatmap-layer')) {
+                        map.setLayoutProperty('depth-heatmap-layer', 'visibility', 'none');
+                    }
                 } else {
                     datasetBadge.style.background = 'rgba(16, 185, 129, 0.2)';
                     datasetBadge.style.borderColor = '#10b981';
                     datasetBadge.style.color = '#34d399';
                     datasetBadge.innerText = 'EMODnet 2024';
                     datasetBadge.title = 'Боевая гидрографическая батиметрия EMODnet E8_2024';
+                    if (map.getLayer('depth-heatmap-layer')) {
+                        map.setLayoutProperty('depth-heatmap-layer', 'visibility', 'visible');
+                    }
                 }
             }
         })
@@ -558,6 +564,24 @@ map.on('load', () => {
             'circle-radius': 6.5,
             'circle-stroke-width': 2,
             'circle-stroke-color': '#ffffff'
+        }
+    });
+
+    // 4.2 Линии привязки точек отправления/прибытия к безопасной воде (Snap Offsets)
+    map.addSource('snap-offsets', {
+        type: 'geojson',
+        data: { type: 'FeatureCollection', features: [] }
+    });
+
+    map.addLayer({
+        id: 'snap-offsets-line',
+        type: 'line',
+        source: 'snap-offsets',
+        paint: {
+            'line-color': '#f59e0b',
+            'line-width': 2.5,
+            'line-dasharray': [3, 2],
+            'line-opacity': 0.95
         }
     });
 
@@ -1374,6 +1398,27 @@ window.calculateRoute = async function () {
                     geometry: { type: 'Point', coordinates: [h.lon, h.lat] }
                 }));
                 map.getSource('xtd-hazards').setData({ type: 'FeatureCollection', features: hazardFeatures });
+            }
+
+            // Отображение линий смещения привязки к безопасной воде (Snap Offsets)
+            if (map.getSource('snap-offsets')) {
+                const snapFeatures = [];
+                (data.waypoints || []).forEach(wp => {
+                    if (wp.snap_offset_m && wp.original_coords && wp.original_coords.length === 2) {
+                        snapFeatures.push({
+                            type: 'Feature',
+                            properties: {
+                                offset_m: wp.snap_offset_m,
+                                reason: wp.snap_reason || 'Shoreline berth snap'
+                            },
+                            geometry: {
+                                type: 'LineString',
+                                coordinates: [wp.original_coords, [wp.lon, wp.lat]]
+                            }
+                        });
+                    }
+                });
+                map.getSource('snap-offsets').setData({ type: 'FeatureCollection', features: snapFeatures });
             }
 
             statusMsg.innerHTML =

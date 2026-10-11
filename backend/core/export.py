@@ -119,6 +119,7 @@ def export_to_rtz(
 ) -> str:
     """
     Generate RTZ 1.1 (IEC 61174:2015 Annex S) XML format for commercial ECDIS plotters.
+    Strictly conforms to CIRM RTZ 1.1 XSD.
     """
     route = ET.Element("route", {
         "xmlns": "http://www.cirm.org/RTZ/1/1",
@@ -137,33 +138,45 @@ def export_to_rtz(
 
     route_info = ET.SubElement(route, "routeInfo", route_info_attrs)
 
+    # Vessel operational parameters & safety notices inside extensions
+    route_exts = ET.SubElement(route_info, "extensions")
+    vessel_ext = ET.SubElement(route_exts, "extension", {
+        "manufacturer": "SeaPath",
+        "name": "VesselParameters",
+        "version": "1.0",
+    })
+    ET.SubElement(vessel_ext, "vesselDraft").text = f"{draft:.2f}"
+    ET.SubElement(vessel_ext, "planSpeed").text = f"{speed_knots:.1f}"
+    ET.SubElement(vessel_ext, "requiredUKC").text = f"{ukc:.2f}"
+
     if is_hazardous:
-        notes_el = ET.SubElement(route_info, "routeNotes")
-        notes_el.text = "CRITICAL WARNING: Route contains unresolved navigational hazards or insufficient UKC."
-    
-    # Vessel operational parameters extension
-    vessel_ext = ET.SubElement(route_info, "extensions")
-    vessel_data = ET.SubElement(vessel_ext, "vesselDraft")
-    vessel_data.text = f"{draft:.2f}"
-    vessel_speed = ET.SubElement(vessel_ext, "planSpeed")
-    vessel_speed.text = f"{speed_knots:.1f}"
+        hazard_ext = ET.SubElement(route_exts, "extension", {
+            "manufacturer": "SeaPath",
+            "name": "SafetyNotice",
+            "version": "1.0",
+        })
+        ET.SubElement(hazard_ext, "warning").text = (
+            "CRITICAL WARNING: Route contains unresolved navigational hazards or insufficient UKC."
+        )
 
     waypoints_el = ET.SubElement(route, "waypoints")
+    num_wps = len(waypoints)
 
     for idx, wp in enumerate(waypoints, start=1):
         lat = float(wp.get("lat") if wp.get("lat") is not None else wp.get("latitude", 0.0))
         lon = float(wp.get("lon") if wp.get("lon") is not None else (wp.get("lng") if wp.get("lng") is not None else wp.get("longitude", 0.0)))
-        radius_m = wp.get("turn_radius_m", 150.0)
+        radius_m = float(wp.get("turn_radius_m", 150.0) or 150.0)
         radius_nm = radius_m / 1852.0
-        rot_val = wp.get("rot_deg_min", 0.0)
+        # Clamp radius between 0.0 and 5.0 NM as specified by RadiusType
+        radius_nm = max(0.0, min(5.0, radius_nm))
+        rot_val = float(wp.get("rot_deg_min", 0.0) or 0.0)
+        wop_val = float(wp.get("wop_distance_m", 0.0) or 0.0)
 
         wp_attrs = {
             "id": str(idx),
             "name": f"WP{idx:02d}",
             "radius": f"{radius_nm:.3f}",
         }
-        if abs(rot_val) > 0.1:
-            wp_attrs["rot"] = f"{abs(rot_val):.1f}"
 
         wp_el = ET.SubElement(waypoints_el, "waypoint", wp_attrs)
 
@@ -172,17 +185,33 @@ def export_to_rtz(
             "lon": f"{lon:.6f}",
         })
 
-        port_xtd = wp.get("port_xtd_nm", 0.10)
-        stbd_xtd = wp.get("stbd_xtd_nm", 0.10)
+        # All waypoints except the final destination have an outgoing leg
+        if idx < num_wps:
+            port_xtd = float(wp.get("port_xtd_nm", 0.10) or 0.10)
+            stbd_xtd = float(wp.get("stbd_xtd_nm", 0.10) or 0.10)
+            contour_val = float(safety_contour if safety_contour is not None else (draft + ukc))
 
-        contour_val = safety_contour if safety_contour is not None else (draft + ukc)
+            # Leg specification (IEC 61174 standards)
+            # Must use geometryType="Loxodrome", portsideXTD, starboardXTD
+            ET.SubElement(wp_el, "leg", {
+                "geometryType": "Loxodrome",
+                "portsideXTD": f"{port_xtd:.2f}",
+                "starboardXTD": f"{stbd_xtd:.2f}",
+                "safetyContour": f"{contour_val:.1f}",
+                "safetyDepth": f"{contour_val:.1f}",
+            })
 
-        # Leg specification (IEC 61174 standards)
-        leg_el = ET.SubElement(wp_el, "leg", {
-            "legType": "Straight",
-            "portXTD": f"{port_xtd:.2f}",
-            "starboardXTD": f"{stbd_xtd:.2f}",
-            "safetyContour": f"{contour_val:.1f}",
-        })
+        # Maneuvering details if present
+        if abs(rot_val) > 0.01 or wop_val > 0.01:
+            wp_exts = ET.SubElement(wp_el, "extensions")
+            wp_kin = ET.SubElement(wp_exts, "extension", {
+                "manufacturer": "SeaPath",
+                "name": "ManeuveringKinematics",
+                "version": "1.0",
+            })
+            if abs(rot_val) > 0.01:
+                ET.SubElement(wp_kin, "rotDegMin").text = f"{rot_val:.1f}"
+            if wop_val > 0.01:
+                ET.SubElement(wp_kin, "wopMeters").text = f"{wop_val:.1f}"
 
     return _format_xml(route)

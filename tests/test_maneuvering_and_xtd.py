@@ -266,3 +266,95 @@ def test_python_and_cpp_router_parity():
     # Both must maintain positive minimum clearance
     assert py_diag["min_clearance_m"] >= 0.0
     assert cpp_diag["min_clearance_m"] >= 0.0
+
+
+def test_snapping_does_not_hop_across_island_or_barrier():
+    """
+    Verify that _snap_to_navigable() does not hop across narrow islands or land barriers.
+    Must only follow water-connected paths.
+    """
+    from backend.main import _snap_to_navigable
+
+    # 30x30 grid: cell size ~100m
+    # Lat 44.00 to 44.03, Lon 33.00 to 33.03
+    depths = np.full((30, 30), 10.0, dtype=np.float32)
+    # Put an island running north-south across cols 12..14 from row 5 to 25
+    depths[5:25, 12:15] = 0.0
+
+    grid = BathymetricGrid(
+        lat_min=44.0,
+        lat_max=44.03,
+        lon_min=33.0,
+        lon_max=33.03,
+        depths=depths,
+    )
+
+    # Point at row 10, col 11 is on the west side of the island.
+    # Make col 10..11 shallow (1.5m). We require 3.5m.
+    grid.depths[10, 11] = 1.5
+    grid.depths[10, 10] = 1.5
+    # Deep water is at col 9 (west, 10m) and col 16 (east, across island, 10m).
+    # Since col 12..14 is land, snapping from (10, 11) must go WEST to col <= 9, NEVER EAST to col >= 15!
+    snapped_r, snapped_c, snap_dist, reason = _snap_to_navigable(
+        10, 11, grid, min_depth=3.0, max_snap_meters=1500.0
+    )
+
+    assert snapped_r is not None and snapped_c is not None
+    assert snapped_c < 12, f"Snapping hopped across island to col {snapped_c}! Must remain on west side."
+    assert float(grid.depths[snapped_r, snapped_c]) > 3.0
+    assert snap_dist > 0.0
+    assert reason == "INSUFFICIENT_DEPTH"
+
+
+def test_exhaustive_swath_scan_does_not_abort_early():
+    """
+    Verify that scan_corridor_raster_swath checks the ENTIRE corridor across all legs
+    and does NOT prematurely abort after the first 10 hazards.
+    """
+    # 50x50 grid, deep water everywhere (25m)
+    depths = np.full((50, 50), 25.0, dtype=np.float32)
+    grid = BathymetricGrid(
+        lat_min=44.0,
+        lat_max=44.05,
+        lon_min=33.0,
+        lon_max=33.05,
+        depths=depths,
+    )
+
+    # 3-leg route: Leg 1 (rows 5..10), Leg 2 (rows 10..30), Leg 3 (rows 30..45)
+    lat_5, lon_10 = grid.get_cell_coords(5, 10)
+    lat_15, lon_10 = grid.get_cell_coords(15, 10)
+    lat_30, lon_10 = grid.get_cell_coords(30, 10)
+    lat_45, lon_10 = grid.get_cell_coords(45, 10)
+
+    route_coords = [
+        [lon_10, lat_5],
+        [lon_10, lat_15],
+        [lon_10, lat_30],
+        [lon_10, lat_45],
+    ]
+
+    # Create 12 shoals in Leg 1 (between row 5 and 15)
+    for r in range(5, 15):
+        grid.depths[r, 11] = 2.0
+        grid.depths[r, 9] = 2.0
+
+    # Place a critical 0.5m shoal in Leg 3 (row 40, col 11)
+    grid.depths[40, 11] = 0.5
+
+    safety_depth = 4.0
+    port_xtd_m = 250.0
+    stbd_xtd_m = 250.0
+
+    hazards = scan_corridor_raster_swath(
+        route_coords=route_coords,
+        port_xtd_m=port_xtd_m,
+        stbd_xtd_m=stbd_xtd_m,
+        grid=grid,
+        safety_depth=safety_depth,
+    )
+
+    # Must find the critical shoal in Leg 3, proving it didn't abort after 10 hazards in Leg 1!
+    has_leg3_shoal = any(h["depth"] == 0.5 and h.get("r") == 40 for h in hazards)
+    assert has_leg3_shoal, "Corridor scan aborted prematurely! Critical shoal in Leg 3 was missed."
+    assert any(h["hazard_type"] == "SHALLOW_WATER" for h in hazards)

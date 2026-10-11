@@ -37,10 +37,13 @@ app = FastAPI(
 # ---------------------------------------------------------------------------
 # Development middleware: Prevent client-side caching of local static assets
 # ---------------------------------------------------------------------------
+import os
+
 @app.middleware("http")
 async def no_cache_header_middleware(request: Request, call_next):
     response = await call_next(request)
-    if request.url.path.startswith(("/static", "/app.js", "/style.css", "/index.html", "/")):
+    static_prefixes = ("/static", "/app.js", "/style.css", "/favicon.ico", "/heatmap.png")
+    if request.url.path in ("/", "/index.html") or request.url.path.startswith(static_prefixes):
         response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
         response.headers["Pragma"] = "no-cache"
     return response
@@ -51,6 +54,7 @@ async def no_cache_header_middleware(request: Request, call_next):
 _BASE_DIR = Path(__file__).resolve().parent.parent
 _RAW_DATA_DIR = _BASE_DIR / "data" / "raw"
 _GEOTIFF_PATH = _RAW_DATA_DIR / "E8_2024.tif"
+_IS_PRODUCTION = os.environ.get("SEAPATH_ENV", "").strip().lower() == "production"
 
 is_synthetic_mode = False
 if _GEOTIFF_PATH.exists():
@@ -59,10 +63,18 @@ if _GEOTIFF_PATH.exists():
         full_grid = BathymetricGrid.load_from_geotiff(_GEOTIFF_PATH)
         is_synthetic_mode = False
     except Exception as _load_err:
+        if _IS_PRODUCTION:
+            raise RuntimeError(
+                f"[PRODUCTION FAILURE] Critical: failed to load operational bathymetry from {_GEOTIFF_PATH}: {_load_err}"
+            )
         print(f"[WARN] Failed to load GeoTIFF ({_load_err}). Falling back to synthetic regional bathymetry.")
         full_grid = BathymetricGrid.create_synthetic()
         is_synthetic_mode = True
 else:
+    if _IS_PRODUCTION:
+        raise RuntimeError(
+            f"[PRODUCTION FAILURE] Operational GeoTIFF dataset {_GEOTIFF_PATH} is required in production environment."
+        )
     print(
         f"[DEMO MODE] {_GEOTIFF_PATH.name} not found in data/raw/. "
         "Initialized synthetic regional bathymetry grid for demonstration. "
@@ -85,13 +97,24 @@ else:
     routing_grid = full_grid
 routing_grid.is_synthetic = is_synthetic_mode
 
-# Rasterize navigational fairways & restricted areas (RESARE)
-fairway_weights = rasterize_fairway_weights(
-    routing_grid.rows, routing_grid.cols,
-    routing_grid.lat_min, routing_grid.lat_max,
-    routing_grid.lon_min, routing_grid.lon_max
+# Rasterize navigational fairways & restricted areas (RESARE) for full resolution grid
+full_fairway_weights = rasterize_fairway_weights(
+    full_grid.rows, full_grid.cols,
+    full_grid.lat_min, full_grid.lat_max,
+    full_grid.lon_min, full_grid.lon_max
 )
-routing_grid.attach_fairways(fairway_weights)
+full_grid.attach_fairways(full_fairway_weights)
+
+# Rasterize navigational fairways for routing resolution grid
+if routing_grid is full_grid:
+    fairway_weights = full_fairway_weights
+else:
+    fairway_weights = rasterize_fairway_weights(
+        routing_grid.rows, routing_grid.cols,
+        routing_grid.lat_min, routing_grid.lat_max,
+        routing_grid.lon_min, routing_grid.lon_max
+    )
+    routing_grid.attach_fairways(fairway_weights)
 
 print(f"Grid active: Full resolution {full_grid.rows}x{full_grid.cols} | Routing {routing_grid.rows}x{routing_grid.cols}")
 
@@ -176,29 +199,60 @@ def _snap_to_navigable(
     grid: BathymetricGrid,
     min_depth: float,
     max_snap_meters: float = 1500.0,
-) -> Tuple[Optional[int], Optional[int], float]:
+) -> Tuple[Optional[int], Optional[int], float, Optional[str]]:
     """
     Breadth-first search to snap shoreline/berth coordinates to the nearest
-    navigable fairway node satisfying safety depth constraints (depth > min_depth)
-    and bypassing restricted zones. Does not leapfrog across wide land barriers.
-    Returns (snapped_r, snapped_c, snap_distance_m).
+    navigable node satisfying safety depth constraints (depth > min_depth)
+    and bypassing restricted zones.
+    Strictly prevents leaping across land barriers (islands/peninsulas) or prohibited zones.
+    Returns (snapped_r, snapped_c, snap_distance_m, snap_reason).
     """
-    if 0 <= r < grid.rows and 0 <= c < grid.cols:
-        if float(grid.depths[r, c]) > min_depth and not grid.is_restricted(r, c):
-            return r, c, 0.0
+    if not (0 <= r < grid.rows and 0 <= c < grid.cols):
+        return None, None, 0.0, "OUT_OF_BOUNDS"
+
+    is_restr = grid.is_restricted(r, c)
+    is_land = (float(grid.depths[r, c]) <= 0.0) or (grid.land_mask is not None and grid.land_mask[r, c])
+    cur_d = float(grid.depths[r, c])
+
+    if cur_d > min_depth and not is_restr and not is_land:
+        return r, c, 0.0, None
+
+    if is_restr:
+        reason = "RESTRICTED_ZONE"
+    elif is_land:
+        reason = "LAND_SHORELINE"
+    else:
+        reason = "INSUFFICIENT_DEPTH"
 
     lat_orig, lon_orig = grid.get_cell_coords(r, c)
-    queue = deque([(r, c, 0)])
+    init_is_water = (cur_d > 0.0 and not is_land and not is_restr)
+    queue = deque([(r, c, 0, init_is_water)])
     visited = {(r, c)}
     max_steps = 15  # Up to 15 grid cells (~1500m)
 
     while queue:
-        cr, cc, steps = queue.popleft()
-        if float(grid.depths[cr, cc]) > min_depth and not grid.is_restricted(cr, cc):
+        cr, cc, steps, entered_water = queue.popleft()
+        c_depth = float(grid.depths[cr, cc])
+        c_land = (c_depth <= 0.0) or (grid.land_mask is not None and grid.land_mask[cr, cc])
+        c_restr = grid.is_restricted(cr, cc)
+
+        # Candidate check: must satisfy required depth and not be restricted
+        if c_depth > min_depth and not c_restr and not c_land:
             lat_c, lon_c = grid.get_cell_coords(cr, cc)
             dist_m = calculate_distance_m(lat_orig, lon_orig, lat_c, lon_c)
             if dist_m <= max_snap_meters:
-                return cr, cc, round(dist_m, 1)
+                # Obstacle barrier check: line-of-sight must not cut across dry land once water entered
+                line_cells = grid.sample_depth_along_segment(r, c, cr, cc)
+                water_seen = False
+                hopped_land = False
+                for d_val in line_cells:
+                    if d_val > 0.0:
+                        water_seen = True
+                    elif water_seen and d_val <= 0.0:
+                        hopped_land = True
+                        break
+                if not hopped_land:
+                    return cr, cc, round(dist_m, 1), reason
 
         if steps >= max_steps:
             continue
@@ -206,10 +260,20 @@ def _snap_to_navigable(
         for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (-1, 1), (1, -1), (1, 1)]:
             nr, nc = cr + dr, cc + dc
             if 0 <= nr < grid.rows and 0 <= nc < grid.cols and (nr, nc) not in visited:
-                visited.add((nr, nc))
-                queue.append((nr, nc, steps + 1))
+                n_depth = float(grid.depths[nr, nc])
+                n_land = (n_depth <= 0.0) or (grid.land_mask is not None and grid.land_mask[nr, nc])
+                n_restr = grid.is_restricted(nr, nc)
+                n_is_water = (n_depth > 0.0 and not n_land and not n_restr)
 
-    return None, None, 0.0
+                # Strict barrier invariant:
+                # Once search has entered water, it is strictly forbidden from crossing back onto land or restricted zones!
+                if entered_water and not n_is_water:
+                    continue
+
+                visited.add((nr, nc))
+                queue.append((nr, nc, steps + 1, entered_water or n_is_water))
+
+    return None, None, 0.0, reason
 
 
 def _is_within_coverage(lon: float, lat: float, grid: BathymetricGrid) -> bool:
@@ -374,8 +438,8 @@ def calculate_route(req: RouteRequest):
         start_r, start_c = routing_grid.lonlat_to_cell(p_start[0], p_start[1])
         goal_r, goal_c = routing_grid.lonlat_to_cell(p_goal[0], p_goal[1])
 
-        start_r, start_c, snap_start_dist = _snap_to_navigable(start_r, start_c, routing_grid, min_required_chart_depth)
-        goal_r, goal_c, snap_goal_dist = _snap_to_navigable(goal_r, goal_c, routing_grid, min_required_chart_depth)
+        start_r, start_c, snap_start_dist, snap_start_reason = _snap_to_navigable(start_r, start_c, routing_grid, min_required_chart_depth)
+        goal_r, goal_c, snap_goal_dist, snap_goal_reason = _snap_to_navigable(goal_r, goal_c, routing_grid, min_required_chart_depth)
 
         if start_r is None:
             raise HTTPException(
@@ -497,6 +561,15 @@ def calculate_route(req: RouteRequest):
             wp["rot_deg_min"] = 0.0
             wp["wop_distance_m"] = 0.0
 
+        if i == 0 and snap_start_dist > 0.0:
+            wp["snap_offset_m"] = snap_start_dist
+            wp["snap_reason"] = snap_start_reason
+            wp["original_coords"] = [points[0][0], points[0][1]]
+        elif i == n_wps - 1 and snap_goal_dist > 0.0:
+            wp["snap_offset_m"] = snap_goal_dist
+            wp["snap_reason"] = snap_goal_reason
+            wp["original_coords"] = [points[-1][0], points[-1][1]]
+
         combined_waypoints.append(wp)
 
     total_dist_nm = round(cum_dist_m / 1852.0, 2)
@@ -588,6 +661,9 @@ def calculate_route(req: RouteRequest):
         "distance_nm": total_dist_nm,
         "eta_hours": eta_hours,
         "min_clearance_m": round(min_clearance, 2),
+        "gross_ukc_m": round(min_chart_depth - req.draft, 2),
+        "required_ukc_m": req.ukc,
+        "clearance_margin_m": round(min_clearance, 2),
         "dynamic_draft_m": round(search_dynamic_draft, 2),
         "dynamic_squat_m": round(dynamic_squat, 2),
         "heel_sinkage_m": round(search_budget["heel_sinkage_m"], 3),
@@ -600,6 +676,16 @@ def calculate_route(req: RouteRequest):
         "wave_height_m": req.wave_height_m,
         "routing_engine": "seapath_native_cpp" if _HAS_NATIVE else "python_fallback",
         "has_maneuvering_violation": has_maneuver_violation,
+        "is_navigable_candidate": True,
+        "is_executable_passage_plan": bool(not has_maneuver_violation and safety_audit["is_safe"]),
+        "waypoint_snapping": {
+            "start_snapped": snap_start_dist > 0.0,
+            "start_snap_distance_m": snap_start_dist,
+            "start_snap_reason": snap_start_reason,
+            "goal_snapped": snap_goal_dist > 0.0,
+            "goal_snap_distance_m": snap_goal_dist,
+            "goal_snap_reason": snap_goal_reason,
+        },
     }
 
     return {
@@ -624,6 +710,14 @@ def calculate_route(req: RouteRequest):
     }
 
 
+def _sanitize_filename(name: Optional[str], default: str = "passage_plan") -> str:
+    if not name:
+        return default
+    import re
+    clean = re.sub(r'[^a-zA-Z0-9_\-]', '_', name.strip())
+    return clean[:64] or default
+
+
 @app.post("/api/export/gpx")
 def export_gpx(req: ExportRouteRequest):
     """Generates and downloads standard GPX 1.1 file for GPS and marine chart plotters."""
@@ -638,10 +732,11 @@ def export_gpx(req: ExportRouteRequest):
         safety_status=req.safety_status,
         is_safe=req.is_safe,
     )
+    safe_name = _sanitize_filename(req.route_name)
     return Response(
         content=xml_content,
         media_type="application/gpx+xml",
-        headers={"Content-Disposition": f"attachment; filename={req.route_name or 'passage_plan'}.gpx"},
+        headers={"Content-Disposition": f'attachment; filename="{safe_name}.gpx"'},
     )
 
 
@@ -658,10 +753,11 @@ def export_rtz(req: ExportRouteRequest):
         safety_status=req.safety_status,
         is_safe=req.is_safe,
     )
+    safe_name = _sanitize_filename(req.route_name)
     return Response(
         content=xml_content,
         media_type="application/xml",
-        headers={"Content-Disposition": f"attachment; filename={req.route_name or 'passage_plan'}.rtz"},
+        headers={"Content-Disposition": f'attachment; filename="{safe_name}.rtz"'},
     )
 
 
