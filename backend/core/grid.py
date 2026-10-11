@@ -271,9 +271,6 @@ class BathymetricGrid:
         if not path.exists():
             return
 
-        lat_step = (self.lat_max - self.lat_min) / self.rows
-        lon_step = (self.lon_max - self.lon_min) / self.cols
-
         with open(path, mode="r", newline="", encoding="utf-8") as f:
             reader = csv.DictReader(f)
             for row in reader:
@@ -293,8 +290,7 @@ class BathymetricGrid:
                 if not (self.lat_min <= lat <= self.lat_max and self.lon_min <= lon <= self.lon_max):
                     continue
 
-                r = int((self.lat_max - lat) / lat_step)
-                c = int((lon - self.lon_min) / lon_step)
+                r, c = self.lonlat_to_cell(lon, lat)
 
                 if 0 <= r < self.rows and 0 <= c < self.cols:
                     dredged_val = str(norm_row.get("dredged") or norm_row.get("is_canal") or "").strip().lower()

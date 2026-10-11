@@ -290,6 +290,14 @@ def calculate_route(req: RouteRequest):
                 detail=f"Waypoint {idx + 1} ({pt[0]:.4f}, {pt[1]:.4f}) is outside bathymetry coverage area."
             )
 
+    for k in range(len(points) - 1):
+        leg_dist = calculate_distance_m(points[k][1], points[k][0], points[k + 1][1], points[k + 1][0])
+        if leg_dist < 10.0:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Waypoint {k + 1} and Waypoint {k + 2} are identical or too close ({leg_dist:.1f}m < 10m minimum separation)."
+            )
+
     # -- Единый бюджет поиска: считаем ОДИН раз на весь запрос -----------------
     # Что делаем: вместо трёх разных формул (здесь + внутри Python-роутера +
     # внутри C++-роутера) вызываем канон dukc.compute_search_budget.

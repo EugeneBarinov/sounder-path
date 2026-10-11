@@ -34,7 +34,24 @@ PYBIND11_MODULE(seapath_native, m) {
         py::arg("depths"),
         py::arg("fairway_weights") = py::none())
         .def_readonly("rows", &NativeGrid::rows)
-        .def_readonly("cols", &NativeGrid::cols);
+        .def_readonly("cols", &NativeGrid::cols)
+        .def_readonly("lat_min", &NativeGrid::lat_min)
+        .def_readonly("lat_max", &NativeGrid::lat_max)
+        .def_readonly("lon_min", &NativeGrid::lon_min)
+        .def_readonly("lon_max", &NativeGrid::lon_max)
+        .def("get_depth", &NativeGrid::depth, py::arg("r"), py::arg("c"))
+        .def("get_fairway_weight", &NativeGrid::fairway_weight, py::arg("r"), py::arg("c"))
+        .def("is_restricted", &NativeGrid::is_restricted, py::arg("r"), py::arg("c"))
+        .def("lonlat_to_cell", [](const NativeGrid& self, double lon, double lat) {
+            int r = 0, c = 0;
+            self.lonlat_to_cell(lon, lat, r, c);
+            return py::make_tuple(r, c);
+        }, py::arg("lon"), py::arg("lat"))
+        .def("get_cell_coords", [](const NativeGrid& self, int r, int c) {
+            double lat = 0.0, lon = 0.0;
+            self.get_cell_coords(r, c, lat, lon);
+            return py::make_tuple(lat, lon);
+        }, py::arg("r"), py::arg("c"));
 
     py::class_<NativeRouter>(m, "NativeRouter")
         .def(py::init([](std::shared_ptr<NativeGrid> g) {

@@ -99,9 +99,28 @@ public:
     }
 
     inline void get_cell_coords(int r, int c, double& lat, double& lon) const {
-        double lat_step = (lat_max - lat_min) / rows;
-        double lon_step = (lon_max - lon_min) / cols;
+        int safe_rows = std::max(1, rows);
+        int safe_cols = std::max(1, cols);
+        double lat_step = std::max(1e-9, (lat_max - lat_min) / safe_rows);
+        double lon_step = std::max(1e-9, (lon_max - lon_min) / safe_cols);
         lat = lat_max - (r + 0.5) * lat_step;
         lon = lon_min + (c + 0.5) * lon_step;
+    }
+
+    inline bool lonlat_to_cell(double lon, double lat, int& r, int& c) const {
+        int safe_rows = std::max(1, rows);
+        int safe_cols = std::max(1, cols);
+        double lat_range = lat_max - lat_min;
+        double lon_range = lon_max - lon_min;
+        double lat_step = std::max(1e-9, lat_range / safe_rows);
+        double lon_step = std::max(1e-9, lon_range / safe_cols);
+
+        int row = static_cast<int>((lat_max - lat) / lat_step);
+        int col = static_cast<int>((lon - lon_min) / lon_step);
+
+        r = std::clamp(row, 0, safe_rows - 1);
+        c = std::clamp(col, 0, safe_cols - 1);
+
+        return (lat >= lat_min && lat <= lat_max && lon >= lon_min && lon <= lon_max);
     }
 };

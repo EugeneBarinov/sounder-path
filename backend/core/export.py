@@ -49,8 +49,8 @@ def export_to_gpx(
     rte_name.text = route_name
 
     for idx, wp in enumerate(waypoints, start=1):
-        lat = wp["lat"]
-        lon = wp["lon"]
+        lat = float(wp.get("lat") if wp.get("lat") is not None else wp.get("latitude", 0.0))
+        lon = float(wp.get("lon") if wp.get("lon") is not None else (wp.get("lng") if wp.get("lng") is not None else wp.get("longitude", 0.0)))
         rtept = ET.SubElement(rte, "rtept", {"lat": f"{lat:.6f}", "lon": f"{lon:.6f}"})
         
         pt_name = ET.SubElement(rtept, "name")
@@ -91,8 +91,13 @@ def export_to_gpx(
     trkseg = ET.SubElement(trk, "trkseg")
 
     for coord in route_coords:
-        lon, lat = coord[0], coord[1]
-        ET.SubElement(trkseg, "trkpt", {"lat": f"{lat:.6f}", "lon": f"{lon:.6f}"})
+        if isinstance(coord, (list, tuple)) and len(coord) >= 2:
+            lon, lat = float(coord[0]), float(coord[1])
+            ET.SubElement(trkseg, "trkpt", {"lat": f"{lat:.6f}", "lon": f"{lon:.6f}"})
+        elif isinstance(coord, dict):
+            c_lat = float(coord.get("lat") if coord.get("lat") is not None else coord.get("latitude", 0.0))
+            c_lon = float(coord.get("lon") if coord.get("lon") is not None else (coord.get("lng") if coord.get("lng") is not None else coord.get("longitude", 0.0)))
+            ET.SubElement(trkseg, "trkpt", {"lat": f"{c_lat:.6f}", "lon": f"{c_lon:.6f}"})
 
     return _format_xml(gpx)
 
@@ -130,8 +135,8 @@ def export_to_rtz(
     waypoints_el = ET.SubElement(route, "waypoints")
 
     for idx, wp in enumerate(waypoints, start=1):
-        lat = wp["lat"]
-        lon = wp["lon"]
+        lat = float(wp.get("lat") if wp.get("lat") is not None else wp.get("latitude", 0.0))
+        lon = float(wp.get("lon") if wp.get("lon") is not None else (wp.get("lng") if wp.get("lng") is not None else wp.get("longitude", 0.0)))
         radius_m = wp.get("turn_radius_m", 150.0)
         radius_nm = radius_m / 1852.0
         rot_val = wp.get("rot_deg_min", 0.0)

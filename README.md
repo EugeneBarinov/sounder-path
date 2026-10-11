@@ -72,9 +72,11 @@ sounder-path/
 │   ├── style.css            # Профессиональный интерфейс навигационного дисплея
 │   └── app.js               # Клиентская логика MapLibre GL, Chart.js и таблицы WP
 ├── tests/
-│   ├── test_api_endpoints.py    # Тесты эндпоинтов FastAPI, схем и экспорта
-│   ├── test_dukc_validation.py  # Физическая валидация гидродинамики DUKC и алармов
-│   └── test_robustness.py       # Тесты устойчивости, срезки углов, NoData и даунсэмплинга
+│   ├── test_api_endpoints.py        # Тесты эндпоинтов FastAPI, схем и экспорта
+│   ├── test_dukc_validation.py      # Физическая валидация гидродинамики DUKC и алармов
+│   ├── test_maneuvering_and_xtd.py  # Маневренные лимиты ALM-05, 2D XTD сканирование и C++/Py паритет
+│   ├── test_coverage_edge_cases.py  # Граничные случаи, изоляция близких точек, C++ NativeGrid bindings
+│   └── test_robustness.py           # Тесты устойчивости, срезки углов, NoData и даунсэмплинга
 ├── .github/workflows/
 │   └── ci.yml               # Автоматический кроссплатформенный CI (Ubuntu + Windows)
 ├── scripts/

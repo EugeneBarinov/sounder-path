@@ -419,13 +419,12 @@ NativeRouteResult NativeRouter::find_path(
                             double pt_lon = lon_i + px / m_per_deg_lon;
 
                             // Check bathymetric and navigational safety of arc point
-                            int cell_r = static_cast<int>((grid->lat_max - pt_lat) / ((grid->lat_max - grid->lat_min) / rows));
-                            int cell_c = static_cast<int>((pt_lon - grid->lon_min) / ((grid->lon_max - grid->lon_min) / cols));
-                            if (cell_r < 0 || cell_r >= rows || cell_c < 0 || cell_c >= cols) {
+                            int cell_r = 0, cell_c = 0;
+                            if (!grid->lonlat_to_cell(pt_lon, pt_lat, cell_r, cell_c)) {
                                 arc_safe = false; // Point leaves grid bounds
                                 break;
                             }
-                            if (grid->depths[cell_r * cols + cell_c] <= min_depth || grid->is_restricted(cell_r, cell_c)) {
+                            if (grid->depth(cell_r, cell_c) <= min_depth || grid->is_restricted(cell_r, cell_c)) {
                                 arc_safe = false;
                                 break;
                             }
@@ -463,15 +462,9 @@ NativeRouteResult NativeRouter::find_path(
             double lat1 = result.route_coordinates[seg + 1].second;
             double seg_len_m = haversine_distance_m(lat0, lon0, lat1, lon1);
 
-            int r0 = static_cast<int>((grid->lat_max - lat0) / ((grid->lat_max - grid->lat_min) / rows));
-            int c0 = static_cast<int>((lon0 - grid->lon_min) / ((grid->lon_max - grid->lon_min) / cols));
-            int r1 = static_cast<int>((grid->lat_max - lat1) / ((grid->lat_max - grid->lat_min) / rows));
-            int c1 = static_cast<int>((lon1 - grid->lon_min) / ((grid->lon_max - grid->lon_min) / cols));
-
-            r0 = std::max(0, std::min(rows - 1, r0));
-            c0 = std::max(0, std::min(cols - 1, c0));
-            r1 = std::max(0, std::min(rows - 1, r1));
-            c1 = std::max(0, std::min(cols - 1, c1));
+            int r0 = 0, c0 = 0, r1 = 0, c1 = 0;
+            grid->lonlat_to_cell(lon0, lat0, r0, c0);
+            grid->lonlat_to_cell(lon1, lat1, r1, c1);
 
             std::vector<float> depths_along = grid->sample_depth_along_segment(r0, c0, r1, c1);
             size_t n_samples = depths_along.size();
@@ -493,10 +486,8 @@ NativeRouteResult NativeRouter::find_path(
             }
             total_distance_m += seg_len_m;
         } else {
-            int r_last = static_cast<int>((grid->lat_max - lat0) / ((grid->lat_max - grid->lat_min) / rows));
-            int c_last = static_cast<int>((lon0 - grid->lon_min) / ((grid->lon_max - grid->lon_min) / cols));
-            r_last = std::max(0, std::min(rows - 1, r_last));
-            c_last = std::max(0, std::min(cols - 1, c_last));
+            int r_last = 0, c_last = 0;
+            grid->lonlat_to_cell(lon0, lat0, r_last, c_last);
 
             double terminal_depth = grid->depth(r_last, c_last);
             double clearance = terminal_depth - dynamic_draft - ukc;

@@ -91,20 +91,22 @@ def analyze_route_bottlenecks(
         if allowable_squat > 0.0:
             # Using K=50 for shallow water
             k_factor = 50.0
-            safe_v_sq = (allowable_squat * k_factor) / block_coefficient
-            if safe_v_sq > 0:
+            safe_cb = max(0.40, min(0.95, block_coefficient))
+            safe_v_sq = (allowable_squat * k_factor) / safe_cb
+            if safe_v_sq > 0.0:
                 safe_speed = math.sqrt(safe_v_sq)
-                # Cap to minimum steering speed (~4 knots)
-                if safe_speed >= 3.5:
+                rec_speed = max(3.0, min(safe_speed, max(3.0, speed_knots - 0.5)))
+                if rec_speed < speed_knots:
+                    squat_red = max(0.0, choke_squat - allowable_squat)
                     speed_adaptation = {
                         "is_viable": True,
-                        "current_speed_knots": speed_knots,
-                        "recommended_speed_knots": round(min(safe_speed, speed_knots - 1.0), 1),
-                        "squat_reduction_m": round(choke_squat - allowable_squat, 2),
+                        "current_speed_knots": round(speed_knots, 1),
+                        "recommended_speed_knots": round(rec_speed, 1),
+                        "squat_reduction_m": round(squat_red, 2),
                         "advisory": (
-                            f"Reduce speed from {speed_knots:.1f} kts to {min(safe_speed, speed_knots - 1.0):.1f} kts "
+                            f"Reduce speed from {speed_knots:.1f} kts to {rec_speed:.1f} kts "
                             f"in bottleneck section ({shallowest_sounding['distance_nm']} NM from departure) "
-                            f"to reduce squat by {choke_squat - allowable_squat:.2f}m and restore safe UKC."
+                            f"to reduce squat by {squat_red:.2f}m and restore safe UKC."
                         ),
                     }
 
