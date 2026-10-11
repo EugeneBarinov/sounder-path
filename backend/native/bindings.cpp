@@ -42,10 +42,26 @@ PYBIND11_MODULE(seapath_native, m) {
         }), py::arg("grid"))
         .def_static("calculate_squat", &NativeRouter::calculate_squat,
                     py::arg("speed_knots"), py::arg("block_coefficient") = 0.65, py::arg("h_over_t") = 0.0)
+        // Мост Python → C++ для единого бюджета поиска.
+        // Что делаем: принимаем min_chart_depth_m / dynamic_draft_m как
+        // py::object (float или None). None → NaN → в C++ включится legacy-
+        // ветка с собственным пересчётом squat (совместимость со старыми
+        // вызовами). Число → уходит в NativeRouter как есть, пересчёт
+        // пропускается. try/catch вокруг cast: кривой тип тоже даёт NaN,
+        // а не исключение через границу языков.
         .def("find_path", [](const NativeRouter& self, int start_r, int start_c, int goal_r, int goal_c,
                              double draft, double speed_knots, double ukc, double turning_radius_m,
-                             double fairway_preference, double block_coefficient) -> py::object {
-            NativeRouteResult res = self.find_path(start_r, start_c, goal_r, goal_c, draft, speed_knots, ukc, turning_radius_m, fairway_preference, block_coefficient);
+                             double fairway_preference, double block_coefficient,
+                             py::object py_min_chart, py::object py_dyn_draft) -> py::object {
+            double min_chart = std::numeric_limits<double>::quiet_NaN();
+            double dyn_draft = std::numeric_limits<double>::quiet_NaN();
+            if (!py_min_chart.is_none()) {
+                try { min_chart = py_min_chart.cast<double>(); } catch (...) {}
+            }
+            if (!py_dyn_draft.is_none()) {
+                try { dyn_draft = py_dyn_draft.cast<double>(); } catch (...) {}
+            }
+            NativeRouteResult res = self.find_path(start_r, start_c, goal_r, goal_c, draft, speed_knots, ukc, turning_radius_m, fairway_preference, block_coefficient, min_chart, dyn_draft);
             if (!res.success) {
                 return py::none();
             }
@@ -115,5 +131,7 @@ PYBIND11_MODULE(seapath_native, m) {
         py::arg("draft"), py::arg("speed_knots"), py::arg("ukc"),
         py::arg("turning_radius_m") = 150.0,
         py::arg("fairway_preference") = 1.0,
-        py::arg("block_coefficient") = 0.65);
+        py::arg("block_coefficient") = 0.65,
+        py::arg("min_chart_depth_m") = py::none(),
+        py::arg("dynamic_draft_m") = py::none());
 }
