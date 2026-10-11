@@ -12,7 +12,7 @@ from typing import Optional, Tuple, List, Dict, Any
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from backend.core.grid import BathymetricGrid
 from backend.core.router import Router
@@ -55,7 +55,6 @@ _GEOTIFF_PATH = _RAW_DATA_DIR / "E8_2024.tif"
 if _GEOTIFF_PATH.exists():
     print(f"Loading primary bathymetric grid: {_GEOTIFF_PATH.name}...")
     full_grid = BathymetricGrid.load_from_geotiff(_GEOTIFF_PATH)
-    routing_grid = full_grid.downsample(factor=10)
 else:
     print(
         f"[DEMO MODE] {_GEOTIFF_PATH.name} not found in data/raw/. "
@@ -63,12 +62,17 @@ else:
         "Place operational EMODnet GeoTIFF in data/raw/ for real-world navigation."
     )
     full_grid = BathymetricGrid.create_synthetic()
-    routing_grid = full_grid
 
-# Optional local high-resolution soundings fusion
+# 1. Optional local high-resolution soundings fusion (before downsampling)
 _LOCAL_SURVEY_CSV = _RAW_DATA_DIR / "yevpatoriya_channel.csv"
 if _LOCAL_SURVEY_CSV.exists():
     full_grid.fuse_csv_data(_LOCAL_SURVEY_CSV)
+
+# 2. Downsample for routing AFTER soundings fusion
+if _GEOTIFF_PATH.exists():
+    routing_grid = full_grid.downsample(factor=10)
+else:
+    routing_grid = full_grid
 
 # Rasterize navigational fairways & restricted areas (RESARE)
 fairway_weights = rasterize_fairway_weights(
@@ -125,6 +129,17 @@ class RouteRequest(BaseModel):
     # strict_dukc=True → порог поиска включает squat+крен+волну (безопасно).
     # False → legacy только squat, для A/B-сравнения и отката.
     strict_dukc: bool = Field(default=True, description="Use full PIANC search budget (squat+heel+wave) instead of legacy squat-only")
+
+    @field_validator("waypoints")
+    @classmethod
+    def validate_waypoints(cls, v: Optional[List[List[float]]]) -> Optional[List[List[float]]]:
+        if v is not None:
+            if len(v) < 2:
+                raise ValueError("Waypoints list must contain at least 2 coordinate points.")
+            for idx, pt in enumerate(v):
+                if not isinstance(pt, (list, tuple)) or len(pt) != 2:
+                    raise ValueError(f"Waypoint {idx + 1} must be an exact [lon, lat] coordinate pair.")
+        return v
 
 
 class ExportRouteRequest(BaseModel):
@@ -377,17 +392,15 @@ def calculate_route(req: RouteRequest):
             combined_route.extend(leg_coords[1:])
 
         # -- Склейка профиля глубин по плечам ----------------------------------
-        # Роутер отдаёт clearance БЕЗ прилива: clearance = depth -
-        # dynamic_draft - effective_ukc. Здесь добавляем фактический уровень
-        # моря: clearance_факт = clearance_роутера + tide_offset.
-        # Пример: карта 5.0 м, dynamic_draft 2.0, UKC 0.5, прилив +0.3 →
-        # роутер дал 2.5, в ответ уходит 2.8. Именно эти значения потом едят
-        # safety_check, bottleneck и график профиля.
+        # Роутер считает clearance = depth - dynamic_draft - effective_ukc,
+        # где effective_ukc = ukc - tide_offset.
+        # То есть: clearance = (depth + tide_offset) - (dynamic_draft + ukc).
+        # Прилив УЖЕ полностью учтён в clearance роутера. Повторно прибавлять нельзя.
         for pt in leg_res["profile"]:
             combined_profile.append({
                 "distance_from_start_m": round(cum_dist_m + pt["distance_from_start_m"], 1),
                 "depth": pt["depth"],
-                "clearance": round(pt["clearance"] + req.tide_offset_m, 2),
+                "clearance": round(pt["clearance"], 2),
             })
 
         cum_dist_m += leg_res["diagnostics"]["distance_m"]
@@ -472,6 +485,8 @@ def calculate_route(req: RouteRequest):
         speed_knots=req.speed_knots,
         min_chart_depth_m=min_required_chart_depth,
         dynamic_draft_m=search_dynamic_draft,
+        corridor_feature=corridor_feature,
+        grid=routing_grid,
     )
 
     # 4. Bottleneck & Choke Point Analysis + Speed Adaptation Advisory

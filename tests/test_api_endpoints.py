@@ -61,6 +61,18 @@ def test_api_route_oob_validation(client):
     assert "outside bathymetry coverage" in res.json()["detail"]
 
 
+def test_api_route_invalid_waypoint_schema(client):
+    # Malformed coordinate points must return 422 Unprocessable Entity
+    payload = {
+        "waypoints": [[34.0], [35.0, 44.0]],
+        "draft": 1.5,
+        "speed_knots": 10.0,
+        "ukc": 0.5,
+    }
+    res = client.post("/api/route", json=payload)
+    assert res.status_code == 422
+
+
 def test_api_route_success_and_budget_consistency(client):
     # Valid route in deep water of Black Sea
     payload = {

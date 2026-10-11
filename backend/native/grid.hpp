@@ -53,8 +53,9 @@ public:
 
             int e2 = 2 * err;
             if (e2 > -dc && e2 < dr) {
-                // Supercover check: prevent diagonal cutting through obstacle corners
-                if (is_restricted(r + sr, c) || is_restricted(r, c + sc)) return false;
+                // Supercover check: prevent diagonal cutting through obstacle corners (shoal or restricted)
+                if (depth(r + sr, c) <= min_depth || is_restricted(r + sr, c) ||
+                    depth(r, c + sc) <= min_depth || is_restricted(r, c + sc)) return false;
             }
             if (e2 > -dc) {
                 err -= dc;

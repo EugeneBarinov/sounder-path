@@ -104,6 +104,8 @@ def verify_ecdis_route_safety(
     speed_knots: float,
     min_chart_depth_m: Optional[float] = None,
     dynamic_draft_m: Optional[float] = None,
+    corridor_feature: Optional[Dict[str, Any]] = None,
+    grid: Optional[Any] = None,
 ) -> Dict[str, Any]:
     """
     Automated ECDIS Route Checking per IEC 61174:2015.
@@ -112,6 +114,7 @@ def verify_ecdis_route_safety(
     2. Critical UKC warnings (Clearance < 0.35m margin).
     3. Maximum Rate of Turn (ROT) feasibility based on vessel speed.
     4. Proximity to military / ecological restricted zones (RESARE).
+    5. Cross-track safety corridor (XTD) boundary penetration into shoals.
     """
     alarms: List[Dict[str, Any]] = []
     safety_depth = min_chart_depth_m if min_chart_depth_m is not None else (draft + dynamic_squat + ukc)
@@ -169,6 +172,26 @@ def verify_ecdis_route_safety(
                 ),
                 "waypoint_index": idx,
             })
+
+    # 3. Cross-Track Safety Corridor (XTD) Boundary Penetration Check
+    if corridor_feature and grid:
+        ring = corridor_feature.get("geometry", {}).get("coordinates", [[]])[0]
+        for pt in ring:
+            lon_c, lat_c = pt[0], pt[1]
+            if hasattr(grid, "lonlat_to_cell") and hasattr(grid, "get_depth"):
+                r_c, c_c = grid.lonlat_to_cell(lon_c, lat_c)
+                d_c = grid.get_depth(r_c, c_c)
+                if d_c <= safety_depth or grid.is_restricted(r_c, c_c):
+                    alarms.append({
+                        "severity": "WARNING",
+                        "code": "ALM-04-XTD-CORRIDOR-HAZARD",
+                        "title": "Safety Corridor Boundary Shoal / Hazard",
+                        "detail": (
+                            f"Cross-track limit (XTD) intersects shallow water ({d_c:.1f}m <= {safety_depth:.1f}m) "
+                            f"or restricted zone at ({lon_c:.3f}, {lat_c:.3f}). Consider reducing XTD width."
+                        ),
+                    })
+                    break
 
     # 3. Overall ECDIS Status Assessment
     has_critical = any(a["severity"] == "CRITICAL" for a in alarms)

@@ -107,8 +107,13 @@ class Router:
 
             int_e2 = 2 * err
             if int_e2 > -dc and int_e2 < dr:
-                # Supercover check: prevent diagonal cutting through obstacle corners
-                if self.grid.is_restricted(r + sr, c) or self.grid.is_restricted(r, c + sc):
+                # Supercover check: prevent diagonal cutting through obstacle corners (shoal or restricted)
+                if (
+                    self.grid.get_depth(r + sr, c) <= min_depth
+                    or self.grid.is_restricted(r + sr, c)
+                    or self.grid.get_depth(r, c + sc) <= min_depth
+                    or self.grid.is_restricted(r, c + sc)
+                ):
                     return False
             if int_e2 > -dc:
                 err -= dc
@@ -189,14 +194,12 @@ class Router:
 
         g_cost: Dict[Tuple[int, int], float] = {(start_r, start_c): 0.0}
         came_from: Dict[Tuple[int, int], Tuple[int, int]] = {}
-        closed_set = set()
 
         while open_heap:
             _, g_curr, r, c = heapq.heappop(open_heap)
 
-            if (r, c) in closed_set:
+            if g_curr > g_cost.get((r, c), math.inf):
                 continue
-            closed_set.add((r, c))
 
             if r == goal_r and c == goal_c:
                 return self._build_result(
@@ -207,11 +210,16 @@ class Router:
                 nr, nc = r + dr, c + dc
                 if not (0 <= nr < rows and 0 <= nc < cols):
                     continue
-                if (nr, nc) in closed_set:
-                    continue
 
                 if dr != 0 and dc != 0:
-                    if self.grid.is_restricted(r + dr, c) or self.grid.is_restricted(r, c + dc):
+                    s1_r, s1_c = r + dr, c
+                    s2_r, s2_c = r, c + dc
+                    if (
+                        self.grid.get_depth(s1_r, s1_c) <= min_depth
+                        or self.grid.is_restricted(s1_r, s1_c)
+                        or self.grid.get_depth(s2_r, s2_c) <= min_depth
+                        or self.grid.is_restricted(s2_r, s2_c)
+                    ):
                         continue
 
                 depth = float(self.grid.depths[nr, nc])
@@ -236,7 +244,7 @@ class Router:
                 if g_new < g_cost.get((nr, nc), math.inf):
                     g_cost[(nr, nc)] = g_new
                     came_from[(nr, nc)] = (r, c)
-                    f_score = g_new + _heuristic(nr, nc, goal_r, goal_c)
+                    f_score = g_new + 0.30 * _heuristic(nr, nc, goal_r, goal_c)
                     heapq.heappush(open_heap, (f_score, g_new, nr, nc))
 
         return None
@@ -376,12 +384,19 @@ class Router:
                 diff = (brg_out - brg_in + 180.0) % 360.0 - 180.0
                 turn_angle = abs(diff)
                 if turn_angle >= 0.5 and turning_radius_m > 10.0 and speed_knots > 0.0:
-                    turn_radius = turning_radius_m
-                    rot = (5556.0 / math.pi) * (speed_knots / turning_radius_m)
-                    rot_deg_min = round(rot if diff >= 0.0 else -rot, 1)
                     rad_half = math.radians(turn_angle / 2.0)
+                    tan_half = math.tan(rad_half)
+                    leg_prev_m = haversine_distance_m(lat_prev, lon_prev, lat, lon)
+                    leg_next_m = leg_dist_nm * 1852.0
+                    tangent_dist = turning_radius_m * tan_half
+                    max_t_dist = min(leg_prev_m * 0.40, leg_next_m * 0.40)
+                    safe_t_dist = min(tangent_dist, max_t_dist)
+                    eff_r = safe_t_dist / tan_half if tan_half > 0.001 else turning_radius_m
+                    turn_radius = eff_r
+                    rot = (5556.0 / math.pi) * (speed_knots / eff_r)
+                    rot_deg_min = round(rot if diff >= 0.0 else -rot, 1)
                     v_ms = speed_knots * 0.514444
-                    wop_distance_m = round(turning_radius_m * math.tan(rad_half) + v_ms * 12.0, 1)
+                    wop_distance_m = round(safe_t_dist + v_ms * 12.0, 1)
 
             waypoints.append({
                 "lat": round(lat, 6),

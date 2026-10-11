@@ -165,9 +165,12 @@ NativeRouteResult NativeRouter::find_path(
                 continue;
             }
 
-            // Diagonal corner check: prevent cutting diagonally past obstacle corners
+            // Diagonal corner check: prevent cutting diagonally past obstacle corners (shoals, land, or restricted zones)
             if (DIRS[i].dr != 0 && DIRS[i].dc != 0) {
-                if (grid->is_restricted(curr.r + DIRS[i].dr, curr.c) || grid->is_restricted(curr.r, curr.c + DIRS[i].dc)) {
+                int s1_r = curr.r + DIRS[i].dr, s1_c = curr.c;
+                int s2_r = curr.r, s2_c = curr.c + DIRS[i].dc;
+                if (grid->depth(s1_r, s1_c) <= min_depth || grid->is_restricted(s1_r, s1_c) ||
+                    grid->depth(s2_r, s2_c) <= min_depth || grid->is_restricted(s2_r, s2_c)) {
                     continue;
                 }
             }
@@ -218,7 +221,8 @@ NativeRouteResult NativeRouter::find_path(
                 g_cost[n_idx] = g_new;
                 came_from[n_idx] = static_cast<int32_t>(curr_idx);
 
-                float h = std::hypot(static_cast<float>(nr - goal_r), static_cast<float>(nc - goal_c));
+                // Admissible heuristic scaled by minimum possible fairway discount (0.30)
+                float h = 0.30f * std::hypot(static_cast<float>(nr - goal_r), static_cast<float>(nc - goal_c));
                 open_heap.push({g_new + h, g_new, nr, nc});
             }
         }
@@ -294,14 +298,32 @@ NativeRouteResult NativeRouter::find_path(
 
             double abs_turn = std::abs(diff);
             if (abs_turn >= 0.5 && turning_radius_m > 10.0 && speed_knots > 0.0) {
+                double rad_half = (abs_turn * 3.14159265358979323846) / 360.0;
+                double tan_half = std::tan(rad_half);
+
+                double leg_prev_m = haversine_distance_m(
+                    wp_coords[i - 1].first, wp_coords[i - 1].second,
+                    wp_coords[i].first, wp_coords[i].second
+                );
+                double leg_next_m = haversine_distance_m(
+                    wp_coords[i].first, wp_coords[i].second,
+                    wp_coords[i + 1].first, wp_coords[i + 1].second
+                );
+
+                double tangent_dist = turning_radius_m * tan_half;
+                double max_t_dist = std::min(leg_prev_m * 0.40, leg_next_m * 0.40);
+                double safe_t_dist = std::min(tangent_dist, max_t_dist);
+                double eff_r = (tan_half > 0.001) ? (safe_t_dist / tan_half) : turning_radius_m;
+
+                nav_wp.turn_radius_m = std::round(eff_r * 10.0) / 10.0;
+
                 // Rate of Turn (ROT in deg/min): omega = V / R -> ROT = (5556 / pi) * (V_kts / R_m)
-                double rot = (5556.0 / 3.14159265358979323846) * (speed_knots / turning_radius_m);
+                double rot = (5556.0 / 3.14159265358979323846) * (speed_knots / eff_r);
                 nav_wp.rot_deg_min = std::round((diff >= 0.0 ? rot : -rot) * 10.0) / 10.0;
 
                 // Wheel Over Point (WOP in meters): R * tan(|theta| / 2) + V_ms * t_delay (12s lag)
-                double rad_half = (abs_turn * 3.14159265358979323846) / 360.0;
                 double v_ms = speed_knots * 0.514444;
-                double wop_m = turning_radius_m * std::tan(rad_half) + v_ms * 12.0;
+                double wop_m = safe_t_dist + v_ms * 12.0;
                 nav_wp.wop_distance_m = std::round(wop_m * 10.0) / 10.0;
             } else {
                 nav_wp.rot_deg_min = 0.0;
@@ -374,12 +396,12 @@ NativeRouteResult NativeRouter::find_path(
                     double cx = bx * center_dist;
                     double cy = by * center_dist;
 
-                    // Interpolate 6 points along the turning arc
+                    // Dense interpolation (12 points) along the turning arc
                     std::vector<std::pair<double, double>> arc_geo_points;
                     bool arc_safe = true;
 
-                    for (int step = 0; step <= 6; ++step) {
-                        double t = static_cast<double>(step) / 6.0;
+                    for (int step = 0; step <= 12; ++step) {
+                        double t = static_cast<double>(step) / 12.0;
                         // Linear blend from T1 to T2 projected from Center C
                         double chord_x = t1_x + (t2_x - t1_x) * t;
                         double chord_y = t1_y + (t2_y - t1_y) * t;
@@ -396,11 +418,13 @@ NativeRouteResult NativeRouter::find_path(
                         // Check bathymetric and navigational safety of arc point
                         int cell_r = static_cast<int>((grid->lat_max - pt_lat) / ((grid->lat_max - grid->lat_min) / rows));
                         int cell_c = static_cast<int>((pt_lon - grid->lon_min) / ((grid->lon_max - grid->lon_min) / cols));
-                        if (cell_r >= 0 && cell_r < rows && cell_c >= 0 && cell_c < cols) {
-                            if (grid->depths[cell_r * cols + cell_c] <= min_depth || grid->is_restricted(cell_r, cell_c)) {
-                                arc_safe = false;
-                                break;
-                            }
+                        if (cell_r < 0 || cell_r >= rows || cell_c < 0 || cell_c >= cols) {
+                            arc_safe = false; // Point leaves grid bounds
+                            break;
+                        }
+                        if (grid->depths[cell_r * cols + cell_c] <= min_depth || grid->is_restricted(cell_r, cell_c)) {
+                            arc_safe = false;
+                            break;
                         }
                         arc_geo_points.push_back({pt_lon, pt_lat});
                     }

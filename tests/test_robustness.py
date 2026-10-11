@@ -132,3 +132,61 @@ def test_grid_downsample_fairway_preservation(mock_grid):
     assert coarse.is_restricted(5, 5) is True
     # Clean deep water blocks must remain unrestricted
     assert coarse.is_restricted(1, 1) is False
+
+
+def test_diagonal_corner_obstacle_cutting():
+    """Verify that diagonal transitions CANNOT cut past the corner of a land/shoal cell."""
+    # 3x3 grid:
+    # water(10m) | land(0m)  | water(10m)
+    # land(0m)   | water(10m)| water(10m)
+    # water(10m) | water(10m)| water(10m)
+    depths = np.full((3, 3), 10.0, dtype=np.float32)
+    depths[0, 1] = 0.0  # Land on side 1
+    depths[1, 0] = 0.0  # Land on side 2
+
+    grid = BathymetricGrid(
+        lat_min=44.0, lat_max=44.03, lon_min=33.0, lon_max=33.03, depths=depths
+    )
+    py_router = Router(grid)
+    native_g = seapath_native.NativeGrid(3, 3, 44.0, 44.03, 33.0, 33.03, depths)
+    cpp_router = seapath_native.NativeRouter(native_g)
+
+    # Attempting diagonal move from (0,0) to (1,1):
+    # Both side cells (0,1) and (1,0) are land. Path MUST NOT cut between them!
+    res_py = py_router.find_path(0, 0, 1, 1, draft=1.5, speed_knots=10.0, ukc=0.5)
+    res_cpp = cpp_router.find_path(0, 0, 1, 1, draft=1.5, speed_knots=10.0, ukc=0.5)
+
+    assert res_py is None
+    assert res_cpp is None
+
+
+def test_geotiff_nodata_handling(tmp_path):
+    """Verify that GeoTIFF NoData value (-9999) is converted to 0.0m unnavigable and never inverted to +9999m."""
+    import rasterio
+    from rasterio.transform import from_bounds
+
+    tif_path = tmp_path / "test_nodata.tif"
+    data = np.array([[-9999.0, -15.0], [-25.0, -9999.0]], dtype=np.float32)
+    transform = from_bounds(33.0, 44.0, 34.0, 45.0, 2, 2)
+
+    with rasterio.open(
+        tif_path,
+        "w",
+        driver="GTiff",
+        height=2,
+        width=2,
+        count=1,
+        dtype=rasterio.float32,
+        crs="EPSG:4326",
+        transform=transform,
+        nodata=-9999.0,
+    ) as dst:
+        dst.write(data, 1)
+
+    grid = BathymetricGrid.load_from_geotiff(tif_path)
+    # The -9999 nodata pixels must be masked to 0.0m (unnavigable), not +9999m!
+    assert grid.depths[0, 0] == 0.0
+    assert grid.depths[1, 1] == 0.0
+    assert grid.depths[0, 1] == 15.0
+    assert grid.depths[1, 0] == 25.0
+

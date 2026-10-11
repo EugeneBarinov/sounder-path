@@ -8,7 +8,8 @@ Implements IMO Resolution A.893(21) bridge passage planning standards:
 - Rate of Turn (ROT) computation.
 """
 
-from typing import List, Dict, Any, Tuple
+from __future__ import annotations
+from typing import List, Dict, Any, Tuple, Optional
 import math
 
 DEG_TO_RAD = math.pi / 180.0

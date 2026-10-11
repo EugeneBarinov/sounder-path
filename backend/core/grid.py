@@ -42,6 +42,12 @@ class BathymetricGrid:
             else np.ones((self.rows, self.cols), dtype=np.float32)
         )
 
+    def get_depth(self, r: int, c: int) -> float:
+        """Returns seabed water depth in meters, or 0.0 if out of bounds."""
+        if 0 <= r < self.rows and 0 <= c < self.cols:
+            return float(self.depths[r, c])
+        return 0.0
+
     def get_fairway_weight(self, r: int, c: int) -> float:
         """Returns fairway transit modifier for grid cell [0.3..1.0..1000.0]."""
         if 0 <= r < self.rows and 0 <= c < self.cols:
@@ -76,9 +82,15 @@ class BathymetricGrid:
                         f"Unsupported CRS (EPSG:{epsg_code}). BathymetricGrid expects EPSG:4326 (WGS 84 geographic coordinates)."
                     )
 
-            data = src.read(1).astype(np.float32)
-            # Invert negative elevation to positive depth
-            depths = -data
+            # Read with mask to handle NoData values (e.g., -9999 or masked bands)
+            raw_data = src.read(1, masked=True)
+            if src.nodata is not None:
+                raw_data = np.ma.masked_equal(raw_data, src.nodata)
+
+            # Unmasked filled data: nodata pixels become 0.0 (unnavigable)
+            filled = raw_data.filled(0.0).astype(np.float32)
+            # Invert negative elevation to positive water depth
+            depths = -filled
             depths = np.nan_to_num(depths, nan=0.0)
 
             # Mask terrestrial elevation (values above sea level become <= 0.0)
@@ -132,9 +144,17 @@ class BathymetricGrid:
         Generate a downsampled grid for hierarchical routing.
         Uses block-minimum pooling to guarantee conservative depth estimations
         (worst-case shoal clearance) across each aggregated zone.
+        Recalculates spatial bounds to match the cropped cell extents.
         """
         h = (self.rows // factor) * factor
         w = (self.cols // factor) * factor
+
+        lat_step = (self.lat_max - self.lat_min) / max(1, self.rows)
+        lon_step = (self.lon_max - self.lon_min) / max(1, self.cols)
+
+        # Adjust bounds to exactly correspond to cropped pixel matrix
+        cropped_lat_min = self.lat_max - h * lat_step
+        cropped_lon_max = self.lon_min + w * lon_step
 
         cropped = self.depths[:h, :w]
         blocks = cropped.reshape(h // factor, factor, w // factor, factor)
@@ -150,10 +170,10 @@ class BathymetricGrid:
             coarse_fw = np.where(max_fw >= 500.0, max_fw, min_fw).astype(np.float32)
 
         return BathymetricGrid(
-            lat_min=self.lat_min,
+            lat_min=cropped_lat_min,
             lat_max=self.lat_max,
             lon_min=self.lon_min,
-            lon_max=self.lon_max,
+            lon_max=cropped_lon_max,
             depths=coarse_depths,
             fairway_weights=coarse_fw,
         )
