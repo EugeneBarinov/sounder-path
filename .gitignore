@@ -51,6 +51,7 @@ logs/
 # Processed cache / artifacts
 data/processed/*
 !data/processed/.gitkeep
+data/cache/
 
 # Large GeoTIFF / bathymetry data files (managed externally)
 data/raw/*.tif

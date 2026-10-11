@@ -887,4 +887,173 @@ def test_safety_depth_fail_closed_on_invalid_threshold():
     assert any(a["code"] == "ALM-00-INVALID-SAFETY-DEPTH" for a in res["alarms"])
 
 
+def test_export_without_route_scans_curved_arc_shoal_outside_straight_xtd(client):
+    """
+    P1 verification: When client requests export without 'route' coordinates,
+    the backend must construct the true physical curved trajectory (filleted circular turn arcs)
+    rather than scanning straight lines between waypoints.
+    A shoal located along the curved arc (586m from the corner, outside 185.2m straight-line XTD)
+    must be detected by the corridor swath and reject hazardous export.
+    """
+    from backend.main import full_grid
+
+    apex_lon, apex_lat = 33.507282, 43.694746
+    r, c = full_grid.lonlat_to_cell(apex_lon, apex_lat)
+    orig_depth = float(full_grid.depths[r, c])
+
+    # 1. Place a shallow sounding at the arc apex
+    full_grid.depths[r, c] = 1.0
+
+    payload = {
+        "waypoints": [
+            {"lon": 33.5, "lat": 43.5, "turn_radius_m": 2000.0, "turn_angle_deg": 0.0},
+            {"lon": 33.5, "lat": 43.7, "turn_radius_m": 2000.0, "turn_angle_deg": 90.0},
+            {"lon": 33.7, "lat": 43.7, "turn_radius_m": 2000.0, "turn_angle_deg": 0.0},
+        ],
+        "draft": 2.0,
+        "speed_knots": 10.0,
+        "ukc": 0.5,
+        "safety_contour": 5.0,
+        "turning_radius_m": 2000.0,
+        "allow_unsafe": False,
+    }
+
+    try:
+        # Route is omitted in payload: must construct curved arc and detect shoal
+        res = client.post("/api/export/rtz", json=payload)
+        assert res.status_code == 400
+        detail = res.json()["detail"]
+        assert "Cannot export hazardous passage plan" in detail
+        assert "ALM-01-GROUNDING-HAZARD" in detail or "ALM-04-XTD-CORRIDOR-HAZARD" in detail
+    finally:
+        full_grid.depths[r, c] = orig_depth
+
+    # 2. When shoal is removed, export succeeds
+    res_safe = client.post("/api/export/rtz", json=payload)
+    assert res_safe.status_code == 200
+
+
+def test_multi_waypoint_route_junction_kinematics_and_arc_splicing(client):
+    """
+    P2 verification: Multi-waypoint route junctions must receive calculated turning radius,
+    valid rate-of-turn, and have circular fillet turn arcs spliced into the route geometry.
+    Must not trigger false ALM-05 alarms for intermediate course alterations.
+    """
+    payload = {
+        "waypoints": [[33.5, 43.5], [33.5, 43.7], [33.7, 43.7]],
+        "draft": 2.0,
+        "speed_knots": 10.0,
+        "ukc": 0.5,
+        "turning_radius_m": 2000.0,
+    }
+    res = client.post("/api/route", json=payload)
+    assert res.status_code == 200
+    data = res.json()
+
+    wps = data["waypoints"]
+    assert len(wps) == 3
+
+    # Intermediate junction waypoint (index 1)
+    wp1 = wps[1]
+    assert wp1["turn_radius_m"] == 2000.0
+    assert wp1["turn_angle_deg"] > 80.0
+    assert wp1["rot_deg_min"] > 0.0
+    assert wp1["wop_distance_m"] > 0.0
+    assert wp1["maneuver_feasible"] is True
+
+    # No false turning radius alarm (ALM-05)
+    alarm_codes = [a["code"] for a in data.get("alarms", [])]
+    assert "ALM-05-TURNING-RADIUS-RESTRICTION" not in alarm_codes
+
+    # Turn arcs feature collection must be populated
+    turn_arcs = data.get("turn_arcs", {})
+    assert turn_arcs.get("type") == "FeatureCollection"
+    assert len(turn_arcs.get("features", [])) >= 1
+
+
+def test_multi_worker_plan_id_disk_cache(client):
+    """
+    P2 verification: Passage plans stored via plan_id must persist to cross-process disk cache
+    so that multi-worker Uvicorn processes can retrieve and validate plans regardless of worker routing.
+    """
+    from backend.main import _SAVED_PLANS, _PLANS_CACHE_DIR
+
+    payload = {
+        "waypoints": [[33.5, 43.5], [33.5, 43.7], [33.7, 43.7]],
+        "draft": 2.0,
+        "speed_knots": 10.0,
+        "ukc": 0.5,
+        "turning_radius_m": 2000.0,
+    }
+    res = client.post("/api/route", json=payload)
+    assert res.status_code == 200
+    plan_id = res.json()["plan_id"]
+
+    # Verify atomic file exists on disk
+    plan_file = _PLANS_CACHE_DIR / f"{plan_id}.json"
+    assert plan_file.exists()
+
+    # Clear in-memory LRU to simulate a request landing on a separate Uvicorn worker process
+    _SAVED_PLANS.clear()
+
+    # Export via plan_id must succeed by loading from disk cache
+    res_export = client.post("/api/export/rtz", json={"plan_id": plan_id})
+    assert res_export.status_code == 200
+
+
+def test_production_fail_closed_insufficient_geo_span(tmp_path):
+    """
+    P1 verification: In production mode, a dataset with 1000x1000 cells but insufficient
+    geographic span (dLat < 3.0° or dLon < 8.0°) must fail closed.
+    """
+    import subprocess
+    import sys
+    import os
+    import numpy as np
+    import rasterio
+    from rasterio.transform import from_bounds
+    from pathlib import Path
+
+    base_dir = Path(__file__).resolve().parent.parent
+    mock_dir = tmp_path / "geo_span_mock"
+    mock_dir.mkdir(parents=True, exist_ok=True)
+    small_span_tif = mock_dir / "small_span.tif"
+
+    # Create 1500x1500 raster with small geographic span (0.5° x 0.5°, 2.25M cells)
+    width, height = 1500, 1500
+    transform = from_bounds(33.0, 43.0, 33.5, 43.5, width, height)
+    data = np.full((1, height, width), -50.0, dtype=np.float32)
+
+    with rasterio.open(
+        small_span_tif,
+        "w",
+        driver="GTiff",
+        height=height,
+        width=width,
+        count=1,
+        dtype=np.float32,
+        crs="EPSG:4326",
+        transform=transform,
+    ) as dst:
+        dst.write(data)
+
+    env = os.environ.copy()
+    env["SEAPATH_ENV"] = "production"
+    env["SEAPATH_GEOTIFF_PATH"] = str(small_span_tif)
+    env["PYTHONPATH"] = str(base_dir)
+
+    proc = subprocess.run(
+        [sys.executable, "-c", "import backend.main"],
+        cwd=str(base_dir),
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+
+    assert proc.returncode != 0
+    assert "PRODUCTION FAILURE" in proc.stderr
+    assert "geographic span" in proc.stderr
+
+
+
 

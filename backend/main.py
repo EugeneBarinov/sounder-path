@@ -5,9 +5,10 @@ FastAPI service providing bathymetric passage planning, fairway optimization,
 and real-time under-keel clearance (UKC) analysis.
 """
 
-from collections import deque
+from collections import deque, OrderedDict
 from pathlib import Path
 from typing import Optional, Tuple, List, Dict, Any
+import json
 import uuid
 
 from fastapi import FastAPI, HTTPException, Request, Response
@@ -27,6 +28,9 @@ from backend.core.kinematics import (
     generate_turn_arcs_feature_collection,
     calculate_bearing_deg,
     calculate_distance_m,
+    calculate_turn_arc_geometry,
+    construct_filleted_path,
+    splice_turn_arcs_into_route,
 )
 import math
 
@@ -147,13 +151,32 @@ else:
 full_grid.is_synthetic = is_synthetic_mode
 
 if _IS_PRODUCTION:
-    # Physical dataset validation: prevent running on miniature test samples
-    # regardless of filename. Operational regional grid requires >= 1000x1000 cells.
-    if full_grid.width < 1000 or full_grid.height < 1000 or (full_grid.width * full_grid.height < 2_000_000):
+    # 1. Physical dataset matrix dimensions check (minimum 1000x1000 cells)
+    if full_grid.cols < 1000 or full_grid.rows < 1000 or (full_grid.cols * full_grid.rows < 2_000_000):
         raise RuntimeError(
             f"[PRODUCTION FAILURE] Loaded bathymetric raster '{_GEOTIFF_PATH.name}' dimensions "
-            f"({full_grid.width}x{full_grid.height}, {full_grid.width * full_grid.height} cells) are insufficient for operational navigation. "
+            f"({full_grid.cols}x{full_grid.rows}, {full_grid.cols * full_grid.rows} cells) are insufficient for operational navigation. "
             f"Full regional bathymetry (minimum 1000x1000 cells) is required in production."
+        )
+
+    # 2. Geographic coverage (Bounding Box) validation for regional navigation domain
+    lat_span = abs(full_grid.lat_max - full_grid.lat_min)
+    lon_span = abs(full_grid.lon_max - full_grid.lon_min)
+    if lat_span < 3.0 or lon_span < 8.0:
+        raise RuntimeError(
+            f"[PRODUCTION FAILURE] Loaded bathymetric raster '{_GEOTIFF_PATH.name}' geographic span "
+            f"(dLat={lat_span:.2f}°, dLon={lon_span:.2f}°) is insufficient for operational regional navigation. "
+            f"Expected regional coverage: dLat >= 3.0°, dLon >= 8.0°."
+        )
+
+    # 3. Spatial resolution validation: cell step must not exceed 0.003 degrees (~300m)
+    d_lat_cell = lat_span / max(1, full_grid.rows)
+    d_lon_cell = lon_span / max(1, full_grid.cols)
+    if d_lat_cell > 0.003 or d_lon_cell > 0.003:
+        raise RuntimeError(
+            f"[PRODUCTION FAILURE] Loaded bathymetric raster '{_GEOTIFF_PATH.name}' resolution "
+            f"({d_lat_cell:.5f}° x {d_lon_cell:.5f}°) is too coarse for operational passage planning. "
+            f"High-resolution bathymetry (<= 0.003° per cell) is required in production."
         )
 
 
@@ -590,14 +613,52 @@ def get_depth_at(lon: float, lat: float):
 # ---------------------------------------------------------------------------
 # Server-Side Passage Plan Registry (Cache for export validation)
 # ---------------------------------------------------------------------------
-_SAVED_PLANS: Dict[str, Dict[str, Any]] = {}
+_PLANS_CACHE_DIR = _BASE_DIR / "data" / "cache" / "plans"
+_PLANS_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+_SAVED_PLANS: "OrderedDict[str, Dict[str, Any]]" = OrderedDict()
 
 def _store_passage_plan(plan_id: str, plan_data: Dict[str, Any]) -> None:
-    """Stores verified passage plan in memory (LRU cap of 200 items)."""
-    if len(_SAVED_PLANS) > 200:
-        oldest_k = next(iter(_SAVED_PLANS))
-        _SAVED_PLANS.pop(oldest_k, None)
+    """Stores verified passage plan in memory LRU and cross-process disk cache."""
+    # 1. Update in-memory LRU
+    if plan_id in _SAVED_PLANS:
+        _SAVED_PLANS.move_to_end(plan_id)
     _SAVED_PLANS[plan_id] = plan_data
+    while len(_SAVED_PLANS) > 200:
+        _SAVED_PLANS.popitem(last=False)
+
+    # 2. Persist to disk for multi-worker/process access
+    try:
+        plan_file = _PLANS_CACHE_DIR / f"{plan_id}.json"
+        tmp_file = _PLANS_CACHE_DIR / f"{plan_id}.tmp"
+        with open(tmp_file, "w", encoding="utf-8") as f:
+            json.dump(plan_data, f)
+        tmp_file.replace(plan_file)
+    except Exception:
+        pass
+
+
+def _get_passage_plan(plan_id: str) -> Optional[Dict[str, Any]]:
+    """Retrieves verified passage plan from memory LRU or cross-process disk cache."""
+    # 1. Check in-memory LRU
+    if plan_id in _SAVED_PLANS:
+        _SAVED_PLANS.move_to_end(plan_id)
+        return _SAVED_PLANS[plan_id]
+
+    # 2. Check cross-process disk cache
+    plan_file = _PLANS_CACHE_DIR / f"{plan_id}.json"
+    if plan_file.exists():
+        try:
+            with open(plan_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            _SAVED_PLANS[plan_id] = data
+            _SAVED_PLANS.move_to_end(plan_id)
+            while len(_SAVED_PLANS) > 200:
+                _SAVED_PLANS.popitem(last=False)
+            return data
+        except Exception:
+            return None
+    return None
+
 
 
 @app.post("/api/route")
@@ -795,21 +856,35 @@ def calculate_route(req: RouteRequest):
             turn_ang = abs(diff)
             wp["turn_angle_deg"] = round(turn_ang, 1)
 
-            act_r = wp.get("turn_radius_m", req.turning_radius_m)
-            if turn_ang >= 0.5 and act_r > 10.0 and req.speed_knots > 0.0:
-                rot = (5556.0 / math.pi) * (req.speed_knots / act_r)
-                wp["rot_deg_min"] = round(rot if diff >= 0.0 else -rot, 1)
-                rad_half = math.radians(turn_ang / 2.0)
-                v_ms = req.speed_knots * 0.514444
-                t_dist = act_r * math.tan(rad_half)
-                wp["wop_distance_m"] = round(t_dist + v_ms * 12.0, 1)
+            # Assign valid turning radius for intermediate course alterations
+            raw_r = wp.get("turn_radius_m")
+            act_r = float(raw_r) if (raw_r is not None and float(raw_r) > 10.0) else float(req.turning_radius_m or 150.0)
+            wp["turn_radius_m"] = act_r
+
+            geom = calculate_turn_arc_geometry(
+                prev_lon=wp_prev["lon"],
+                prev_lat=wp_prev["lat"],
+                wp_lon=wp["lon"],
+                wp_lat=wp["lat"],
+                next_lon=wp_next["lon"],
+                next_lat=wp_next["lat"],
+                radius_m=act_r,
+                speed_knots=req.speed_knots,
+            )
+            if geom:
+                wp["rot_deg_min"] = geom["rot_deg_min"]
+                wp["wop_distance_m"] = geom["wop_dist_m"]
+                wp["effective_turn_radius_m"] = geom["effective_radius_m"]
+                wp["maneuver_feasible"] = geom["is_feasible"]
             else:
                 wp["rot_deg_min"] = 0.0
                 wp["wop_distance_m"] = 0.0
+                wp["maneuver_feasible"] = True
         else:
             wp["turn_angle_deg"] = 0.0
             wp["rot_deg_min"] = 0.0
             wp["wop_distance_m"] = 0.0
+            wp["maneuver_feasible"] = True
 
         if i == 0 and snapped_wps_info[0]["snapped"]:
             wp["snap_offset_m"] = snapped_wps_info[0]["snap_distance_m"]
@@ -830,6 +905,31 @@ def calculate_route(req: RouteRequest):
                         break
 
         combined_waypoints.append(wp)
+
+    # Splice filleted turn arcs into combined_route so real route geometry contains the physical turns
+    turn_geoms_list = []
+    for i in range(1, n_wps - 1):
+        wp_turn = combined_waypoints[i]
+        wp_prev = combined_waypoints[i - 1]
+        wp_next = combined_waypoints[i + 1]
+        r_val = float(wp_turn.get("turn_radius_m") or req.turning_radius_m or 150.0)
+        if r_val > 10.0:
+            g = calculate_turn_arc_geometry(
+                prev_lon=wp_prev["lon"],
+                prev_lat=wp_prev["lat"],
+                wp_lon=wp_turn["lon"],
+                wp_lat=wp_turn["lat"],
+                next_lon=wp_next["lon"],
+                next_lat=wp_next["lat"],
+                radius_m=r_val,
+                speed_knots=req.speed_knots,
+            )
+            if g:
+                g["wp_index"] = i + 1
+                turn_geoms_list.append(g)
+
+    if turn_geoms_list:
+        combined_route = splice_turn_arcs_into_route(combined_route, turn_geoms_list)
 
     total_dist_nm = round(cum_dist_m / 1852.0, 2)
     eta_hours = round(total_dist_nm / req.speed_knots, 2) if req.speed_knots > 0 else None
@@ -1247,7 +1347,8 @@ def _verify_export_safety(
         requested_radius_m=turning_radius_m,
     )
 
-    client_flagged_unsafe = (is_safe_claim is False) or (safety_status_claim == "CRITICAL_HAZARD")
+    any_maneuver_infeasible = any(wp.get("maneuver_feasible") is False for wp in waypoints)
+    client_flagged_unsafe = (is_safe_claim is False) or (safety_status_claim == "CRITICAL_HAZARD") or any_maneuver_infeasible
     is_safe = bool(safety_audit["is_safe"] and not client_flagged_unsafe)
 
     # Preserve WARNING_ADVISORY status instead of overwriting with SAFE_PASSED
@@ -1268,7 +1369,7 @@ def _verify_export_safety(
 
 def _prepare_export_data(req: ExportRouteRequest) -> Tuple[List[Dict[str, Any]], List[List[float]], Dict[str, Any], bool, str, List[str]]:
     if req.plan_id:
-        plan = _SAVED_PLANS.get(req.plan_id)
+        plan = _get_passage_plan(req.plan_id)
         if not plan:
             raise HTTPException(
                 status_code=404,
@@ -1300,10 +1401,26 @@ def _prepare_export_data(req: ExportRouteRequest) -> Tuple[List[Dict[str, Any]],
             d["lat"] = wp.get_lat()
             d["lon"] = wp.get_lon()
             wps_dicts.append(d)
+        is_safe_claim = req.is_safe
+        safety_status_claim = req.safety_status
         if req.route and len(req.route) >= 2:
             route_coords = req.route
         else:
-            route_coords = [[w["lon"], w["lat"]] for w in wps_dicts]
+            # Construct real physical navigation track with circular fillet turn arcs
+            route_coords, turn_geoms = construct_filleted_path(
+                wps_dicts,
+                default_radius_m=req.turning_radius_m or 150.0,
+                speed_knots=req.speed_knots,
+                step_m=50.0,
+            )
+            for tg in turn_geoms:
+                wp_idx = tg.get("wp_index", 0) - 1
+                if 0 <= wp_idx < len(wps_dicts):
+                    wps_dicts[wp_idx]["turn_radius_m"] = tg.get("effective_radius_m", req.turning_radius_m)
+                    if not tg.get("is_feasible", True):
+                        wps_dicts[wp_idx]["maneuver_feasible"] = False
+                        is_safe_claim = False
+                        safety_status_claim = "CRITICAL_HAZARD"
         draft = req.draft
         speed_knots = req.speed_knots
         ukc = req.ukc

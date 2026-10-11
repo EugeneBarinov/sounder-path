@@ -215,3 +215,156 @@ def generate_turn_arcs_feature_collection(
         })
 
     return {"type": "FeatureCollection", "features": features}
+
+
+def interpolate_linear_points(p0: List[float], p1: List[float], step_m: float = 50.0) -> List[List[float]]:
+    """Interpolates points between p0=[lon, lat] and p1=[lon, lat] every step_m meters."""
+    dist_m = calculate_distance_m(p0[1], p0[0], p1[1], p1[0])
+    if dist_m <= step_m:
+        return [p0, p1]
+    steps = max(1, int(dist_m / step_m))
+    pts: List[List[float]] = []
+    for s in range(steps + 1):
+        frac = s / float(steps)
+        lon = round(p0[0] + (p1[0] - p0[0]) * frac, 6)
+        lat = round(p0[1] + (p1[1] - p0[1]) * frac, 6)
+        pts.append([lon, lat])
+    return pts
+
+
+def construct_filleted_path(
+    waypoints: List[Dict[str, Any]],
+    default_radius_m: float = 150.0,
+    speed_knots: float = 10.0,
+    step_m: float = 50.0,
+) -> Tuple[List[List[float]], List[Dict[str, Any]]]:
+    """
+    Constructs a continuous filleted navigation track through waypoints, replacing
+    sharp course alterations with circular fillet turn arcs based on each waypoint's radius.
+    Returns (dense_track_coordinates, turn_geometries).
+    """
+    n = len(waypoints)
+    if n == 0:
+        return [], []
+    if n == 1:
+        wp0 = waypoints[0]
+        lon = wp0.get("lon") if wp0.get("lon") is not None else wp0.get("longitude", 0.0)
+        lat = wp0.get("lat") if wp0.get("lat") is not None else wp0.get("latitude", 0.0)
+        return [[float(lon), float(lat)]], []
+
+    # Extract coordinates
+    coords = []
+    for wp in waypoints:
+        lon = float(wp.get("lon") if wp.get("lon") is not None else (wp.get("lng") if wp.get("lng") is not None else wp.get("longitude", 0.0)))
+        lat = float(wp.get("lat") if wp.get("lat") is not None else wp.get("latitude", 0.0))
+        coords.append([lon, lat])
+
+    if n == 2:
+        return interpolate_linear_points(coords[0], coords[1], step_m=step_m), []
+
+    # Calculate turn geometries for each intermediate waypoint
+    turn_geoms: List[Optional[Dict[str, Any]]] = [None] * n
+    for i in range(1, n - 1):
+        raw_r = waypoints[i].get("turn_radius_m")
+        req_r = float(raw_r if raw_r is not None and raw_r > 0.0 else default_radius_m)
+        if req_r > 0.0:
+            geom = calculate_turn_arc_geometry(
+                prev_lon=coords[i - 1][0],
+                prev_lat=coords[i - 1][1],
+                wp_lon=coords[i][0],
+                wp_lat=coords[i][1],
+                next_lon=coords[i + 1][0],
+                next_lat=coords[i + 1][1],
+                radius_m=req_r,
+                speed_knots=speed_knots,
+            )
+            if geom:
+                geom["wp_index"] = i + 1
+                geom["requested_radius_m"] = req_r
+                turn_geoms[i] = geom
+
+    # Stitch the continuous path: straight leg -> turn arc -> straight leg ...
+    full_track: List[List[float]] = []
+    current_pt = coords[0]
+
+    for i in range(1, n):
+        geom = turn_geoms[i] if i < n - 1 else None
+        if geom is not None:
+            # Straight segment up to Point of Curvature (PC)
+            pc_pt = geom["pc"]
+            seg_to_pc = interpolate_linear_points(current_pt, pc_pt, step_m=step_m)
+            if full_track:
+                full_track.extend(seg_to_pc[1:])
+            else:
+                full_track.extend(seg_to_pc)
+
+            # Circular arc segment (from PC to PT)
+            arc_pts = geom["arc_coordinates"]
+            if arc_pts:
+                full_track.extend(arc_pts[1:])
+                current_pt = geom["pt"]
+            else:
+                current_pt = pc_pt
+        else:
+            # Straight segment up to waypoint i
+            dest_pt = coords[i]
+            seg = interpolate_linear_points(current_pt, dest_pt, step_m=step_m)
+            if full_track:
+                full_track.extend(seg[1:])
+            else:
+                full_track.extend(seg)
+            current_pt = dest_pt
+
+    active_geoms = [g for g in turn_geoms if g is not None]
+    return full_track, active_geoms
+
+
+def splice_turn_arcs_into_route(
+    route_coords: List[List[float]],
+    turn_geometries: List[Dict[str, Any]],
+) -> List[List[float]]:
+    """
+    Slices and splices circular fillet turn arcs into an existing route line,
+    replacing sharp corner vertices between PC and PT with smooth circular arc points.
+    """
+    if len(route_coords) < 3 or not turn_geometries:
+        return route_coords
+
+    result_route = list(route_coords)
+
+    # Process turns in reverse order so coordinate replacement indices don't shift earlier turns
+    sorted_turns = sorted(
+        [tg for tg in turn_geometries if tg.get("arc_coordinates") and len(tg["arc_coordinates"]) >= 2],
+        key=lambda tg: tg.get("wp_index", 0),
+        reverse=True,
+    )
+
+    for tg in sorted_turns:
+        arc_pts = tg["arc_coordinates"]
+        pc = tg["pc"]
+        pt = tg["pt"]
+
+        # Find closest point indices in route to PC and PT
+        pc_idx = -1
+        pc_min_d = float("inf")
+        pt_idx = -1
+        pt_min_d = float("inf")
+
+        for idx, coord in enumerate(result_route):
+            d_pc = calculate_distance_m(coord[1], coord[0], pc[1], pc[0])
+            if d_pc < pc_min_d:
+                pc_min_d = d_pc
+                pc_idx = idx
+
+            d_pt = calculate_distance_m(coord[1], coord[0], pt[1], pt[0])
+            if d_pt < pt_min_d:
+                pt_min_d = d_pt
+                pt_idx = idx
+
+        # Only splice if PC and PT are well-ordered and within a reasonable distance
+        if 0 <= pc_idx < pt_idx < len(result_route) and pc_min_d < 300.0 and pt_min_d < 300.0:
+            result_route = result_route[:pc_idx] + arc_pts + result_route[pt_idx + 1:]
+
+    return result_route
+
+
