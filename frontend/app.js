@@ -96,8 +96,6 @@ const topbarAddWpBtn = document.getElementById('topbar-add-wp');
 const toolEblVrmBtn = document.getElementById('tool-ebl-vrm');
 const hudCursorCoords = document.getElementById('hud-cursor-coords');
 const hudCursorDepth = document.getElementById('hud-cursor-depth');
-const engineBadge = document.getElementById('engine-badge');
-const datasetBadge = document.getElementById('dataset-badge');
 const topbarAlarmPill = document.getElementById('topbar-alarm-pill');
 const topbarAlarmText = document.getElementById('topbar-alarm-text');
 const sidebarToggleBtn = document.getElementById('sidebar-toggle-btn');
@@ -421,27 +419,8 @@ map.on('load', () => {
     fetch('/api/health')
         .then(res => res.json())
         .then(h => {
-            if (datasetBadge) {
-                datasetBadge.style.display = 'inline-block';
-                if (h.is_synthetic) {
-                    datasetBadge.style.background = 'rgba(245, 158, 11, 0.2)';
-                    datasetBadge.style.borderColor = '#f59e0b';
-                    datasetBadge.style.color = '#fbbf24';
-                    datasetBadge.innerText = '⚠️ DEMO (СИНТЕТИКА)';
-                    datasetBadge.title = 'Синтетическая сетка глубин: поместите E8_2024.tif в data/raw/ для навигации по реальному растру.';
-                    if (map.getLayer('depth-heatmap-layer')) {
-                        map.setLayoutProperty('depth-heatmap-layer', 'visibility', 'none');
-                    }
-                } else {
-                    datasetBadge.style.background = 'rgba(16, 185, 129, 0.2)';
-                    datasetBadge.style.borderColor = '#10b981';
-                    datasetBadge.style.color = '#34d399';
-                    datasetBadge.innerText = 'EMODnet 2024';
-                    datasetBadge.title = 'Боевая гидрографическая батиметрия EMODnet E8_2024';
-                    if (map.getLayer('depth-heatmap-layer')) {
-                        map.setLayoutProperty('depth-heatmap-layer', 'visibility', 'visible');
-                    }
-                }
+            if (map.getLayer('depth-heatmap-layer')) {
+                map.setLayoutProperty('depth-heatmap-layer', 'visibility', h.is_synthetic ? 'none' : 'visible');
             }
         })
         .catch(() => {});
@@ -1356,18 +1335,6 @@ window.calculateRoute = async function () {
             const eta = (p.eta_hours !== null && p.eta_hours !== undefined) ? p.eta_hours.toFixed(1) + ' ч' : '—';
             const clearance = p.min_clearance_m !== undefined ? p.min_clearance_m.toFixed(2) + ' м' : '—';
             const waypointsCount = p.waypoints || (data.waypoints ? data.waypoints.length : '—');
-
-            // Обновление бейджа расчетного движка (C++ vs Python)
-            if (engineBadge) {
-                const eng = (p && p.routing_engine) || 'seapath_native_cpp';
-                if (eng === 'seapath_native_cpp') {
-                    engineBadge.className = 'engine-badge engine-cpp';
-                    engineBadge.innerText = '⚡ C++ CORE (68x)';
-                } else {
-                    engineBadge.className = 'engine-badge engine-python';
-                    engineBadge.innerText = '🐍 PYTHON REF';
-                }
-            }
 
             // Обновление индикатора опасности / демо-статуса в Topbar и коридоре XTD
             const sc = data.safety_check || {};
