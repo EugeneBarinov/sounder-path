@@ -974,3 +974,118 @@ button:hover {
     pointer-events: none;
     white-space: nowrap;
 }
+
+/* Engine Performance Badge */
+.engine-badge {
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+    padding: 2px 6px;
+    border-radius: 3px;
+    text-transform: uppercase;
+}
+.engine-cpp {
+    background: rgba(16, 185, 129, 0.2);
+    border: 1px solid #10b981;
+    color: #6ee7b7;
+}
+.engine-python {
+    background: rgba(245, 158, 11, 0.2);
+    border: 1px solid #f59e0b;
+    color: #fcd34d;
+}
+
+/* Critical Alarms Pill in Top Bar */
+.hud-alarm-pill {
+    background: rgba(239, 68, 68, 0.25) !important;
+    border-color: #ef4444 !important;
+    color: #fca5a5 !important;
+    animation: alarm-pulse 1s infinite alternate;
+}
+
+/* Waypoints Maneuver Status */
+.val-maneuver-ok {
+    color: var(--status-success);
+    font-weight: 600;
+}
+.val-maneuver-violation {
+    background: rgba(239, 68, 68, 0.2);
+    color: #f87171;
+    border: 1px solid #ef4444;
+    padding: 1px 4px;
+    border-radius: 2px;
+    font-weight: 700;
+    font-size: 10px;
+}
+
+/* Alarm Fly-to button */
+.alarm-btn-fly {
+    margin-left: 8px;
+    padding: 2px 8px;
+    font-size: 10.5px;
+    background: #38bdf8;
+    color: #0f172a;
+    border: none;
+    border-radius: 3px;
+    font-weight: 600;
+    cursor: pointer;
+    width: auto;
+    display: inline-block;
+}
+.alarm-btn-fly:hover {
+    background: #7dd3fc;
+}
+
+/* Mobile Sidebar Toggle Button */
+.mobile-toggle-btn {
+    display: none;
+    width: 30px;
+    height: 30px;
+    padding: 0;
+    background: #27272a;
+    border: 1px solid #3f3f46;
+    color: #f8fafc;
+    border-radius: 4px;
+    font-size: 16px;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+}
+
+/* Responsive Layout for Mobile / Tablet */
+@media (max-width: 860px) {
+    .mobile-toggle-btn {
+        display: flex;
+    }
+    #sidebar {
+        transform: translateX(-100%);
+        transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+        z-index: 50;
+        width: 300px;
+        box-shadow: 4px 0 24px rgba(0, 0, 0, 0.7);
+    }
+    #sidebar.open {
+        transform: translateX(0);
+    }
+    #map {
+        left: 0;
+    }
+    #map-topbar {
+        left: 10px;
+        right: 10px;
+        overflow-x: auto;
+    }
+    #bottom-drawer {
+        left: 0;
+        height: 290px;
+    }
+    .hud-pill {
+        display: none;
+    }
+    #topbar-alarm-pill {
+        display: flex !important;
+    }
+    .bridge-hud-grid {
+        grid-template-columns: repeat(2, 1fr);
+    }
+}

@@ -333,6 +333,7 @@ def verify_ecdis_route_safety(
             })
 
     # 3. Full 2D Cross-Track Safety Corridor (XTD) Area Swath Scanning
+    corridor_hazards: List[Dict[str, Any]] = []
     route_coords = [[wp["lon"], wp["lat"]] for wp in waypoints]
     if grid and hasattr(grid, "lonlat_to_cell") and len(route_coords) >= 2:
         corridor_hazards = scan_corridor_raster_swath(
@@ -377,6 +378,7 @@ def verify_ecdis_route_safety(
         "summary": summary,
         "alarms_count": len(alarms),
         "alarms": alarms,
+        "corridor_hazards": corridor_hazards,
         "metrics": {
             "safety_depth_m": round(safety_depth, 2),
             "dynamic_draft_m": round(effective_dyn_draft, 2),

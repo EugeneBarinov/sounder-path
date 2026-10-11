@@ -174,6 +174,8 @@ def generate_turn_arcs_feature_collection(
         if not geom:
             continue
 
+        is_feasible = cur.get("maneuver_feasible", True)
+
         # Feature 1: Turn Arc LineString
         features.append({
             "type": "Feature",
@@ -184,6 +186,7 @@ def generate_turn_arcs_feature_collection(
                 "turn_angle_deg": geom["turn_angle_deg"],
                 "rot_deg_min": geom["rot_deg_min"],
                 "radius_m": geom["effective_radius_m"],
+                "maneuver_feasible": is_feasible,
             },
             "geometry": {
                 "type": "LineString",
@@ -201,6 +204,7 @@ def generate_turn_arcs_feature_collection(
                 "distance_before_wp_m": geom["wop_dist_m"],
                 "rot_deg_min": geom["rot_deg_min"],
                 "turn_direction": geom["turn_direction"],
+                "maneuver_feasible": is_feasible,
             },
             "geometry": {
                 "type": "Point",

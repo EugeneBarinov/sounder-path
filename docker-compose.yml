@@ -1,0 +1,18 @@
+services:
+  seapath-ecdis:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: seapath-ecdis-engine
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+    volumes:
+      - ./data:/app/data:ro
+    environment:
+      - PYTHONUNBUFFERED=1
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/grid')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3

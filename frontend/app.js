@@ -96,6 +96,23 @@ const topbarAddWpBtn = document.getElementById('topbar-add-wp');
 const toolEblVrmBtn = document.getElementById('tool-ebl-vrm');
 const hudCursorCoords = document.getElementById('hud-cursor-coords');
 const hudCursorDepth = document.getElementById('hud-cursor-depth');
+const engineBadge = document.getElementById('engine-badge');
+const topbarAlarmPill = document.getElementById('topbar-alarm-pill');
+const topbarAlarmText = document.getElementById('topbar-alarm-text');
+const sidebarToggleBtn = document.getElementById('sidebar-toggle-btn');
+const sidebar = document.getElementById('sidebar');
+
+if (sidebarToggleBtn && sidebar) {
+    sidebarToggleBtn.addEventListener('click', () => {
+        sidebar.classList.toggle('open');
+    });
+}
+
+if (topbarAlarmPill && tabSafetyBtn) {
+    topbarAlarmPill.addEventListener('click', () => {
+        tabSafetyBtn.click();
+    });
+}
 
 // Элементы панели EBL / VRM
 const eblVrmOverlay = document.getElementById('ebl-vrm-overlay');
@@ -458,9 +475,13 @@ map.on('load', () => {
         source: 'turn-arcs',
         filter: ['==', ['get', 'role'], 'turn_arc'],
         paint: {
-            'line-color': '#f59e0b',
+            'line-color': [
+                'case',
+                ['==', ['get', 'maneuver_feasible'], false], '#ef4444',
+                '#f59e0b'
+            ],
             'line-width': 3.5,
-            'line-opacity': 0.9
+            'line-opacity': 0.95
         }
     });
 
@@ -470,7 +491,11 @@ map.on('load', () => {
         source: 'turn-arcs',
         filter: ['==', ['get', 'role'], 'wop_marker'],
         paint: {
-            'circle-color': '#fbbf24',
+            'circle-color': [
+                'case',
+                ['==', ['get', 'maneuver_feasible'], false], '#ef4444',
+                '#fbbf24'
+            ],
             'circle-radius': 5.5,
             'circle-stroke-width': 2,
             'circle-stroke-color': '#0f172a'
@@ -491,6 +516,24 @@ map.on('load', () => {
             'circle-color': '#ef4444',
             'circle-radius': 7.5,
             'circle-stroke-width': 2.5,
+            'circle-stroke-color': '#ffffff'
+        }
+    });
+
+    // 4.1 Маркеры отмелей внутри полосы безопасности XTD (ALM-04)
+    map.addSource('xtd-hazards', {
+        type: 'geojson',
+        data: { type: 'FeatureCollection', features: [] }
+    });
+
+    map.addLayer({
+        id: 'xtd-hazards-layer',
+        type: 'circle',
+        source: 'xtd-hazards',
+        paint: {
+            'circle-color': '#f97316',
+            'circle-radius': 6.5,
+            'circle-stroke-width': 2,
             'circle-stroke-color': '#ffffff'
         }
     });
@@ -864,6 +907,8 @@ function clearRouteData() {
     if (map.getSource('route-corridor')) map.getSource('route-corridor').setData({ type: 'FeatureCollection', features: [] });
     if (map.getSource('turn-arcs')) map.getSource('turn-arcs').setData({ type: 'FeatureCollection', features: [] });
     if (map.getSource('bottleneck-point')) map.getSource('bottleneck-point').setData({ type: 'FeatureCollection', features: [] });
+    if (map.getSource('xtd-hazards')) map.getSource('xtd-hazards').setData({ type: 'FeatureCollection', features: [] });
+    if (topbarAlarmPill) topbarAlarmPill.style.display = 'none';
     clearRouteProfileHighlight();
 
     renderWaypointsListUI();
@@ -1134,6 +1179,15 @@ function renderWaypointsTable(waypoints) {
             wopTxt = `${Math.round(wopVal)}м`;
         }
 
+        const heelVal = wp.heel_sinkage_m !== undefined ? wp.heel_sinkage_m : 0.0;
+        const heelTxt = (idx === 0 || isLast || heelVal <= 0.001) ? '—' : `+${heelVal.toFixed(2)}м`;
+        const isManeuverFeasible = wp.maneuver_feasible !== false;
+        const maneuverTxt = (idx === 0 || isLast || Math.abs(turnVal) < 1.0)
+            ? '—'
+            : (isManeuverFeasible
+                ? '<span class="val-maneuver-ok">НОРМА</span>'
+                : '<span class="val-maneuver-violation" title="Радиус не вписывается в геометрию плеча">НАРУШЕН</span>');
+
         const depthTxt = `${depthVal.toFixed(1)}м`;
         let clrClass = 'val-clearance-safe';
         if (clrVal < 0.5) clrClass = 'val-clearance-crit';
@@ -1153,6 +1207,8 @@ function renderWaypointsTable(waypoints) {
             <td>${radTxt}</td>
             <td>${rotTxt}</td>
             <td>${wopTxt}</td>
+            <td>${heelTxt}</td>
+            <td>${maneuverTxt}</td>
             <td>${depthTxt}</td>
             <td>${clrTxt}</td>
         `;
@@ -1248,11 +1304,54 @@ window.calculateRoute = async function () {
             const clearance = p.min_clearance_m !== undefined ? p.min_clearance_m.toFixed(2) + ' м' : '—';
             const waypointsCount = p.waypoints || (data.waypoints ? data.waypoints.length : '—');
 
+            // Обновление бейджа расчетного движка (C++ vs Python)
+            if (engineBadge) {
+                const eng = (p && p.routing_engine) || 'seapath_native_cpp';
+                if (eng === 'seapath_native_cpp') {
+                    engineBadge.className = 'engine-badge engine-cpp';
+                    engineBadge.innerText = '⚡ C++ CORE (68x)';
+                } else {
+                    engineBadge.className = 'engine-badge engine-python';
+                    engineBadge.innerText = '🐍 PYTHON REF';
+                }
+            }
+
+            // Обновление индикатора критического аларма в Topbar
+            const isCritical = data.safety_check && data.safety_check.status === 'CRITICAL_HAZARD';
+            if (topbarAlarmPill) {
+                if (isCritical) {
+                    topbarAlarmPill.style.display = 'flex';
+                    const critAlm = (data.safety_check.alarms || []).find(a => a.severity === 'CRITICAL');
+                    if (topbarAlarmText) {
+                        topbarAlarmText.innerText = `⚠️ ${critAlm ? critAlm.code : 'КРИТИЧЕСКИЙ АЛАРМ'}`;
+                    }
+                } else {
+                    topbarAlarmPill.style.display = 'none';
+                }
+            }
+
+            // Цветовая индикация коридора XTD (красный при критической опасности, зеленый при норме)
+            if (map.getLayer('route-corridor-line')) {
+                map.setPaintProperty('route-corridor-line', 'line-color', isCritical ? '#ef4444' : '#10b981');
+                map.setPaintProperty('route-corridor-fill', 'fill-color', isCritical ? '#ef4444' : '#10b981');
+            }
+
+            // Отображение отмелей внутри коридора XTD на карте (ALM-04)
+            if (map.getSource('xtd-hazards')) {
+                const hazards = (data.safety_check && data.safety_check.corridor_hazards) || [];
+                const hazardFeatures = hazards.map(h => ({
+                    type: 'Feature',
+                    properties: { depth: h.depth, offset: h.xtd_offset_m },
+                    geometry: { type: 'Point', coordinates: [h.lon, h.lat] }
+                }));
+                map.getSource('xtd-hazards').setData({ type: 'FeatureCollection', features: hazardFeatures });
+            }
+
             statusMsg.innerHTML =
                 `✓ <b>${distNm}</b> &nbsp;|&nbsp; Время перехода: <b>${eta}</b>` +
                 ` &nbsp;|&nbsp; Мин. UKC: <b>${clearance}</b>` +
                 ` &nbsp;|&nbsp; ${waypointsCount} РТ`;
-            statusMsg.style.color = 'var(--status-success)';
+            statusMsg.style.color = isCritical ? 'var(--status-danger)' : 'var(--status-success)';
 
             renderWaypointsTable(data.waypoints || []);
             renderSafetyDashboard(data.safety_check, data.bottleneck, data.dukc);
@@ -1273,6 +1372,8 @@ window.calculateRoute = async function () {
             if (map.getSource('route-corridor')) map.getSource('route-corridor').setData({ type: 'FeatureCollection', features: [] });
             if (map.getSource('turn-arcs')) map.getSource('turn-arcs').setData({ type: 'FeatureCollection', features: [] });
             if (map.getSource('bottleneck-point')) map.getSource('bottleneck-point').setData({ type: 'FeatureCollection', features: [] });
+            if (map.getSource('xtd-hazards')) map.getSource('xtd-hazards').setData({ type: 'FeatureCollection', features: [] });
+            if (topbarAlarmPill) topbarAlarmPill.style.display = 'none';
             renderSafetyDashboard(null, null, null);
             currentRouteData = null;
             stopSimulator();
@@ -1444,12 +1545,24 @@ function renderSafetyDashboard(safetyData, bottleneckData, dukcData) {
                 ruDetail = `Фактический клиренс под килем менее допустимого предела (0.35м) на дистанции ${a.distance_nm} ММ.`;
             } else if (a.code === 'ALM-03-EXCESSIVE-ROT') {
                 ruTitle = `Высокая угловая скорость поворота (ROT) на РТ${a.waypoint_index || ''}`;
+            } else if (a.code === 'ALM-04-XTD-CORRIDOR-HAZARD') {
+                ruTitle = 'Отмель внутри полосы безопасности (XTD)';
+            } else if (a.code === 'ALM-05-MANEUVERING-LIMIT-VIOLATION') {
+                ruTitle = `Нарушение маневренных пределов судна на РТ${a.waypoint_index || ''}`;
+            }
+
+            let flyBtn = '';
+            if (a.hazard_location && a.hazard_location.length === 2) {
+                flyBtn = `<button class="alarm-btn-fly" onclick="map.flyTo({center: [${a.hazard_location[0]}, ${a.hazard_location[1]}], zoom: 12, speed: 1.2})">🔍 На карте (${a.hazard_depth_m ? a.hazard_depth_m.toFixed(1) + 'м' : ''})</button>`;
+            } else if (a.waypoint_index && currentRouteData && currentRouteData.waypoints && currentRouteData.waypoints[a.waypoint_index - 1]) {
+                const wpTarget = currentRouteData.waypoints[a.waypoint_index - 1];
+                flyBtn = `<button class="alarm-btn-fly" onclick="map.flyTo({center: [${wpTarget.lon}, ${wpTarget.lat}], zoom: 12, speed: 1.2})">🔍 К РТ${a.waypoint_index}</button>`;
             }
 
             html += `
                 <div class="alarm-card ${cardClass}">
                     <div class="alarm-header">
-                        <span class="alarm-title">${ruTitle}</span>
+                        <span class="alarm-title">${ruTitle} ${flyBtn}</span>
                         <span class="alarm-code">[${a.code}]</span>
                     </div>
                     <div class="alarm-detail">${ruDetail}</div>
