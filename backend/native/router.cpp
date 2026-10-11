@@ -59,18 +59,43 @@ NativeRouteResult NativeRouter::find_path(
     double draft, double speed_knots, double ukc,
     double turning_radius_m,
     double fairway_preference,
-    double block_coefficient
+    double block_coefficient,
+    double min_chart_depth_m,
+    double dynamic_draft_m
 ) const {
     NativeRouteResult result;
     result.success = false;
 
-    double h_over_t = (draft > 0.0) ? (draft + ukc) / draft : 0.0;
-    double dynamic_squat = calculate_squat(speed_knots, block_coefficient, h_over_t);
-    double dynamic_draft = draft + dynamic_squat;
-    float min_depth = static_cast<float>(dynamic_draft + ukc);
-
+    // -- Шаг 0. Защита от выхода за сетку ----------------------------------
+    // Что делаем: проверяем, что старт и финиш внутри [0,rows)x[0,cols).
+    // Зачем: раньше OOB-индексы уходили в start_idx/goal_idx (size_t) и давали
+    // чтение чужой памяти / падение. Теперь сразу возвращаем success=false,
+    // Python-биндинг превратит это в None → API вернёт 400, а не 500.
     int rows = grid->rows;
     int cols = grid->cols;
+    if (start_r < 0 || start_r >= rows || start_c < 0 || start_c >= cols ||
+        goal_r < 0 || goal_r >= rows || goal_c < 0 || goal_c >= cols) {
+        return result;
+    }
+
+    // -- Шаг 1. Бюджет глубины: канон снаружи или legacy внутри -------------
+    // Каноническая ветка: gateway уже посчитал min_chart_depth =
+    // draft+squat+heel+wave+effective_ukc. Роутер — чистый исполнитель.
+    // Legacy-ветка (оба NaN): считаем сами только squat по Баррассу,
+    // h/T=(draft+ukc)/draft — как было до унификации.
+    double dynamic_draft;
+    float min_depth;
+    if (!std::isnan(min_chart_depth_m) && !std::isnan(dynamic_draft_m)) {
+        // Canonical budget from Python gateway (dukc.compute_search_budget):
+        // min_chart_depth already includes squat + heel + wave + effective UKC.
+        dynamic_draft = dynamic_draft_m;
+        min_depth = static_cast<float>(min_chart_depth_m);
+    } else {
+        double h_over_t = (draft > 0.0) ? (draft + ukc) / draft : 0.0;
+        double dynamic_squat = calculate_squat(speed_knots, block_coefficient, h_over_t);
+        dynamic_draft = draft + dynamic_squat;
+        min_depth = static_cast<float>(dynamic_draft + ukc);
+    }
 
     // Increment run_id to avoid O(N) memset on every search
     ++current_run;

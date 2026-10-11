@@ -19,7 +19,7 @@ from backend.core.router import Router
 from backend.core.fairways import rasterize_fairway_weights, load_fairways_geojson
 from backend.core.export import export_to_gpx, export_to_rtz
 from backend.core.safety import generate_safety_corridor_polygon, verify_ecdis_route_safety
-from backend.core.dukc import compute_dukc_budget, calculate_tidal_window
+from backend.core.dukc import compute_dukc_budget, calculate_tidal_window, compute_search_budget
 from backend.core.bottleneck import analyze_route_bottlenecks
 from backend.core.kinematics import (
     generate_turn_arcs_feature_collection,
@@ -115,6 +115,16 @@ class RouteRequest(BaseModel):
     tide_offset_m: float = Field(default=0.0, ge=-2.0, le=4.0, description="Dynamic water level or tide offset in meters")
     wave_height_m: float = Field(default=0.0, ge=0.0, le=5.0, description="Significant wave height Hs in meters")
     gm_m: float = Field(default=1.5, ge=0.5, le=4.0, description="Transverse metacentric height GM in meters")
+    # -- Параметры единого бюджета поиска (см. dukc.compute_search_budget) --
+    # beam_m=None → оценка max(3.0, 2.5*draft) внутри calculate_turning_heel.
+    # Явно заданный бим точнее оценки и всегда в приоритете.
+    beam_m: Optional[float] = Field(default=None, description="Vessel beam in meters (None = estimate 2.5*draft)")
+    # exposed_waters=False → укрытая вода, волна 0.35*Hs; True → открытое
+    # море, 0.50*Hs по PIANC. Дефолт sheltered, чтобы не ужесточать резко.
+    exposed_waters: bool = Field(default=False, description="Exposed coastal waters flag for wave allowance (PIANC 0.50*Hs vs 0.35*Hs)")
+    # strict_dukc=True → порог поиска включает squat+крен+волну (безопасно).
+    # False → legacy только squat, для A/B-сравнения и отката.
+    strict_dukc: bool = Field(default=True, description="Use full PIANC search budget (squat+heel+wave) instead of legacy squat-only")
 
 
 class ExportRouteRequest(BaseModel):
@@ -262,11 +272,40 @@ def calculate_route(req: RouteRequest):
                 detail=f"Waypoint {idx + 1} ({pt[0]:.4f}, {pt[1]:.4f}) is outside bathymetry coverage area."
             )
 
-    # Dynamic Water Level & PIANC Squat
-    effective_ukc_for_search = max(0.05, req.ukc - req.tide_offset_m)
-    h_over_t = (req.draft + req.ukc) / req.draft if req.draft > 0 else 0.0
-    dynamic_squat = Router.calculate_squat(req.speed_knots, req.block_coefficient, h_over_t)
-    min_required_chart_depth = req.draft + dynamic_squat + effective_ukc_for_search
+    # -- Единый бюджет поиска: считаем ОДИН раз на весь запрос -----------------
+    # Что делаем: вместо трёх разных формул (здесь + внутри Python-роутера +
+    # внутри C++-роутера) вызываем канон dukc.compute_search_budget.
+    # На выходе:
+    #   min_required_chart_depth — порог карты: ячейка мельче → непроходима.
+    #     Формула strict: draft + squat + heel + wave + max(0.05, ukc - tide).
+    #     Именно этот порог потом ест A* (через min_chart_depth_m), луч
+    #     видимости при спрямлении и snap-привязка старта/финиша к воде.
+    #   search_dynamic_draft — динамическая осадка (draft+squat+heel+wave),
+    #     уходит в роутеры как dynamic_draft_m, чтобы они НЕ пересчитывали
+    #     squat по-своему и не дрейфовали друг от друга.
+    #   effective_ukc_for_search — запас с поправкой на прилив, уходит в
+    #     роутеры как ukc для совместимости со старыми вызовами.
+    # Зачем: раньше поиск требовал меньше, чем пост-проверки (safety,
+    # bottleneck, dukc), и маршрут падал в CRITICAL уже после прокладки.
+    # Теперь поиск строже-or-равен проверкам: мель режется на поиске (400),
+    # а не пост-фактум.
+    search_budget = compute_search_budget(
+        draft_m=req.draft,
+        speed_knots=req.speed_knots,
+        ukc_net_margin_m=req.ukc,
+        block_coefficient=req.block_coefficient,
+        tide_offset_m=req.tide_offset_m,
+        wave_height_m=req.wave_height_m,
+        turning_radius_m=req.turning_radius_m,
+        gm_m=req.gm_m,
+        beam_m=req.beam_m,
+        exposed_waters=req.exposed_waters,
+        strict_dukc=req.strict_dukc,
+    )
+    effective_ukc_for_search = search_budget["effective_ukc_m"]
+    dynamic_squat = search_budget["dynamic_squat_m"]
+    search_dynamic_draft = search_budget["dynamic_draft_m"]
+    min_required_chart_depth = search_budget["min_chart_depth_m"]
 
     # Calculate routes along each leg
     combined_route: List[List[float]] = []
@@ -295,6 +334,13 @@ def calculate_route(req: RouteRequest):
                 detail=f"Waypoint {k + 2}: no navigable channel found satisfying safety depth ({min_required_chart_depth:.1f}m)."
             )
 
+        # -- Вызов роутера с готовым бюджетом ----------------------------------
+        # draft/speed/ukc ниже — для совместимости (старый роутер без новых
+        # kwargs их использует для собственного пересчёта). Новый роутер видит
+        # min_chart_depth_m + dynamic_draft_m и свой пересчёт ПРОПУСКАЕТ —
+        # так Python и C++ ядра считают строго одинаково.
+        # ukc передаём уже с поправкой на прилив (effective), чтобы legacy-
+        # ветка внутри роутера тоже была с приливом.
         leg_res = router.find_path(
             start_r=start_r,
             start_c=start_c,
@@ -306,6 +352,8 @@ def calculate_route(req: RouteRequest):
             turning_radius_m=req.turning_radius_m,
             fairway_preference=req.fairway_preference,
             block_coefficient=req.block_coefficient,
+            min_chart_depth_m=min_required_chart_depth,
+            dynamic_draft_m=search_dynamic_draft,
         )
 
         if leg_res is None:
@@ -327,7 +375,13 @@ def calculate_route(req: RouteRequest):
         else:
             combined_route.extend(leg_coords[1:])
 
-        # Merge profile samples with cumulative distance and tide-adjusted clearance
+        # -- Склейка профиля глубин по плечам ----------------------------------
+        # Роутер отдаёт clearance БЕЗ прилива: clearance = depth -
+        # dynamic_draft - effective_ukc. Здесь добавляем фактический уровень
+        # моря: clearance_факт = clearance_роутера + tide_offset.
+        # Пример: карта 5.0 м, dynamic_draft 2.0, UKC 0.5, прилив +0.3 →
+        # роутер дал 2.5, в ответ уходит 2.8. Именно эти значения потом едят
+        # safety_check, bottleneck и график профиля.
         for pt in leg_res["profile"]:
             combined_profile.append({
                 "distance_from_start_m": round(cum_dist_m + pt["distance_from_start_m"], 1),
@@ -429,7 +483,15 @@ def calculate_route(req: RouteRequest):
         tide_offset_m=req.tide_offset_m,
     )
 
-    # 5. Full PIANC DUKC Budget
+    # 5. Full PIANC DUKC Budget (отчётный, на самой мелкой точке профиля)
+    # Что делаем: берём min глубину по всему склеенному профилю и считаем
+    # полный бюджет compute_dukc_budget: squat (с h/T по ФАКТИЧЕСКОЙ глубине,
+    # а не пред-оценке!) + крен + волна + прилив. Это отчёт для штурмана.
+    # Чем отличается от search_budget выше: search_budget — консервативный
+    # порог ДО поиска (h/T по статике), dukc_budget — точный разбор ПОСЛЕ
+    # (h/T по реальной мели). Поэтому dukc может показать squat чуть больше/
+    # меньше поискового — это нормально: поиск брал запас с запасом.
+    # beam_m/gm_m/exposed_waters пробрасываем из запроса — те же, что в поиске.
     min_chart_depth = min((p["depth"] for p in combined_profile), default=10.0)
     dukc_budget = compute_dukc_budget(
         draft_m=req.draft,
@@ -440,16 +502,29 @@ def calculate_route(req: RouteRequest):
         turning_radius_m=req.turning_radius_m,
         wave_height_m=req.wave_height_m,
         tide_offset_m=req.tide_offset_m,
+        beam_m=req.beam_m,
         gm_m=req.gm_m,
+        exposed_waters=req.exposed_waters,
     )
 
+    # -- Диагностика ответа: всё из одного бюджета, без пересчётов -----------
+    # dynamic_draft_m — полная динамическая осадка (draft+squat+heel+wave),
+    # dynamic_squat_m — только проседание, heel/wave — отдельно: фронт рисует
+    # бейджи Squat/Cb/динам.осадка именно из этих полей.
+    # min_chart_depth_m — порог, которым резал A*; strict_dukc — каким режимом
+    # считали (True=PIANC, False=legacy). Фронт/лог по этим двум полям может
+    # понять, почему маршрут не нашёлся: поднять прилив или убавить ход.
     diagnostics = {
         "distance_m": round(cum_dist_m, 0),
         "distance_nm": total_dist_nm,
         "eta_hours": eta_hours,
         "min_clearance_m": round(min_clearance, 2),
-        "dynamic_draft_m": round(req.draft + dynamic_squat, 2),
+        "dynamic_draft_m": round(search_dynamic_draft, 2),
         "dynamic_squat_m": round(dynamic_squat, 2),
+        "heel_sinkage_m": round(search_budget["heel_sinkage_m"], 3),
+        "wave_allowance_m": round(search_budget["wave_allowance_m"], 3),
+        "min_chart_depth_m": round(min_required_chart_depth, 2),
+        "strict_dukc": req.strict_dukc,
         "waypoints": len(combined_waypoints),
         "tide_offset_m": req.tide_offset_m,
         "wave_height_m": req.wave_height_m,

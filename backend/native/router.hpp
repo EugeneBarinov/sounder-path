@@ -106,12 +106,19 @@ public:
         return (block_coefficient * (speed_knots * speed_knots)) / k;
     }
 
+    // Канонический бюджет поиска: Python-gateway (dukc.compute_search_budget)
+    // считает полный PIANC-набор (squat+крен+волна+UKC с приливом) и кладёт
+    // сюда готовые числа. Если оба не NaN — внутренний пересчёт squat
+    // пропускаем, иначе legacy-ветка (только squat). Дефолт NaN сохраняет
+    // совместимость со старыми вызовами из benchmark/тестов.
     NativeRouteResult find_path(
         int start_r, int start_c,
         int goal_r, int goal_c,
         double draft, double speed_knots, double ukc,
         double turning_radius_m = 150.0,
         double fairway_preference = 1.0,
-        double block_coefficient = 0.65
+        double block_coefficient = 0.65,
+        double min_chart_depth_m = std::numeric_limits<double>::quiet_NaN(),
+        double dynamic_draft_m = std::numeric_limits<double>::quiet_NaN()
     ) const;
 };

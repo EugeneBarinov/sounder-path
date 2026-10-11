@@ -129,14 +129,47 @@ class Router:
         turning_radius_m: float = 150.0,
         fairway_preference: float = 1.0,
         block_coefficient: float = 0.65,
+        min_chart_depth_m: Optional[float] = None,
+        dynamic_draft_m: Optional[float] = None,
     ) -> Optional[Dict[str, Any]]:
         """
-        Compute optimal safe passage plan using constrained A* search.
-        Evaluates dynamic draft, under-keel clearance, vector fairways, and restricted zones.
+        Прокладка безопасного прохода взвешенным A* по сетке батиметрии.
+
+        ЧТО ДЕЛАЕМ ПО ШАГАМ:
+        1. Бюджет глубины: если gateway передал готовые min_chart_depth_m /
+           dynamic_draft_m (канон dukc.compute_search_budget) — берём их
+           как есть и squat внутри НЕ пересчитываем. Иначе legacy-ветка:
+           h/T=(draft+ukc)/draft → squat по Баррассу → min_depth.
+           Зачем: один источник правды, Python и C++ ядра дают одинаковый
+           порог; иначе дрейф формул и «прошёл поиск — упал safety_check».
+        2. A*: очередь (f=g+эвристика), стоимость шага =
+           base(1.0/√2) * (1 + 8/max(0.05, depth-min_depth) + штраф_глубоководья)
+           * вес_фарватера + 0 для Python (heading-штраф только в C++).
+           Ячейка проходима ⇔ depth > min_depth И вес < 500 (не RESARE).
+           Диагонали через угол запретки режутся отдельно (см. ниже).
+        3. Спрямление (string pulling): последовательные узлы сырого пути
+           соединяем лучом Брезенхема horizon=30, если весь луч глубже
+           min_depth и вне запреток — промежуточные узлы выбрасываем.
+        4. Профиль и таблица WP: по спрямлённому пути семплируем глубины
+           вдоль каждого сегмента, clearance = depth - dynamic_draft - ukc
+           (без прилива! прилив добавляет main.py при склейке плеч).
+
+        Возвращает dict {route, profile, waypoints, diagnostics} или None,
+        если прохода с требуемым запасом нет.
         """
-        h_over_t = (draft + ukc) / draft if draft > 0.0 else 0.0
-        dynamic_draft = draft + self.calculate_squat(speed_knots, block_coefficient, h_over_t)
-        min_depth = dynamic_draft + ukc
+        # -- Шаг 1. Порог глубины: канон снаружи или legacy внутри -----------
+        # Каноническая ветка: gateway уже посчитал полный PIANC-бюджет
+        # (squat+крен+волна+UKC с приливом). Роутер — чистый исполнитель:
+        # не гадает, а применяет готовые числа. Это и есть унификация.
+        if min_chart_depth_m is not None and dynamic_draft_m is not None:
+            min_depth = float(min_chart_depth_m)
+            dynamic_draft = float(dynamic_draft_m)
+        else:
+            # Legacy-ветка: только squat, без крена/волны. Оставлена для
+            # прямых вызовов без gateway (тесты, benchmark без бюджета).
+            h_over_t = (draft + ukc) / draft if draft > 0.0 else 0.0
+            dynamic_draft = draft + self.calculate_squat(speed_knots, block_coefficient, h_over_t)
+            min_depth = dynamic_draft + ukc
 
         rows, cols = self.grid.rows, self.grid.cols
 

@@ -151,6 +151,124 @@ def compute_dukc_budget(
     }
 
 
+def compute_search_budget(
+    draft_m: float,
+    speed_knots: float,
+    ukc_net_margin_m: float = 0.5,
+    block_coefficient: float = 0.65,
+    tide_offset_m: float = 0.0,
+    wave_height_m: float = 0.0,
+    turning_radius_m: float = 150.0,
+    gm_m: float = 1.5,
+    beam_m: Optional[float] = None,
+    exposed_waters: bool = False,
+    strict_dukc: bool = True,
+) -> Dict[str, Any]:
+    """
+    Канонический бюджет глубины для поиска маршрута — единый источник правды.
+
+    ЗАЧЕМ ЭТА ФУНКЦИЯ:
+    Раньше порог глубины для A* считался в трёх местах по-разному:
+    main.py считал draft+squat+ukc, роутеры пересчитывали squat внутри себя,
+    а полный бюджет (squat+крен+волна) жил только в compute_dukc_budget для
+    отчёта. Итог — поиск пропускал мель, а пост-проверка давала CRITICAL.
+    Теперь весь поиск (Python и C++ роутеры, snap к фарватеру) получает
+    min_chart_depth_m и dynamic_draft_m отсюда, из одного места.
+
+    ФИЗИКА (PIANC MarCom WG 121), строгий режим strict_dukc=True:
+      Шаг 1. Эффективный запас с учётом прилива:
+        effective_ukc = max(0.05, ukc_net_margin - tide_offset)
+        Прилив (+tide) фактически поднимает воду, поэтому требуемый запас
+        по карте уменьшается; отлив (-) — увеличивает. Нижний упор 0.05 м,
+        чтобы поиск никогда не требовал нулевого запаса.
+      Шаг 2. Скоростное проседание (squat) по Баррассу:
+        squat = Cb * V^2 / K,
+        где K=100 открытая вода (h/T>=1.5), K=50 стеснённая (h/T<=1.2),
+        между — линейная интерполяция. h/T здесь — консервативная
+        пред-оценка (draft+ukc)/draft, потому что реальная глубина ячейки
+        заранее неизвестна; точный пересчёт по фактической глубине делает
+        потом bottleneck-анализ, а не порог A*.
+      Шаг 3. Крен на циркуляции:
+        heel_sinkage = (Beam/2) * sin(theta),
+        tan(theta) = V^2 * (0.25*draft) / (g * R * GM).
+        Что делаем: центробежная сила на повороте радиуса R кладёт судно
+        на внешний борт, скула уходит глубже на heel_sinkage. Beam, если не
+        задан, оцениваем как max(3.0, 2.5*draft) — типовое B/T для
+        грузовых/паромов. На прямой (V=0 или R<=10) крен нулевой.
+      Шаг 4. Волновой запас: 0.35*Hs в укрытой воде, 0.50*Hs на открытом
+        море (exposed_waters=True) — качка heave/pitch/roll.
+      Шаг 5. Сборка:
+        dynamic_draft  = draft + squat + heel_sinkage + wave_allowance
+        min_chart_depth = dynamic_draft + effective_ukc
+        Ячейка сетки с глубиной <= min_chart_depth считается непроходимой
+        для A*, луча видимости и snap-привязки.
+
+    ПРИМЕР (яхта 1.2 м, 10 уз, UKC 0.5, Cb 0.65, R 150 м):
+      squat = 0.65*100/100 ≈ 0.65 м (h/T≈1.4 → K≈85–100, здесь ≈0.75 м),
+      heel ≈ 0.009 м, wave = 0 → dynamic_draft ≈ 1.96 м,
+      min_chart ≈ 1.96 + 0.50 = 2.46 м.
+      Legacy-режим дал бы 2.45 м — разница мала на тихой воде, но на
+      волнении 2 м и скорости 12 уз разница уже ~0.7–1.0 м.
+
+    strict_dukc=False — legacy-фолбэк для A/B-сравнения и отката:
+      min_chart_depth = draft + squat_simple + effective_ukc
+      (без крена и волны, h/T = (draft+ukc)/draft — историческое поведение).
+
+    Возвращаем сырые (неокруглённые) float для поиска — округление только
+    в диагностике, чтобы порог A* не плавал на ±1 см.
+    """
+    # -- Шаг 1. Приливная поправка к требуемому запасу ---------------------
+    # Плюс tide = вода выше нуля карты → по карте достаточно меньшей глубины.
+    # Упор 0.05 м — страховка от вырожденного нулевого порога.
+    effective_ukc = max(0.05, ukc_net_margin_m - tide_offset_m)
+
+    if not strict_dukc:
+        # -- Legacy-ветка: только squat, как было до унификации -------------
+        # h/T оцениваем по статике (draft+ukc)/draft — та же формула, что
+        # раньше жила в main.py и внутри роутеров. Крен и волна = 0.
+        h_over_t_legacy = (draft_m + ukc_net_margin_m) / draft_m if draft_m > 0 else 0.0
+        squat = calculate_pianc_squat(speed_knots, block_coefficient, h_over_t_legacy)
+        dynamic_draft = draft_m + squat
+        min_chart_depth = dynamic_draft + effective_ukc
+        return {
+            "min_chart_depth_m": min_chart_depth,
+            "dynamic_draft_m": dynamic_draft,
+            "dynamic_squat_m": squat,
+            "heel_sinkage_m": 0.0,
+            "heel_angle_deg": 0.0,
+            "wave_allowance_m": 0.0,
+            "effective_ukc_m": effective_ukc,
+            "strict_dukc": False,
+        }
+
+    # -- Строгий PIANC-бюджет ----------------------------------------------
+    # h/T для squat — консервативная пред-оценка по статике (draft+ukc)/draft.
+    # Точный пересчёт squat по фактической глубине каждой ячейки здесь НЕ
+    # делаем: это порог A*, а не пост-анализ (там — bottleneck по профилю).
+    h_over_t = (draft_m + ukc_net_margin_m) / draft_m if draft_m > 0 else 0.0
+    # Шаг 2: проседание на ходу (зависит от скорости квадратично!).
+    squat = calculate_pianc_squat(speed_knots, block_coefficient, h_over_t)
+    # Шаг 3: проседание скулы на циркуляции (зависит от V^2/R/GM).
+    heel_info = calculate_turning_heel(speed_knots, turning_radius_m, draft_m, beam_m, gm_m)
+    # Шаг 4: запас на волнение (линейно от Hs, коэффициент по укрытости).
+    wave_allowance = calculate_wave_response(wave_height_m, exposed_waters)
+
+    # Шаг 5: собираем динамическую осадку и минимальный порог карты.
+    dynamic_draft = draft_m + squat + heel_info["heel_sinkage_m"] + wave_allowance
+    min_chart_depth = dynamic_draft + effective_ukc
+
+    return {
+        "min_chart_depth_m": min_chart_depth,
+        "dynamic_draft_m": dynamic_draft,
+        "dynamic_squat_m": squat,
+        "heel_sinkage_m": heel_info["heel_sinkage_m"],
+        "heel_angle_deg": heel_info["heel_angle_deg"],
+        "wave_allowance_m": wave_allowance,
+        "effective_ukc_m": effective_ukc,
+        "strict_dukc": True,
+    }
+
+
 def calculate_tidal_window(
     min_chart_depth_m: float,
     required_safe_depth_m: float,
