@@ -86,10 +86,11 @@ def calculate_turn_arc_geometry(
     dist_in = calculate_distance_m(prev_lat, prev_lon, wp_lat, wp_lon)
     dist_out = calculate_distance_m(wp_lat, wp_lon, next_lat, next_lon)
 
-    # Cap tangent distance to 85% of available leg lengths to prevent overlap
-    max_tangent = min(dist_in, dist_out) * 0.85
+    # Cap tangent distance to 40% of available leg lengths to prevent overlap with adjacent legs
+    max_tangent = min(dist_in, dist_out) * 0.40
     effective_tangent_m = min(tangent_dist_m, max_tangent)
     effective_radius_m = effective_tangent_m / math.tan(theta_rad / 2.0)
+    is_feasible = (effective_tangent_m >= tangent_dist_m * 0.98)
 
     # Rate of Turn: ROT = (5556 / pi) * (V / R)
     rot_deg_min = (5556.0 / math.pi) * (speed_knots / effective_radius_m) if effective_radius_m > 0 else 0.0
@@ -134,6 +135,7 @@ def calculate_turn_arc_geometry(
         "rot_deg_min": round(rot_deg_min, 1),
         "tangent_dist_m": round(effective_tangent_m, 1),
         "wop_dist_m": round(wop_dist_m, 1),
+        "is_feasible": is_feasible,
         "pc": [round(pc_lon, 6), round(pc_lat, 6)],
         "pt": [round(pt_lon, 6), round(pt_lat, 6)],
         "wop": [round(wop_lon, 6), round(wop_lat, 6)],

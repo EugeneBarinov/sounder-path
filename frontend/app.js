@@ -97,6 +97,7 @@ const toolEblVrmBtn = document.getElementById('tool-ebl-vrm');
 const hudCursorCoords = document.getElementById('hud-cursor-coords');
 const hudCursorDepth = document.getElementById('hud-cursor-depth');
 const engineBadge = document.getElementById('engine-badge');
+const datasetBadge = document.getElementById('dataset-badge');
 const topbarAlarmPill = document.getElementById('topbar-alarm-pill');
 const topbarAlarmText = document.getElementById('topbar-alarm-text');
 const sidebarToggleBtn = document.getElementById('sidebar-toggle-btn');
@@ -417,6 +418,28 @@ if (vesselSelect) {
 // 7. Слои навигационной карты (Батиметрия, Фарватеры, Коридор XTD, Дуги циркуляции)
 // -----------------------------------------------------------------------------
 map.on('load', () => {
+    fetch('/api/health')
+        .then(res => res.json())
+        .then(h => {
+            if (datasetBadge) {
+                datasetBadge.style.display = 'inline-block';
+                if (h.is_synthetic) {
+                    datasetBadge.style.background = 'rgba(245, 158, 11, 0.2)';
+                    datasetBadge.style.borderColor = '#f59e0b';
+                    datasetBadge.style.color = '#fbbf24';
+                    datasetBadge.innerText = '⚠️ DEMO (СИНТЕТИКА)';
+                    datasetBadge.title = 'Синтетическая сетка глубин: поместите E8_2024.tif в data/raw/ для навигации по реальному растру.';
+                } else {
+                    datasetBadge.style.background = 'rgba(16, 185, 129, 0.2)';
+                    datasetBadge.style.borderColor = '#10b981';
+                    datasetBadge.style.color = '#34d399';
+                    datasetBadge.innerText = 'EMODnet 2024';
+                    datasetBadge.title = 'Боевая гидрографическая батиметрия EMODnet E8_2024';
+                }
+            }
+        })
+        .catch(() => {});
+
     // 1. Слой полосы безопасности (XTD)
     map.addSource('route-corridor', {
         type: 'geojson',
@@ -758,12 +781,18 @@ map.on('load', () => {
                         if (!data || !data.in_bounds) {
                             hudCursorDepth.innerText = 'Вне зоны';
                             hudCursorDepth.style.color = 'var(--text-muted)';
+                        } else if (data.is_nodata) {
+                            hudCursorDepth.innerText = 'Нет данных';
+                            hudCursorDepth.style.color = 'var(--text-muted)';
                         } else if (data.is_land) {
                             hudCursorDepth.innerText = 'Суша (0.0 м)';
                             hudCursorDepth.style.color = 'var(--status-danger)';
                         } else {
                             hudCursorDepth.innerText = `${data.depth.toFixed(1)} м`;
-                            const isSafe = data.depth >= (draft + dynamicSquat + baseUkc - tideOffsetM);
+                            const safeLimit = (currentRouteData && currentRouteData.properties && currentRouteData.properties.min_chart_depth_m)
+                                ? currentRouteData.properties.min_chart_depth_m
+                                : (draft + dynamicSquat + baseUkc - tideOffsetM);
+                            const isSafe = data.depth >= safeLimit;
                             hudCursorDepth.style.color = isSafe ? 'var(--status-success)' : 'var(--status-danger)';
                         }
                     })
@@ -1357,7 +1386,8 @@ window.calculateRoute = async function () {
             renderSafetyDashboard(data.safety_check, data.bottleneck, data.dukc);
 
             if (data.profile && data.profile.length) {
-                renderProfileChart(data.profile, payload.draft + dynamicSquat + payload.ukc - tideOffsetM);
+                const safeDepthLimit = (p && p.min_chart_depth_m) ? p.min_chart_depth_m : (payload.draft + dynamicSquat + payload.ukc - tideOffsetM);
+                renderProfileChart(data.profile, safeDepthLimit);
             }
 
             if (bottomDrawer) bottomDrawer.style.display = 'flex';
@@ -1894,12 +1924,17 @@ async function triggerDownload(url, filename, payload) {
 if (exportGpxBtn) {
     exportGpxBtn.addEventListener('click', () => {
         if (!currentRouteData || !currentRouteData.waypoints) return;
+        const p = currentRouteData.properties || {};
+        const sc = currentRouteData.safety_check || {};
         const payload = {
             waypoints: currentRouteData.waypoints,
-            route: currentRouteData.geometry.coordinates,
+            route: currentRouteData.geometry ? currentRouteData.geometry.coordinates : [],
             draft: draft,
             speed_knots: speedKnots,
             ukc: baseUkc,
+            safety_contour: p.min_chart_depth_m,
+            safety_status: sc.status,
+            is_safe: sc.is_safe,
             route_name: 'SeaPath_Passage_Plan'
         };
         triggerDownload('/api/export/gpx', 'seapath_passage_plan.gpx', payload);
@@ -1909,11 +1944,16 @@ if (exportGpxBtn) {
 if (exportRtzBtn) {
     exportRtzBtn.addEventListener('click', () => {
         if (!currentRouteData || !currentRouteData.waypoints) return;
+        const p = currentRouteData.properties || {};
+        const sc = currentRouteData.safety_check || {};
         const payload = {
             waypoints: currentRouteData.waypoints,
             draft: draft,
             speed_knots: speedKnots,
             ukc: baseUkc,
+            safety_contour: p.min_chart_depth_m,
+            safety_status: sc.status,
+            is_safe: sc.is_safe,
             route_name: 'SeaPath_Passage_Plan'
         };
         triggerDownload('/api/export/rtz', 'seapath_passage_plan.rtz', payload);

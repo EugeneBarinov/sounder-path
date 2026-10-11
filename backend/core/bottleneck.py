@@ -89,19 +89,20 @@ def analyze_route_bottlenecks(
         # Allowable squat = effective depth - (draft + heel + wave + ukc)
         allowable_squat = choke_eff_depth - (draft_m + heel_sinkage + wave_allowance + ukc_net_margin_m)
         if allowable_squat > 0.0:
-            # Using K=50 for shallow water
             k_factor = 50.0
             safe_cb = max(0.40, min(0.95, block_coefficient))
             safe_v_sq = (allowable_squat * k_factor) / safe_cb
             if safe_v_sq > 0.0:
                 safe_speed = math.sqrt(safe_v_sq)
-                rec_speed = max(3.0, min(safe_speed, max(3.0, speed_knots - 0.5)))
-                if rec_speed < speed_knots:
-                    squat_red = max(0.0, choke_squat - allowable_squat)
+                # Ships lose steerage / rudder authority below ~3.0 knots
+                if safe_speed >= 3.0 and speed_knots > 3.0:
+                    rec_speed = round(min(safe_speed, max(3.0, speed_knots - 0.5)), 1)
+                    actual_squat_at_rec = (safe_cb * (rec_speed ** 2)) / k_factor
+                    squat_red = max(0.0, choke_squat - actual_squat_at_rec)
                     speed_adaptation = {
                         "is_viable": True,
                         "current_speed_knots": round(speed_knots, 1),
-                        "recommended_speed_knots": round(rec_speed, 1),
+                        "recommended_speed_knots": rec_speed,
                         "squat_reduction_m": round(squat_red, 2),
                         "advisory": (
                             f"Reduce speed from {speed_knots:.1f} kts to {rec_speed:.1f} kts "
@@ -109,11 +110,35 @@ def analyze_route_bottlenecks(
                             f"to reduce squat by {squat_red:.2f}m and restore safe UKC."
                         ),
                     }
+                else:
+                    speed_adaptation = {
+                        "is_viable": False,
+                        "current_speed_knots": round(speed_knots, 1),
+                        "recommended_speed_knots": None,
+                        "squat_reduction_m": 0.0,
+                        "advisory": (
+                            f"Speed reduction alone cannot clear depth deficit ({depth_deficit:.2f}m): "
+                            f"required safe speed ({safe_speed:.1f} kts) is below minimum steerage speed (3.0 kts). "
+                            f"Passage requires tidal surge or draft lightering."
+                        ),
+                    }
+        else:
+            speed_adaptation = {
+                "is_viable": False,
+                "current_speed_knots": round(speed_knots, 1),
+                "recommended_speed_knots": None,
+                "squat_reduction_m": 0.0,
+                "advisory": (
+                    f"Zero speed squat cannot eliminate depth deficit ({depth_deficit:.2f}m). "
+                    f"Static draft ({draft_m:.2f}m) + required UKC exceeds water depth ({choke_eff_depth:.2f}m)."
+                ),
+            }
 
-    # Tidal window requirement for this bottleneck
+    # Tidal window requirement for this bottleneck:
+    # Compares charted depth with total required water depth (without double-subtracting tide_offset)
     tidal_analysis = calculate_tidal_window(
         min_chart_depth_m=shallowest_sounding["chart_depth_m"],
-        required_safe_depth_m=shallowest_sounding["required_depth_m"] - tide_offset_m,
+        required_safe_depth_m=shallowest_sounding["required_depth_m"],
     )
 
     return {

@@ -243,8 +243,6 @@ class Router:
                 clearance = max(0.05, depth - min_depth)
                 # Asymptotic safety penalty when approaching minimum safe clearance
                 shallow_penalty = 8.0 / clearance
-                # Coastal fairway preference: discourages uncontrolled deep-trench routing
-                deep_penalty = ((depth - 150.0) / 100.0) * 2.0 if depth > 150.0 else 0.0
 
                 # Heading Alteration Penalty (Ship Kinematics in 3D State Lattice)
                 heading_penalty = 0.0
@@ -260,7 +258,7 @@ class Router:
                         else:
                             heading_penalty = 1.8 + 1.2 * (-cos_theta)
 
-                transition_cost = (base_cost * (1.0 + shallow_penalty + deep_penalty) * fw_factor) + heading_penalty
+                transition_cost = (base_cost * (1.0 + shallow_penalty) * fw_factor) + heading_penalty
                 g_new = g_curr + transition_cost
                 next_state = (nr, nc, i)
 
@@ -370,8 +368,8 @@ class Router:
                     eff_r = safe_t_dist / tan_half if tan_half > 0.001 else turning_radius_m
                     turn_radius = eff_r
 
-                    # Maneuvering safety check: leg must support >= 85% of vessel's minimum turning circle
-                    maneuver_feasible = (safe_t_dist >= tangent_dist * 0.85)
+                    # Maneuvering safety check: leg must support >= 98% of vessel's minimum turning circle
+                    maneuver_feasible = (safe_t_dist >= tangent_dist * 0.98)
 
                     rot = (5556.0 / math.pi) * (speed_knots / eff_r)
                     rot_deg_min = round(rot if diff >= 0.0 else -rot, 1)
@@ -436,7 +434,7 @@ class Router:
                         safe_t_dist = min(tangent_dist, max_t_dist)
                         effective_r = safe_t_dist / tan_half
 
-                        if safe_t_dist >= tangent_dist * 0.85:
+                        if safe_t_dist >= tangent_dist * 0.98:
                             t1_x, t1_y = u1_x * safe_t_dist, u1_y * safe_t_dist
                             t2_x, t2_y = u2_x * safe_t_dist, u2_y * safe_t_dist
 
@@ -467,6 +465,13 @@ class Router:
 
                                     pt_lat = lat_i + py / m_per_deg_lat
                                     pt_lon = lon_i + px / m_per_deg_lon
+
+                                    if not (
+                                        self.grid.lon_min <= pt_lon <= self.grid.lon_max
+                                        and self.grid.lat_min <= pt_lat <= self.grid.lat_max
+                                    ):
+                                        arc_safe = False
+                                        break
 
                                     cell_r, cell_c = self.grid.lonlat_to_cell(pt_lon, pt_lat)
                                     if (

@@ -25,6 +25,9 @@ def export_to_gpx(
     speed_knots: float,
     ukc: float,
     route_name: str = "SeaPath_Passage_Plan",
+    safety_contour: Optional[float] = None,
+    safety_status: Optional[str] = None,
+    is_safe: Optional[bool] = None,
 ) -> str:
     """
     Generate GPX 1.1 XML document containing route waypoints and high-resolution track.
@@ -41,7 +44,9 @@ def export_to_gpx(
     name_el = ET.SubElement(metadata, "name")
     name_el.text = route_name
     desc_el = ET.SubElement(metadata, "desc")
-    desc_el.text = f"Draft: {draft:.1f}m | Speed: {speed_knots:.1f} kts | Required UKC: {ukc:.1f}m"
+    contour_str = f" | Safety Contour: {safety_contour:.2f}m" if safety_contour is not None else ""
+    warning_str = " [CRITICAL WARNING: HAZARD DETECTED]" if (is_safe is False or safety_status == "CRITICAL_HAZARD") else ""
+    desc_el.text = f"Draft: {draft:.1f}m | Speed: {speed_knots:.1f} kts | Required UKC: {ukc:.1f}m{contour_str}{warning_str}"
 
     # Route with navigational waypoints
     rte = ET.SubElement(gpx, "rte")
@@ -109,6 +114,8 @@ def export_to_rtz(
     ukc: float,
     route_name: str = "SeaPath_Passage_Plan",
     safety_contour: Optional[float] = None,
+    safety_status: Optional[str] = None,
+    is_safe: Optional[bool] = None,
 ) -> str:
     """
     Generate RTZ 1.1 (IEC 61174:2015 Annex S) XML format for commercial ECDIS plotters.
@@ -120,10 +127,19 @@ def export_to_rtz(
         "xsi:schemaLocation": "http://www.cirm.org/RTZ/1/1 RTZ_v1.1.xsd",
     })
 
-    route_info = ET.SubElement(route, "routeInfo", {
+    is_hazardous = (is_safe is False or safety_status == "CRITICAL_HAZARD")
+    route_info_attrs = {
         "routeName": route_name,
         "optimizationMethod": "Bathymetric Safety Clearance",
-    })
+    }
+    if is_hazardous:
+        route_info_attrs["routeStatus"] = "UNVERIFIED_HAZARD"
+
+    route_info = ET.SubElement(route, "routeInfo", route_info_attrs)
+
+    if is_hazardous:
+        notes_el = ET.SubElement(route_info, "routeNotes")
+        notes_el.text = "CRITICAL WARNING: Route contains unresolved navigational hazards or insufficient UKC."
     
     # Vessel operational parameters extension
     vessel_ext = ET.SubElement(route_info, "extensions")

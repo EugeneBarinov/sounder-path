@@ -53,6 +53,7 @@ class BathymetricGrid:
             if nodata_mask is not None
             else np.zeros((self.rows, self.cols), dtype=bool)
         )
+        self.is_synthetic = False
 
     def get_depth(self, r: int, c: int) -> float:
         """Returns seabed water depth in meters, or 0.0 if out of bounds."""
@@ -75,10 +76,15 @@ class BathymetricGrid:
         if fairway_weights.shape == (self.rows, self.cols):
             self.fairway_weights = fairway_weights
 
+    def is_within_coverage(self, lon: float, lat: float) -> bool:
+        """Checks if geographic coordinate lies within raster bounding box."""
+        return (self.lon_min <= lon <= self.lon_max) and (self.lat_min <= lat <= self.lat_max)
+
     @classmethod
     def load_from_geotiff(cls, filepath: str | Path) -> "BathymetricGrid":
         """
         Load bathymetric raster from a GeoTIFF dataset.
+        Automatically reprojects any CRS (e.g. EPSG:3857, UTM) to WGS84 (EPSG:4326).
         EMODnet elevation models represent seabed depths as negative elevations,
         which are inverted into positive water-column depths.
         """
@@ -87,14 +93,53 @@ class BathymetricGrid:
             raise FileNotFoundError(f"Bathymetry dataset not found at: {path}")
 
         with rasterio.open(path) as src:
+            is_wgs84 = False
             if src.crs is not None and hasattr(src.crs, "to_epsg"):
                 epsg_code = src.crs.to_epsg()
-                if epsg_code is not None and epsg_code != 4326:
-                    raise ValueError(
-                        f"Unsupported CRS (EPSG:{epsg_code}). BathymetricGrid expects EPSG:4326 (WGS 84 geographic coordinates)."
-                    )
+                is_wgs84 = (epsg_code == 4326)
 
-            # Read with mask to handle NoData values (e.g., -9999 or masked bands)
+            if not is_wgs84 and src.crs is not None:
+                # Automatic on-the-fly reprojection to WGS84 (EPSG:4326)
+                from rasterio.warp import calculate_default_transform, reproject, Resampling
+                target_crs = "EPSG:4326"
+                dst_transform, dst_width, dst_height = calculate_default_transform(
+                    src.crs, target_crs, src.width, src.height, *src.bounds
+                )
+                destination = np.zeros((dst_height, dst_width), dtype=np.float32)
+                reproject(
+                    source=rasterio.band(src, 1),
+                    destination=destination,
+                    src_transform=src.transform,
+                    src_crs=src.crs,
+                    dst_transform=dst_transform,
+                    dst_crs=target_crs,
+                    resampling=Resampling.bilinear,
+                )
+                nodata_val = src.nodata if src.nodata is not None else -9999.0
+                nodata_mask = (destination == nodata_val) | np.isnan(destination)
+                land_mask = (~nodata_mask) & (destination > 0.0)
+                depths = -destination
+                depths = np.nan_to_num(depths, nan=0.0)
+                depths = np.where((depths < 0.0) | land_mask | nodata_mask, 0.0, depths)
+
+                lon_min = dst_transform.c
+                lat_max = dst_transform.f
+                lon_max = lon_min + dst_width * dst_transform.a
+                lat_min = lat_max + dst_height * dst_transform.e
+
+                grid_obj = cls(
+                    lat_min=min(lat_min, lat_max),
+                    lat_max=max(lat_min, lat_max),
+                    lon_min=min(lon_min, lon_max),
+                    lon_max=max(lon_min, lon_max),
+                    depths=depths,
+                    land_mask=land_mask,
+                    nodata_mask=nodata_mask,
+                )
+                grid_obj.is_synthetic = False
+                return grid_obj
+
+            # Native EPSG:4326 reading
             raw_data = src.read(1, masked=True)
             if src.nodata is not None:
                 raw_data = np.ma.masked_equal(raw_data, src.nodata)
@@ -113,7 +158,7 @@ class BathymetricGrid:
             depths = np.where((depths < 0.0) | land_mask | nodata_mask, 0.0, depths)
             bounds = src.bounds
 
-        return cls(
+        grid_obj = cls(
             lat_min=bounds.bottom,
             lat_max=bounds.top,
             lon_min=bounds.left,
@@ -122,6 +167,8 @@ class BathymetricGrid:
             land_mask=land_mask,
             nodata_mask=nodata_mask,
         )
+        grid_obj.is_synthetic = False
+        return grid_obj
 
     @classmethod
     def create_synthetic(
@@ -149,13 +196,15 @@ class BathymetricGrid:
         coast_mask = (lat_grid > 45.3) & (lon_grid < 34.2)
         depths[coast_mask] = 0.0
 
-        return cls(
+        grid_obj = cls(
             lat_min=lat_min,
             lat_max=lat_max,
             lon_min=lon_min,
             lon_max=lon_max,
             depths=depths.astype(np.float32),
         )
+        grid_obj.is_synthetic = True
+        return grid_obj
 
     def downsample(self, factor: int = 10) -> "BathymetricGrid":
         """
@@ -324,6 +373,8 @@ class BathymetricGrid:
                     "coverage": True,
                     "rows": self.rows,
                     "cols": self.cols,
+                    "is_synthetic": getattr(self, "is_synthetic", False),
+                    "bounds": [self.lon_min, self.lat_min, self.lon_max, self.lat_max],
                 },
                 "geometry": {
                     "type": "Polygon",

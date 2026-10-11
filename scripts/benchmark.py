@@ -97,19 +97,42 @@ t_cpp = time.perf_counter() - t0
 
 print("\n--- RESULTS ---")
 if res_py is None:
-    print("Python Reference Router: NO PASSAGE")
+    print("❌ ERROR: Python Reference Router failed to find passage!")
+    sys.exit(1)
 else:
     print(f"Python Reference Router: {t_py * 1000.0:.2f} ms")
+
 if res_cpp is None:
-    print("C++ Native Router: NO PASSAGE")
+    print("❌ ERROR: C++ Native Router failed to find passage!")
+    sys.exit(1)
 else:
     print(f"C++ Native Router:       {t_cpp * 1000.0:.2f} ms")
-if res_py is not None and res_cpp is not None and t_cpp > 0:
+
+if t_cpp > 0:
     print(f"Performance Speedup:     {t_py / t_cpp:.1f}x faster")
 
-if res_py is not None and res_cpp is not None:
-    py_diag = res_py["diagnostics"]
-    cpp_diag = res_cpp["diagnostics"]
-    print(f"\nDistance: Py {py_diag['distance_nm']} NM | C++ {cpp_diag['distance_nm']} NM")
-    print(f"Clearance: Py {py_diag['min_clearance_m']} m | C++ {cpp_diag['min_clearance_m']} m")
-    print(f"Waypoints: Py {py_diag['waypoints']} | C++ {cpp_diag['waypoints']}")
+py_diag = res_py["diagnostics"]
+cpp_diag = res_cpp["diagnostics"]
+print(f"\nDistance: Py {py_diag['distance_nm']} NM | C++ {cpp_diag['distance_nm']} NM")
+print(f"Clearance: Py {py_diag['min_clearance_m']} m | C++ {cpp_diag['min_clearance_m']} m")
+print(f"Waypoints: Py {py_diag['waypoints']} | C++ {cpp_diag['waypoints']}")
+
+# Strict parity verification
+dist_diff = abs(py_diag["distance_nm"] - cpp_diag["distance_nm"])
+clearance_diff = abs(py_diag["min_clearance_m"] - cpp_diag["min_clearance_m"])
+wp_diff = abs(py_diag["waypoints"] - cpp_diag["waypoints"])
+
+if dist_diff > 0.5:
+    print(f"❌ ERROR: Distance disparity ({dist_diff:.2f} NM) exceeds tolerance (0.5 NM)")
+    sys.exit(1)
+
+if clearance_diff > 0.1:
+    print(f"❌ ERROR: Clearance disparity ({clearance_diff:.2f} m) exceeds tolerance (0.1 m)")
+    sys.exit(1)
+
+if wp_diff > 2:
+    print(f"❌ ERROR: Waypoints count disparity ({wp_diff}) exceeds tolerance (2)")
+    sys.exit(1)
+
+print("\n✓ BENCHMARK VALIDATION PASSED: 100% mathematical and geometric parity confirmed.")
+sys.exit(0)

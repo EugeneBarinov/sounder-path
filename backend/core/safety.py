@@ -143,6 +143,10 @@ def scan_corridor_raster_swath(
     visited_cells = set()
     n = len(route_coords)
 
+    # Calculate cell footprint radius for conservative coverage
+    lat_step = (grid.lat_max - grid.lat_min) / max(1, grid.rows)
+    lon_step = (grid.lon_max - grid.lon_min) / max(1, grid.cols)
+
     for seg in range(n - 1):
         p0 = route_coords[seg]
         p1 = route_coords[seg + 1]
@@ -156,6 +160,8 @@ def scan_corridor_raster_swath(
         if abs(m_per_deg_lon) < 1.0:
             m_per_deg_lon = 1.0
 
+        cell_radius_m = 0.5 * math.hypot(lat_step * m_per_deg_lat, lon_step * m_per_deg_lon)
+
         dx = (lon1 - lon0) * m_per_deg_lon
         dy = (lat1 - lat0) * m_per_deg_lat
         seg_len = math.hypot(dx, dy)
@@ -168,13 +174,25 @@ def scan_corridor_raster_swath(
         ny = -ux
 
         max_xtd = max(port_xtd_m, stbd_xtd_m)
-        d_lat_deg = (max_xtd + 200.0) / m_per_deg_lat
-        d_lon_deg = (max_xtd + 200.0) / m_per_deg_lon
+        d_lat_deg = (max_xtd + cell_radius_m + 50.0) / m_per_deg_lat
+        d_lon_deg = (max_xtd + cell_radius_m + 50.0) / m_per_deg_lon
 
         min_lat = min(lat0, lat1) - d_lat_deg
         max_lat = max(lat0, lat1) + d_lat_deg
         min_lon = min(lon0, lon1) - d_lon_deg
         max_lon = max(lon0, lon1) + d_lon_deg
+
+        # Unverified data coverage detection: corridor leaves bathymetry dataset
+        if min_lat < grid.lat_min or max_lat > grid.lat_max or min_lon < grid.lon_min or max_lon > grid.lon_max:
+            if not any(h.get("is_unverified_coverage") for h in hazards):
+                hazards.append({
+                    "is_unverified_coverage": True,
+                    "lon": round(lon0, 6),
+                    "lat": round(lat0, 6),
+                    "depth": 0.0,
+                    "xtd_offset_m": round(max_xtd, 1),
+                    "is_restricted": False,
+                })
 
         r_top, c_left = grid.lonlat_to_cell(min_lon, max_lat)
         r_bot, c_right = grid.lonlat_to_cell(max_lon, min_lat)
@@ -197,14 +215,15 @@ def scan_corridor_raster_swath(
                 s = wx * ux + wy * uy
                 d_xtd = wx * nx + wy * ny  # > 0 starboard, < 0 port
 
-                # Check if cell is within leg corridor footprint (with slight endcap margins)
-                is_along = (-50.0 <= s <= seg_len + 50.0)
+                # Check if cell footprint physically intersects corridor swath
+                is_along = (-(cell_radius_m + 10.0) <= s <= seg_len + cell_radius_m + 10.0)
                 if seg == 0:
-                    is_along = (-port_xtd_m <= s <= seg_len + 50.0)
+                    is_along = (-port_xtd_m <= s <= seg_len + cell_radius_m)
                 if seg == n - 2:
                     is_along = (is_along or (0.0 <= s <= seg_len + stbd_xtd_m))
 
-                if is_along and (-port_xtd_m <= d_xtd <= stbd_xtd_m):
+                # Footprint collision: cell center within [-(XTD + R_cell), +(XTD + R_cell)]
+                if is_along and (-(port_xtd_m + cell_radius_m) <= d_xtd <= (stbd_xtd_m + cell_radius_m)):
                     visited_cells.add((r, c))
                     depth_val = float(grid.depths[r, c])
                     is_restricted = grid.is_restricted(r, c)
@@ -240,6 +259,7 @@ def verify_ecdis_route_safety(
     requested_radius_m: Optional[float] = None,
     port_xtd_m: float = 185.2,
     stbd_xtd_m: float = 185.2,
+    route_coords: Optional[List[List[float]]] = None,
 ) -> Dict[str, Any]:
     """
     Automated ECDIS Route Checking per IEC 61174:2015 and IMO Res. A.893(21).
@@ -248,7 +268,7 @@ def verify_ecdis_route_safety(
     2. Critical UKC warnings (Clearance < 0.35m margin).
     3. Maximum Rate of Turn (ROT) feasibility based on vessel speed.
     4. Turning radius leg constraints against vessel minimum turning circle (CRITICAL block).
-    5. Full 2D Cross-track safety corridor (XTD) area raster scanning for submerged shoals.
+    5. Full 2D Cross-track safety corridor (XTD) area raster scanning for submerged shoals and uncharted waters.
     """
     alarms: List[Dict[str, Any]] = []
     safety_depth = min_chart_depth_m if min_chart_depth_m is not None else (draft + dynamic_squat + ukc)
@@ -313,8 +333,8 @@ def verify_ecdis_route_safety(
         radius_violation = (
             requested_radius_m is not None
             and requested_radius_m > 10.0
-            and turn >= 5.0
-            and actual_r < requested_radius_m * 0.85
+            and turn >= 4.0
+            and actual_r < requested_radius_m * 0.98
         )
         if not is_feasible or radius_violation:
             alarms.append({
@@ -322,7 +342,7 @@ def verify_ecdis_route_safety(
                 "code": "ALM-05-MANEUVERING-LIMIT-VIOLATION",
                 "title": f"Unexecutable Turn Maneuver at WP{idx}",
                 "detail": (
-                    f"Available leg length or shoal geometry restricts turning radius to {actual_r:.0f}m "
+                    f"Available leg length restricts turning radius to {actual_r:.0f}m "
                     f"(vessel minimum required: {requested_radius_m:.0f}m). "
                     f"Turn exceeds physical maneuvering limits; route cannot be safely executed by this vessel."
                 ) if radius_violation else (
@@ -332,19 +352,41 @@ def verify_ecdis_route_safety(
                 "waypoint_index": idx,
             })
 
-    # 3. Full 2D Cross-Track Safety Corridor (XTD) Area Swath Scanning
+    # 3. Full 2D Cross-Track Safety Corridor (XTD) Area Swath Scanning along actual filleted route
     corridor_hazards: List[Dict[str, Any]] = []
-    route_coords = [[wp["lon"], wp["lat"]] for wp in waypoints]
-    if grid and hasattr(grid, "lonlat_to_cell") and len(route_coords) >= 2:
+    active_route_coords = (
+        route_coords
+        if (route_coords and len(route_coords) >= 2)
+        else [[wp["lon"], wp["lat"]] for wp in waypoints]
+    )
+    if grid and hasattr(grid, "lonlat_to_cell") and len(active_route_coords) >= 2:
         corridor_hazards = scan_corridor_raster_swath(
-            route_coords=route_coords,
+            route_coords=active_route_coords,
             port_xtd_m=port_xtd_m,
             stbd_xtd_m=stbd_xtd_m,
             grid=grid,
             safety_depth=safety_depth,
         )
-        if corridor_hazards:
-            worst_h = min(corridor_hazards, key=lambda h: h["depth"])
+
+        # Alarm 1: Unverified coverage (XTD extends into uncharted waters)
+        unverified_h = next((h for h in corridor_hazards if h.get("is_unverified_coverage")), None)
+        if unverified_h:
+            alarms.append({
+                "severity": "CRITICAL",
+                "code": "ALM-06-UNVERIFIED-DATA-COVERAGE",
+                "title": "Uncharted Waters Inside XTD Safety Corridor",
+                "detail": (
+                    f"XTD safety corridor ({port_xtd_m:.0f}m port / {stbd_xtd_m:.0f}m stbd) extends outside the boundaries "
+                    f"of verified bathymetry coverage near ({unverified_h['lon']:.4f}, {unverified_h['lat']:.4f}). "
+                    f"Navigating within corridor risks unchartered hazards."
+                ),
+                "hazard_location": [unverified_h["lon"], unverified_h["lat"]],
+            })
+
+        # Alarm 2: Shoals / Navigational hazards inside XTD
+        shoal_hazards = [h for h in corridor_hazards if not h.get("is_unverified_coverage")]
+        if shoal_hazards:
+            worst_h = min(shoal_hazards, key=lambda h: h["depth"])
             alarms.append({
                 "severity": "CRITICAL",
                 "code": "ALM-04-XTD-CORRIDOR-HAZARD",
@@ -370,7 +412,7 @@ def verify_ecdis_route_safety(
         summary = f"ECDIS Route Check: CAUTION. {len(alarms)} operational warnings require navigator review."
     else:
         status = "SAFE_PASSED"
-        summary = "ECDIS Route Check: PASSED. 100% compliant with Safety Depth, UKC, and maneuvering limits."
+        summary = "ECDIS Route Check: PASSED. No violations detected across depth, UKC, ROT, and XTD safety checks."
 
     return {
         "status": status,

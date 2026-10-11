@@ -52,9 +52,16 @@ _BASE_DIR = Path(__file__).resolve().parent.parent
 _RAW_DATA_DIR = _BASE_DIR / "data" / "raw"
 _GEOTIFF_PATH = _RAW_DATA_DIR / "E8_2024.tif"
 
+is_synthetic_mode = False
 if _GEOTIFF_PATH.exists():
-    print(f"Loading primary bathymetric grid: {_GEOTIFF_PATH.name}...")
-    full_grid = BathymetricGrid.load_from_geotiff(_GEOTIFF_PATH)
+    try:
+        print(f"Loading primary bathymetric grid: {_GEOTIFF_PATH.name}...")
+        full_grid = BathymetricGrid.load_from_geotiff(_GEOTIFF_PATH)
+        is_synthetic_mode = False
+    except Exception as _load_err:
+        print(f"[WARN] Failed to load GeoTIFF ({_load_err}). Falling back to synthetic regional bathymetry.")
+        full_grid = BathymetricGrid.create_synthetic()
+        is_synthetic_mode = True
 else:
     print(
         f"[DEMO MODE] {_GEOTIFF_PATH.name} not found in data/raw/. "
@@ -62,6 +69,9 @@ else:
         "Place operational EMODnet GeoTIFF in data/raw/ for real-world navigation."
     )
     full_grid = BathymetricGrid.create_synthetic()
+    is_synthetic_mode = True
+
+full_grid.is_synthetic = is_synthetic_mode
 
 # 1. Optional local high-resolution soundings fusion (before downsampling)
 _LOCAL_SURVEY_CSV = _RAW_DATA_DIR / "yevpatoriya_channel.csv"
@@ -69,10 +79,11 @@ if _LOCAL_SURVEY_CSV.exists():
     full_grid.fuse_csv_data(_LOCAL_SURVEY_CSV)
 
 # 2. Downsample for routing AFTER soundings fusion
-if _GEOTIFF_PATH.exists():
+if not is_synthetic_mode and _GEOTIFF_PATH.exists():
     routing_grid = full_grid.downsample(factor=10)
 else:
     routing_grid = full_grid
+routing_grid.is_synthetic = is_synthetic_mode
 
 # Rasterize navigational fairways & restricted areas (RESARE)
 fairway_weights = rasterize_fairway_weights(
@@ -152,6 +163,8 @@ class ExportRouteRequest(BaseModel):
     ukc: float = 0.5
     safety_contour: Optional[float] = None
     route_name: Optional[str] = "SeaPath_Passage_Plan"
+    safety_status: Optional[str] = None
+    is_safe: Optional[bool] = None
 
 
 # ---------------------------------------------------------------------------
@@ -162,30 +175,41 @@ def _snap_to_navigable(
     c: int,
     grid: BathymetricGrid,
     min_depth: float,
-    radius: int = 60,
-) -> Tuple[Optional[int], Optional[int]]:
+    max_snap_meters: float = 1500.0,
+) -> Tuple[Optional[int], Optional[int], float]:
     """
     Breadth-first search to snap shoreline/berth coordinates to the nearest
-    navigable fairway node satisfying safety depth constraints and bypassing restricted zones.
+    navigable fairway node satisfying safety depth constraints (depth > min_depth)
+    and bypassing restricted zones. Does not leapfrog across wide land barriers.
+    Returns (snapped_r, snapped_c, snap_distance_m).
     """
-    queue = deque([(r, c)])
+    if 0 <= r < grid.rows and 0 <= c < grid.cols:
+        if float(grid.depths[r, c]) > min_depth and not grid.is_restricted(r, c):
+            return r, c, 0.0
+
+    lat_orig, lon_orig = grid.get_cell_coords(r, c)
+    queue = deque([(r, c, 0)])
     visited = {(r, c)}
+    max_steps = 15  # Up to 15 grid cells (~1500m)
 
     while queue:
-        cr, cc = queue.popleft()
-        if float(grid.depths[cr, cc]) >= min_depth and not grid.is_restricted(cr, cc):
-            return cr, cc
+        cr, cc, steps = queue.popleft()
+        if float(grid.depths[cr, cc]) > min_depth and not grid.is_restricted(cr, cc):
+            lat_c, lon_c = grid.get_cell_coords(cr, cc)
+            dist_m = calculate_distance_m(lat_orig, lon_orig, lat_c, lon_c)
+            if dist_m <= max_snap_meters:
+                return cr, cc, round(dist_m, 1)
 
-        if max(abs(cr - r), abs(cc - c)) >= radius:
+        if steps >= max_steps:
             continue
 
         for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (-1, 1), (1, -1), (1, 1)]:
             nr, nc = cr + dr, cc + dc
             if 0 <= nr < grid.rows and 0 <= nc < grid.cols and (nr, nc) not in visited:
                 visited.add((nr, nc))
-                queue.append((nr, nc))
+                queue.append((nr, nc, steps + 1))
 
-    return None, None
+    return None, None, 0.0
 
 
 def _is_within_coverage(lon: float, lat: float, grid: BathymetricGrid) -> bool:
@@ -231,6 +255,8 @@ def health_check():
         "status": "healthy",
         "dataset_rows": routing_grid.rows,
         "dataset_cols": routing_grid.cols,
+        "is_synthetic": is_synthetic_mode,
+        "bounds": [routing_grid.lon_min, routing_grid.lat_min, routing_grid.lon_max, routing_grid.lat_max],
     }
 
 
@@ -250,18 +276,20 @@ def get_fairways():
 def get_depth_at(lon: float, lat: float):
     """Returns exact seabed sounding depth in meters at the given geographic coordinate."""
     if not _is_within_coverage(lon, lat, full_grid):
-        return {"depth": None, "in_bounds": False, "is_land": False, "is_restricted": False}
+        return {"depth": None, "in_bounds": False, "is_land": False, "is_nodata": False, "is_restricted": False}
     r, c = full_grid.lonlat_to_cell(lon, lat)
     d = float(full_grid.depths[r, c])
-    is_land = d <= 0.05
+    is_nodata = bool(full_grid.nodata_mask[r, c]) if full_grid.nodata_mask is not None else False
+    is_land = bool(full_grid.land_mask[r, c]) if full_grid.land_mask is not None else (d <= 0.05 and not is_nodata)
     is_restr = False
     if routing_grid:
         rr, rc = routing_grid.lonlat_to_cell(lon, lat)
         is_restr = routing_grid.is_restricted(rr, rc)
     return {
-        "depth": round(d, 1) if not is_land else 0.0,
+        "depth": round(d, 1) if not is_land and not is_nodata else 0.0,
         "in_bounds": True,
         "is_land": is_land,
+        "is_nodata": is_nodata,
         "is_restricted": is_restr,
     }
 
@@ -346,18 +374,18 @@ def calculate_route(req: RouteRequest):
         start_r, start_c = routing_grid.lonlat_to_cell(p_start[0], p_start[1])
         goal_r, goal_c = routing_grid.lonlat_to_cell(p_goal[0], p_goal[1])
 
-        start_r, start_c = _snap_to_navigable(start_r, start_c, routing_grid, min_required_chart_depth)
-        goal_r, goal_c = _snap_to_navigable(goal_r, goal_c, routing_grid, min_required_chart_depth)
+        start_r, start_c, snap_start_dist = _snap_to_navigable(start_r, start_c, routing_grid, min_required_chart_depth)
+        goal_r, goal_c, snap_goal_dist = _snap_to_navigable(goal_r, goal_c, routing_grid, min_required_chart_depth)
 
         if start_r is None:
             raise HTTPException(
                 status_code=400,
-                detail=f"Waypoint {k + 1}: no navigable channel found satisfying safety depth ({min_required_chart_depth:.1f}m)."
+                detail=f"Waypoint {k + 1}: no navigable channel found satisfying safety depth ({min_required_chart_depth:.1f}m) within 1500m."
             )
         if goal_r is None:
             raise HTTPException(
                 status_code=400,
-                detail=f"Waypoint {k + 2}: no navigable channel found satisfying safety depth ({min_required_chart_depth:.1f}m)."
+                detail=f"Waypoint {k + 2}: no navigable channel found satisfying safety depth ({min_required_chart_depth:.1f}m) within 1500m."
             )
 
         # -- Вызов роутера с готовым бюджетом ----------------------------------
@@ -442,6 +470,9 @@ def calculate_route(req: RouteRequest):
             wp["leg_bearing_deg"] = 0.0
             wp["leg_distance_nm"] = 0.0
 
+        wp["port_xtd_nm"] = round(req.port_xtd_m / 1852.0, 3)
+        wp["stbd_xtd_nm"] = round(req.stbd_xtd_m / 1852.0, 3)
+
         if 0 < i < n_wps - 1:
             wp_prev = raw_waypoints[i - 1]
             b_in = calculate_bearing_deg(wp_prev["lat"], wp_prev["lon"], wp["lat"], wp["lon"])
@@ -450,12 +481,14 @@ def calculate_route(req: RouteRequest):
             turn_ang = abs(diff)
             wp["turn_angle_deg"] = round(turn_ang, 1)
 
-            if turn_ang >= 0.5 and req.turning_radius_m > 10.0 and req.speed_knots > 0.0:
-                rot = (5556.0 / math.pi) * (req.speed_knots / req.turning_radius_m)
+            act_r = wp.get("turn_radius_m", req.turning_radius_m)
+            if turn_ang >= 0.5 and act_r > 10.0 and req.speed_knots > 0.0:
+                rot = (5556.0 / math.pi) * (req.speed_knots / act_r)
                 wp["rot_deg_min"] = round(rot if diff >= 0.0 else -rot, 1)
                 rad_half = math.radians(turn_ang / 2.0)
                 v_ms = req.speed_knots * 0.514444
-                wp["wop_distance_m"] = round(req.turning_radius_m * math.tan(rad_half) + v_ms * 12.0, 1)
+                t_dist = act_r * math.tan(rad_half)
+                wp["wop_distance_m"] = round(t_dist + v_ms * 12.0, 1)
             else:
                 wp["rot_deg_min"] = 0.0
                 wp["wop_distance_m"] = 0.0
@@ -499,7 +532,7 @@ def calculate_route(req: RouteRequest):
     max_actual_heel = max((wp.get("heel_sinkage_m", 0.0) for wp in combined_waypoints), default=0.0)
     has_maneuver_violation = any(wp.get("maneuver_feasible") is False for wp in combined_waypoints)
 
-    # 3. ECDIS Route Safety Verification (IEC 61174) with Full 2D XTD Scan
+    # 3. ECDIS Route Safety Verification (IEC 61174) with Full 2D XTD Scan on actual filleted route
     safety_audit = verify_ecdis_route_safety(
         waypoints=combined_waypoints,
         profile=combined_profile,
@@ -511,10 +544,11 @@ def calculate_route(req: RouteRequest):
         min_chart_depth_m=min_required_chart_depth,
         dynamic_draft_m=search_dynamic_draft,
         corridor_feature=corridor_feature,
-        grid=routing_grid,
+        grid=full_grid,
         requested_radius_m=req.turning_radius_m,
         port_xtd_m=req.port_xtd_m,
         stbd_xtd_m=req.stbd_xtd_m,
+        route_coords=combined_route,
     )
 
     # 4. Bottleneck & Choke Point Analysis + Speed Adaptation Advisory
@@ -600,6 +634,9 @@ def export_gpx(req: ExportRouteRequest):
         speed_knots=req.speed_knots,
         ukc=req.ukc,
         route_name=req.route_name or "SeaPath_Passage_Plan",
+        safety_contour=req.safety_contour,
+        safety_status=req.safety_status,
+        is_safe=req.is_safe,
     )
     return Response(
         content=xml_content,
@@ -618,6 +655,8 @@ def export_rtz(req: ExportRouteRequest):
         ukc=req.ukc,
         route_name=req.route_name or "SeaPath_Passage_Plan",
         safety_contour=req.safety_contour,
+        safety_status=req.safety_status,
+        is_safe=req.is_safe,
     )
     return Response(
         content=xml_content,

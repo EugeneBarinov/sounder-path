@@ -185,7 +185,6 @@ NativeRouteResult NativeRouter::find_path(
 
             float clearance = std::max(0.05f, depth - min_depth);
             float shallow_penalty = 8.0f / clearance;
-            float deep_penalty = (depth > 150.0f) ? ((depth - 150.0f) / 100.0f) * 2.0f : 0.0f;
 
             // Heading Alteration Penalty (Ship Kinematics in State Lattice)
             float heading_penalty = 0.0f;
@@ -206,7 +205,7 @@ NativeRouteResult NativeRouter::find_path(
                 }
             }
 
-            float step_cost = (DIRS[i].cost * (1.0f + shallow_penalty + deep_penalty) * fairway_w) + heading_penalty;
+            float step_cost = (DIRS[i].cost * (1.0f + shallow_penalty) * fairway_w) + heading_penalty;
             float g_new = curr.g + step_cost;
 
             size_t n_state = n_cell_idx * 9 + static_cast<size_t>(i);
@@ -312,7 +311,7 @@ NativeRouteResult NativeRouter::find_path(
                 double eff_r = (tan_half > 0.001) ? (safe_t_dist / tan_half) : turning_radius_m;
 
                 nav_wp.turn_radius_m = std::round(eff_r * 10.0) / 10.0;
-                nav_wp.maneuver_feasible = (safe_t_dist >= tangent_dist * 0.85);
+                nav_wp.maneuver_feasible = (safe_t_dist >= tangent_dist * 0.98);
 
                 // Rate of Turn (ROT in deg/min): omega = V / R -> ROT = (5556 / pi) * (V_kts / R_m)
                 double rot = (5556.0 / 3.14159265358979323846) * (speed_knots / eff_r);
@@ -383,8 +382,8 @@ NativeRouteResult NativeRouter::find_path(
                 double effective_r = safe_t_dist / tan_half;
 
                 // Ship maneuvering safety: only generate fillet arc if available leg distance
-                // permits at least 85% of commanded turning radius (IMO Res. MSC.137(76)).
-                if (safe_t_dist >= tangent_dist * 0.85) {
+                // permits at least 98% of commanded turning radius (IMO Res. MSC.137(76)).
+                if (safe_t_dist >= tangent_dist * 0.98) {
                     // Entry and exit tangent points
                     double t1_x = u1_x * safe_t_dist, t1_y = u1_y * safe_t_dist;
                     double t2_x = u2_x * safe_t_dist, t2_y = u2_y * safe_t_dist;
