@@ -2,6 +2,9 @@ import time
 import sys
 from pathlib import Path
 
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from backend.core.grid import BathymetricGrid
@@ -97,13 +100,13 @@ t_cpp = time.perf_counter() - t0
 
 print("\n--- RESULTS ---")
 if res_py is None:
-    print("❌ ERROR: Python Reference Router failed to find passage!")
+    print("[ERROR] Python Reference Router failed to find passage!")
     sys.exit(1)
 else:
     print(f"Python Reference Router: {t_py * 1000.0:.2f} ms")
 
 if res_cpp is None:
-    print("❌ ERROR: C++ Native Router failed to find passage!")
+    print("[ERROR] C++ Native Router failed to find passage!")
     sys.exit(1)
 else:
     print(f"C++ Native Router:       {t_cpp * 1000.0:.2f} ms")
@@ -123,16 +126,16 @@ clearance_diff = abs(py_diag["min_clearance_m"] - cpp_diag["min_clearance_m"])
 wp_diff = abs(py_diag["waypoints"] - cpp_diag["waypoints"])
 
 if dist_diff > 0.5:
-    print(f"❌ ERROR: Distance disparity ({dist_diff:.2f} NM) exceeds tolerance (0.5 NM)")
+    print(f"[ERROR] Distance disparity ({dist_diff:.2f} NM) exceeds tolerance (0.5 NM)")
     sys.exit(1)
 
 if clearance_diff > 0.1:
-    print(f"❌ ERROR: Clearance disparity ({clearance_diff:.2f} m) exceeds tolerance (0.1 m)")
+    print(f"[ERROR] Clearance disparity ({clearance_diff:.2f} m) exceeds tolerance (0.1 m)")
     sys.exit(1)
 
 if wp_diff > 2:
-    print(f"❌ ERROR: Waypoints count disparity ({wp_diff}) exceeds tolerance (2)")
+    print(f"[ERROR] Waypoints count disparity ({wp_diff}) exceeds tolerance (2)")
     sys.exit(1)
 
-print("\n✓ BENCHMARK VALIDATION PASSED: 100% mathematical and geometric parity confirmed.")
+print("\n[PASS] BENCHMARK VALIDATION PASSED: 100% mathematical and geometric parity confirmed.")
 sys.exit(0)
