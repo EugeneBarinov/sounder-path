@@ -146,6 +146,17 @@ else:
 
 full_grid.is_synthetic = is_synthetic_mode
 
+if _IS_PRODUCTION:
+    # Physical dataset validation: prevent running on miniature test samples
+    # regardless of filename. Operational regional grid requires >= 1000x1000 cells.
+    if full_grid.width < 1000 or full_grid.height < 1000 or (full_grid.width * full_grid.height < 2_000_000):
+        raise RuntimeError(
+            f"[PRODUCTION FAILURE] Loaded bathymetric raster '{_GEOTIFF_PATH.name}' dimensions "
+            f"({full_grid.width}x{full_grid.height}, {full_grid.width * full_grid.height} cells) are insufficient for operational navigation. "
+            f"Full regional bathymetry (minimum 1000x1000 cells) is required in production."
+        )
+
+
 # 1. Optional local high-resolution soundings fusion (before downsampling)
 _LOCAL_SURVEY_CSV = _RAW_DATA_DIR / "yevpatoriya_channel.csv"
 if _LOCAL_SURVEY_CSV.exists():
@@ -245,8 +256,8 @@ class ExportWaypoint(BaseModel):
     lon: Optional[float] = None
     lng: Optional[float] = None
     longitude: Optional[float] = None
-    turn_radius_m: Optional[float] = Field(default=150.0, ge=0.0)
-    turn_angle_deg: Optional[float] = Field(default=0.0)
+    turn_radius_m: Optional[float] = Field(default=None, ge=0.0, le=2000.0)
+    turn_angle_deg: Optional[float] = Field(default=None, ge=0.0, le=180.0)
     maneuver_feasible: Optional[bool] = Field(default=True)
     rot_deg_min: Optional[float] = Field(default=0.0)
     wop_distance_m: Optional[float] = Field(default=0.0)
@@ -1104,23 +1115,26 @@ def _validate_route_waypoints_coupling(
         # Dynamic kinematic tolerance for course alteration / turn waypoints (fillet arc kinematics)
         allowed_dev = max_lateral_dev_m
         if 0 < idx < num_wp - 1:
-            # Kinematic fillet arc offset: Δ = R * (1 / cos(turn_angle / 2) - 1)
-            turn_r = float(wp.turn_radius_m or 150.0)
-            t_angle = float(wp.turn_angle_deg or 0.0)
-            if t_angle <= 0.0:
-                # Infer turn angle from surrounding waypoints
-                prev_wp = waypoints[idx - 1]
-                next_wp = waypoints[idx + 1]
-                b_in = calculate_bearing_deg(prev_wp.get_lat(), prev_wp.get_lon(), wp_lat, wp_lon)
-                b_out = calculate_bearing_deg(wp_lat, wp_lon, next_wp.get_lat(), next_wp.get_lon())
-                t_angle = abs((b_out - b_in + 180.0) % 360.0 - 180.0)
+            prev_wp = waypoints[idx - 1]
+            next_wp = waypoints[idx + 1]
+            b_in = calculate_bearing_deg(prev_wp.get_lat(), prev_wp.get_lon(), wp_lat, wp_lon)
+            b_out = calculate_bearing_deg(wp_lat, wp_lon, next_wp.get_lat(), next_wp.get_lon())
+            # Angle is strictly calculated on the server from the actual waypoint vectors
+            t_angle = abs((b_out - b_in + 180.0) % 360.0 - 180.0)
 
-            if t_angle >= 1.0 and turn_r > 10.0:
-                half_ang_rad = math.radians(min(170.0, t_angle) / 2.0)
+            # Turning radius is bounded within physical navigation limits [50m, 500m]
+            raw_r = wp.turn_radius_m
+            turn_r = min(max(float(raw_r if raw_r is not None and raw_r > 0 else 150.0), 50.0), 500.0)
+
+            # Cap angle for circular fillet offset calculation at 120°
+            if 1.0 <= t_angle <= 120.0:
+                half_ang_rad = math.radians(t_angle / 2.0)
                 cos_val = math.cos(half_ang_rad)
-                if cos_val > 0.05:
+                if cos_val > 0.1:
                     kinematic_offset = turn_r * (1.0 / cos_val - 1.0)
-                    allowed_dev = max(allowed_dev, kinematic_offset + 35.0)
+                    # Absolute physical ceiling of 250m for vertex lateral tolerance
+                    allowed_dev = min(250.0, max(allowed_dev, kinematic_offset + 35.0))
+
 
         if min_dev > allowed_dev:
             raise HTTPException(

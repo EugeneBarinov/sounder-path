@@ -184,10 +184,16 @@ def export_to_rtz(
     for idx, wp in enumerate(waypoints, start=1):
         lat = float(wp.get("lat") if wp.get("lat") is not None else wp.get("latitude", 0.0))
         lon = float(wp.get("lon") if wp.get("lon") is not None else (wp.get("lng") if wp.get("lng") is not None else wp.get("longitude", 0.0)))
-        radius_m = float(wp.get("turn_radius_m", 150.0) or 150.0)
-        radius_nm = radius_m / 1852.0
-        # Clamp radius between 0.0 and 5.0 NM as specified by RadiusType
-        radius_nm = max(0.0, min(5.0, radius_nm))
+        raw_r = wp.get("turn_radius_m")
+        if raw_r is not None:
+            radius_m = float(raw_r)
+        elif idx == 1 or idx == num_wps:
+            # Start and destination waypoints have no turn radius
+            radius_m = 0.0
+        else:
+            radius_m = 150.0
+
+        radius_nm = max(0.0, min(5.0, radius_m / 1852.0))
         rot_val = float(wp.get("rot_deg_min", 0.0) or 0.0)
         wop_val = float(wp.get("wop_distance_m", 0.0) or 0.0)
 

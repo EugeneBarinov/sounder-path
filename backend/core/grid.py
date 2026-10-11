@@ -55,6 +55,14 @@ class BathymetricGrid:
         )
         self.is_synthetic = False
 
+    @property
+    def width(self) -> int:
+        return self.cols
+
+    @property
+    def height(self) -> int:
+        return self.rows
+
     def get_depth(self, r: int, c: int) -> float:
         """Returns seabed water depth in meters, or 0.0 if out of bounds."""
         if 0 <= r < self.rows and 0 <= c < self.cols:

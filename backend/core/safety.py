@@ -158,9 +158,11 @@ def scan_corridor_raster_swath(
     if len(route_coords) < 2 or not hasattr(grid, "lonlat_to_cell") or not hasattr(grid, "get_cell_coords"):
         return []
 
-    # Safeguard against NaN / Inf / non-positive safety depth threshold
+    # Safeguard against NaN / Inf / non-positive safety depth threshold: Fail-Closed
     if not math.isfinite(safety_depth) or safety_depth <= 0.0:
-        safety_depth = 2.0
+        raise ValueError(
+            f"Invalid safety_depth threshold ({safety_depth}). Safety depth must be a positive finite float."
+        )
 
     hazards: List[Dict[str, Any]] = []
     visited_cells = set()
@@ -383,6 +385,25 @@ def verify_ecdis_route_safety(
     alarms: List[Dict[str, Any]] = []
     safety_depth = min_chart_depth_m if min_chart_depth_m is not None else (draft + dynamic_squat + ukc)
     effective_dyn_draft = dynamic_draft_m if dynamic_draft_m is not None else (draft + dynamic_squat)
+
+    if not math.isfinite(safety_depth) or safety_depth <= 0.0:
+        return {
+            "is_safe": False,
+            "status": "CRITICAL_HAZARD",
+            "alarms_count": 1,
+            "alarms": [{
+                "severity": "CRITICAL",
+                "code": "ALM-00-INVALID-SAFETY-DEPTH",
+                "title": "Invalid Safety Depth",
+                "detail": f"Calculated safety depth threshold ({safety_depth}) is non-finite or non-positive.",
+                "distance_nm": 0.0,
+            }],
+            "min_clearance_m": 0.0,
+            "shallow_samples_count": 0,
+            "grounding_samples_count": 0,
+            "summary": "Safety check failed: safety depth threshold is non-finite or non-positive.",
+            "corridor_hazards": [],
+        }
 
     # 1. Depth Soundings Safety Check along track centerline
     min_observed_clearance = math.inf

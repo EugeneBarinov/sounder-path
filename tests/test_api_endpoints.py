@@ -738,3 +738,153 @@ def test_export_preserves_warning_advisory_status(client):
     assert "ADVISORY: NAVIGATIONAL WARNINGS PRESENT" in res_gpx.text
 
 
+def test_export_rejects_detached_waypoint_bypass_attempt(client):
+    """
+    Verify Issue 1: An attempted bypass where client claims turn_angle_deg=170 and
+    turn_radius_m=2000 for a waypoint detached by ~33 km from the route track
+    MUST be rejected with HTTP 400 and cannot inflate the tolerance.
+    """
+    # Safe deep-water straight route
+    straight_route = [
+        [34.0, 44.0],
+        [34.1, 44.0],
+        [34.2, 44.0],
+        [34.3, 44.0],
+        [34.4, 44.0],
+        [34.5, 44.0],
+    ]
+    # WP2 is intentionally detached ~33 km north (44.3 vs 44.0)
+    detached_waypoints = [
+        {"lat": 44.0, "lon": 34.0, "turn_radius_m": 0.0},
+        {"lat": 44.3, "lon": 34.25, "turn_angle_deg": 170.0, "turn_radius_m": 2000.0},
+        {"lat": 44.0, "lon": 34.5, "turn_radius_m": 0.0},
+    ]
+    payload = {
+        "waypoints": detached_waypoints,
+        "route": straight_route,
+        "draft": 1.2,
+        "speed_knots": 10.0,
+        "ukc": 0.5,
+    }
+    res = client.post("/api/export/rtz", json=payload)
+    assert res.status_code == 400
+    assert "Passage plan geometry mismatch" in res.json()["detail"]
+    assert "deviates by" in res.json()["detail"]
+
+
+def test_export_preserves_zero_turning_radius_in_rtz(client):
+    """
+    Verify Issue 2: RTZ export does not turn radius=0.0 into 150m.
+    Waypoints with turn_radius_m=0.0 must output radius="0.000" in RTZ 1.1 XML.
+    """
+    import xmlschema
+    from pathlib import Path
+
+    xsd_path = Path(__file__).resolve().parent.parent / "backend" / "schemas" / "rtz_1_1.xsd"
+    rtz_schema = xmlschema.XMLSchema(str(xsd_path))
+
+    waypoints = [
+        {"lat": 44.0, "lon": 34.0, "turn_radius_m": 0.0},
+        {"lat": 44.1, "lon": 34.5, "turn_radius_m": 0.0},
+        {"lat": 44.2, "lon": 35.0, "turn_radius_m": 0.0},
+    ]
+    payload = {
+        "waypoints": waypoints,
+        "draft": 1.2,
+        "speed_knots": 10.0,
+        "ukc": 0.5,
+    }
+    res = client.post("/api/export/rtz", json=payload)
+    assert res.status_code == 200
+    rtz_xml = res.text
+    rtz_schema.validate(rtz_xml)
+    # Start, middle with 0 radius, and end waypoints must have radius="0.000"
+    assert 'radius="0.000"' in rtz_xml
+    assert 'radius="0.081"' not in rtz_xml  # 150m is 0.081 NM, should NOT be present
+
+
+def test_production_fail_closed_renamed_small_sample_rejected(tmp_path):
+    """
+    Verify Issue 3: In production mode, renaming operational_sample.tif to verified_bathymetry.tif
+    must still fail closed because its dimensions (825x405) are below the 1000x1000 requirement.
+    """
+    import subprocess
+    import sys
+    import os
+    import shutil
+    from pathlib import Path
+
+    base_dir = Path(__file__).resolve().parent.parent
+    sample_src = base_dir / "data" / "raw" / "operational_sample.tif"
+    assert sample_src.exists(), "operational_sample.tif must exist for this test"
+
+    mock_dir = tmp_path / "production_mock"
+    mock_dir.mkdir(parents=True, exist_ok=True)
+    renamed_sample = mock_dir / "verified_regional_bathymetry.tif"
+    shutil.copy2(sample_src, renamed_sample)
+
+    env = os.environ.copy()
+    env["SEAPATH_ENV"] = "production"
+    env["SEAPATH_GEOTIFF_PATH"] = str(renamed_sample)
+    env["PYTHONPATH"] = str(base_dir)
+
+    proc = subprocess.run(
+        [sys.executable, "-c", "import backend.main"],
+        cwd=str(base_dir),
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+
+    assert proc.returncode != 0
+    assert "PRODUCTION FAILURE" in proc.stderr
+    assert "insufficient for operational navigation" in proc.stderr
+
+
+def test_safety_depth_fail_closed_on_invalid_threshold():
+    """
+    Verify Issue 5: scan_corridor_raster_swath and verify_ecdis_route_safety fail-closed
+    rather than guessing a default 2.0m depth when safety_depth is NaN or non-positive.
+    """
+    import pytest
+    from backend.core.safety import scan_corridor_raster_swath, verify_ecdis_route_safety
+    from backend.main import full_grid
+
+    # 1. scan_corridor_raster_swath raises ValueError on NaN
+    with pytest.raises(ValueError, match="Invalid safety_depth threshold"):
+        scan_corridor_raster_swath(
+            route_coords=[[34.0, 44.0], [34.5, 44.5]],
+            port_xtd_m=185.2,
+            stbd_xtd_m=185.2,
+            grid=full_grid,
+            safety_depth=float("nan"),
+        )
+
+    # 2. scan_corridor_raster_swath raises ValueError on non-positive depth
+    with pytest.raises(ValueError, match="Invalid safety_depth threshold"):
+        scan_corridor_raster_swath(
+            route_coords=[[34.0, 44.0], [34.5, 44.5]],
+            port_xtd_m=185.2,
+            stbd_xtd_m=185.2,
+            grid=full_grid,
+            safety_depth=-1.5,
+        )
+
+    # 3. verify_ecdis_route_safety returns CRITICAL_HAZARD on non-finite safety depth
+    res = verify_ecdis_route_safety(
+        waypoints=[{"lat": 44.0, "lon": 34.0}],
+        profile=[{"distance_from_start_m": 0.0, "depth": 10.0, "clearance": 8.0}],
+        fairways_coll={"features": []},
+        draft=1.0,
+        dynamic_squat=0.2,
+        ukc=0.5,
+        speed_knots=10.0,
+        min_chart_depth_m=float("nan"),
+        grid=full_grid,
+    )
+    assert res["is_safe"] is False
+    assert res["status"] == "CRITICAL_HAZARD"
+    assert any(a["code"] == "ALM-00-INVALID-SAFETY-DEPTH" for a in res["alarms"])
+
+
+
