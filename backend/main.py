@@ -8,11 +8,12 @@ and real-time under-keel clearance (UKC) analysis.
 from collections import deque
 from pathlib import Path
 from typing import Optional, Tuple, List, Dict, Any
+import uuid
 
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from backend.core.grid import BathymetricGrid
 from backend.core.router import Router
@@ -53,7 +54,8 @@ async def no_cache_header_middleware(request: Request, call_next):
 # ---------------------------------------------------------------------------
 _BASE_DIR = Path(__file__).resolve().parent.parent
 _RAW_DATA_DIR = _BASE_DIR / "data" / "raw"
-_GEOTIFF_PATH = _RAW_DATA_DIR / "E8_2024.tif"
+_GEOTIFF_PATH_ENV = os.environ.get("SEAPATH_GEOTIFF_PATH")
+_GEOTIFF_PATH = Path(_GEOTIFF_PATH_ENV) if _GEOTIFF_PATH_ENV else (_RAW_DATA_DIR / "E8_2024.tif")
 _IS_PRODUCTION = os.environ.get("SEAPATH_ENV", "").strip().lower() == "production"
 
 is_synthetic_mode = False
@@ -225,7 +227,8 @@ class ExportWaypoint(BaseModel):
 
 
 class ExportRouteRequest(BaseModel):
-    waypoints: List[ExportWaypoint]
+    plan_id: Optional[str] = None
+    waypoints: Optional[List[ExportWaypoint]] = None
     route: List[List[float]] = Field(default_factory=list)
     draft: float = Field(default=1.2, gt=0.0)
     speed_knots: float = Field(default=10.0, ge=0.0)
@@ -235,19 +238,27 @@ class ExportRouteRequest(BaseModel):
     safety_status: Optional[str] = None
     is_safe: Optional[bool] = None
     allow_unverified: bool = Field(default=False, description="Explicit flag allowing export of unverified or hazardous routes with mandatory warning annotations")
+    block_coefficient: float = Field(default=0.65, ge=0.3, le=0.95)
+    tide_offset_m: float = Field(default=0.0, ge=-5.0, le=5.0)
+    wave_height_m: float = Field(default=0.0, ge=0.0, le=10.0)
+    turning_radius_m: float = Field(default=150.0, ge=10.0, le=2000.0)
+    beam_m: Optional[float] = None
+    gm_m: Optional[float] = None
+    exposed_waters: bool = False
+    strict_dukc: bool = True
 
-    @field_validator("waypoints")
-    @classmethod
-    def validate_wps(cls, v: List[ExportWaypoint]) -> List[ExportWaypoint]:
-        if len(v) < 2:
-            raise ValueError("Passage plan must contain at least 2 waypoints.")
-        for idx, wp in enumerate(v):
-            try:
-                wp.get_lat()
-                wp.get_lon()
-            except ValueError as err:
-                raise ValueError(f"Waypoint {idx + 1}: {err}")
-        return v
+    @model_validator(mode="after")
+    def validate_plan_or_waypoints(self):
+        if not self.plan_id:
+            if not self.waypoints or len(self.waypoints) < 2:
+                raise ValueError("Passage plan must contain at least 2 waypoints or a valid plan_id.")
+            for idx, wp in enumerate(self.waypoints):
+                try:
+                    wp.get_lat()
+                    wp.get_lon()
+                except ValueError as err:
+                    raise ValueError(f"Waypoint {idx + 1}: {err}")
+        return self
 
 
 # ---------------------------------------------------------------------------
@@ -299,10 +310,10 @@ def _snap_to_navigable(
     visited = {(r, c)}
     max_steps = 15  # Up to 15 grid cells (~1500m)
 
-    # Pre-check for land interior or restricted interior:
-    # If starting on land, check if any immediate 8-neighbor is water.
-    # If start is land and NO neighbor is water, point is in the interior of island/continent.
-    if is_land or is_restr:
+    # Pre-check for interior (land, restricted, or nodata):
+    # If starting on land, restricted zone, or nodata, check if any immediate 8-neighbor is genuine water.
+    # If start has NO immediate water neighbor, point is deep in the interior.
+    if is_land or is_restr or is_nodata:
         has_immediate_water = False
         for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (-1, 1), (1, -1), (1, 1)]:
             nr, nc = r + dr, c + dc
@@ -315,7 +326,12 @@ def _snap_to_navigable(
                     has_immediate_water = True
                     break
         if not has_immediate_water:
-            return None, None, 0.0, "LAND_INTERIOR" if is_land else "RESTRICTED_ZONE_INTERIOR"
+            if is_land:
+                return None, None, 0.0, "LAND_INTERIOR"
+            elif is_restr:
+                return None, None, 0.0, "RESTRICTED_ZONE_INTERIOR"
+            else:
+                return None, None, 0.0, "NODATA_INTERIOR"
 
     while queue:
         cr, cc, steps, entered_water = queue.popleft()
@@ -329,17 +345,17 @@ def _snap_to_navigable(
             lat_c, lon_c = grid.get_cell_coords(cr, cc)
             dist_m = calculate_distance_m(lat_user, lon_user, lat_c, lon_c)
             if dist_m <= max_snap_meters:
-                # Obstacle barrier check: line-of-sight must not cut across dry land once water entered
+                # Obstacle barrier check: line-of-sight must not cut across dry land, restricted, or nodata once water entered
                 line_cells = grid.sample_depth_along_segment(r, c, cr, cc)
                 water_seen = False
-                hopped_land = False
+                hopped_barrier = False
                 for d_val in line_cells:
                     if d_val > 0.0:
                         water_seen = True
                     elif water_seen and d_val <= 0.0:
-                        hopped_land = True
+                        hopped_barrier = True
                         break
-                if not hopped_land:
+                if not hopped_barrier:
                     return cr, cc, round(dist_m, 1), reason
 
         if steps >= max_steps:
@@ -355,13 +371,11 @@ def _snap_to_navigable(
                 n_is_water = (n_depth > 0.0 and not n_land and not n_restr and not n_nodata)
 
                 # Strict barrier invariants:
-                # 1. If starting on land, cannot step to another land cell: only 1 step directly to water!
-                if is_land and not entered_water and not n_is_water:
+                # 1. If starting on land, restricted, or nodata, cannot step to another obstacle cell!
+                # Only 1 step directly to genuine water is permitted:
+                if (is_land or is_restr or is_nodata) and not entered_water and not n_is_water:
                     continue
-                # 2. If starting in restricted zone, cannot traverse restricted cells!
-                if is_restr and not entered_water and not n_is_water:
-                    continue
-                # 3. Once water is entered, strictly forbidden from crossing back onto land, restricted, or nodata!
+                # 2. Once water is entered, strictly forbidden from crossing back onto land, restricted, or nodata!
                 if entered_water and not n_is_water:
                     continue
 
@@ -468,6 +482,19 @@ def get_depth_at(lon: float, lat: float):
         "is_nodata": is_nodata,
         "is_restricted": is_restr,
     }
+
+
+# ---------------------------------------------------------------------------
+# Server-Side Passage Plan Registry (Cache for export validation)
+# ---------------------------------------------------------------------------
+_SAVED_PLANS: Dict[str, Dict[str, Any]] = {}
+
+def _store_passage_plan(plan_id: str, plan_data: Dict[str, Any]) -> None:
+    """Stores verified passage plan in memory (LRU cap of 200 items)."""
+    if len(_SAVED_PLANS) > 200:
+        oldest_k = next(iter(_SAVED_PLANS))
+        _SAVED_PLANS.pop(oldest_k, None)
+    _SAVED_PLANS[plan_id] = plan_data
 
 
 @app.post("/api/route")
@@ -784,8 +811,27 @@ def calculate_route(req: RouteRequest):
         exposed_waters=req.exposed_waters,
     )
 
+    # -- Synthetic demo enforcement (P1.4) & Passage Plan Registry -----------
+    plan_id = str(uuid.uuid4())
+    if is_synthetic_mode:
+        safety_audit["is_safe"] = False
+        safety_audit["status"] = "DEMO_UNVERIFIED"
+        data_integrity = "SYNTHETIC_DEMO_NON_NAVIGABLE"
+        is_executable = False
+        if not any(a.get("code") == "ALM-10-SYNTHETIC-DATA-NON-NAVIGABLE" for a in safety_audit.get("alarms", [])):
+            safety_audit.setdefault("alarms", []).append({
+                "severity": "CRITICAL",
+                "code": "ALM-10-SYNTHETIC-DATA-NON-NAVIGABLE",
+                "title": "Synthetic Bathymetry Mode Active",
+                "detail": "Passage plan generated on synthetic demonstration bathymetry. Uncertified for real navigation.",
+            })
+    else:
+        data_integrity = "OPERATIONAL_GEOTIFF"
+        is_executable = bool(not has_maneuver_violation and safety_audit["is_safe"])
+
     # -- Диагностика ответа: всё из одного бюджета, без пересчётов -----------
     diagnostics = {
+        "plan_id": plan_id,
         "distance_m": round(cum_dist_m, 0),
         "distance_nm": total_dist_nm,
         "eta_hours": eta_hours,
@@ -806,7 +852,8 @@ def calculate_route(req: RouteRequest):
         "routing_engine": "seapath_native_cpp" if _HAS_NATIVE else "python_fallback",
         "has_maneuvering_violation": has_maneuver_violation,
         "is_navigable_candidate": True,
-        "is_executable_passage_plan": bool(not has_maneuver_violation and safety_audit["is_safe"]),
+        "is_executable_passage_plan": is_executable,
+        "data_integrity": data_integrity,
         "waypoint_snapping": {
             "start_snapped": snapped_wps_info[0]["snapped"],
             "start_snap_distance_m": snapped_wps_info[0]["snap_distance_m"],
@@ -819,8 +866,34 @@ def calculate_route(req: RouteRequest):
         },
     }
 
+    _store_passage_plan(plan_id, {
+        "waypoints": combined_waypoints,
+        "route": combined_route,
+        "profile": combined_profile,
+        "corridor": corridor_feature,
+        "turn_arcs": turn_arcs_fc,
+        "draft": req.draft,
+        "speed_knots": req.speed_knots,
+        "ukc": req.ukc,
+        "block_coefficient": req.block_coefficient,
+        "tide_offset_m": req.tide_offset_m,
+        "wave_height_m": req.wave_height_m,
+        "turning_radius_m": req.turning_radius_m,
+        "beam_m": req.beam_m,
+        "gm_m": req.gm_m,
+        "exposed_waters": req.exposed_waters,
+        "strict_dukc": req.strict_dukc,
+        "port_xtd_m": req.port_xtd_m,
+        "stbd_xtd_m": req.stbd_xtd_m,
+        "is_safe": safety_audit["is_safe"],
+        "safety_status": safety_audit["status"],
+        "safety_check": safety_audit,
+        "is_synthetic": is_synthetic_mode,
+    })
+
     return {
         "type": "Feature",
+        "plan_id": plan_id,
         "properties": {
             **diagnostics,
             "safety_check": safety_audit,
@@ -849,33 +922,152 @@ def _sanitize_filename(name: Optional[str], default: str = "passage_plan") -> st
     return clean[:64] or default
 
 
-def _verify_export_safety(req: ExportRouteRequest) -> Tuple[bool, str, List[str]]:
+def _validate_route_waypoints_coupling(
+    waypoints: Optional[List[ExportWaypoint]],
+    route: List[List[float]],
+    max_lateral_dev_m: float = 50.0,
+) -> None:
     """
-    Performs server-side ECDIS safety verification on passage plan prior to export.
+    Validates tight coupling between waypoints sequence and detailed route coordinates:
+    1. Start and End points match within tolerance.
+    2. Every waypoint projects within max_lateral_dev_m of the route polyline.
+    3. Waypoints appear in monotonic order along the route path (no looping backwards or skipping).
+    """
+    if not route or len(route) < 2:
+        return
+    if not waypoints or len(waypoints) < 2:
+        raise HTTPException(status_code=400, detail="At least 2 waypoints are required.")
+
+    # 1. Departure match
+    wp_start_lat = waypoints[0].get_lat()
+    wp_start_lon = waypoints[0].get_lon()
+    r_start_lon, r_start_lat = route[0][0], route[0][1]
+    d_start = calculate_distance_m(wp_start_lat, wp_start_lon, r_start_lat, r_start_lon)
+    if d_start > max_lateral_dev_m:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Passage plan geometry mismatch: Departure waypoint WP1 ({wp_start_lon:.4f}, {wp_start_lat:.4f}) does not match route departure ({r_start_lon:.4f}, {r_start_lat:.4f}) (deviation {d_start:.1f}m > {max_lateral_dev_m:.0f}m)."
+        )
+
+    # 2. Destination match
+    wp_end_lat = waypoints[-1].get_lat()
+    wp_end_lon = waypoints[-1].get_lon()
+    r_end_lon, r_end_lat = route[-1][0], route[-1][1]
+    d_end = calculate_distance_m(wp_end_lat, wp_end_lon, r_end_lat, r_end_lon)
+    if d_end > max_lateral_dev_m:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Passage plan geometry mismatch: Destination waypoint WP{len(waypoints)} ({wp_end_lon:.4f}, {wp_end_lat:.4f}) does not match route destination ({r_end_lon:.4f}, {r_end_lat:.4f}) (deviation {d_end:.1f}m > {max_lateral_dev_m:.0f}m)."
+        )
+
+    # Cumulative distances along route polyline
+    route_cum_dist = [0.0]
+    for i in range(1, len(route)):
+        seg_d = calculate_distance_m(route[i - 1][1], route[i - 1][0], route[i][1], route[i][0])
+        route_cum_dist.append(route_cum_dist[-1] + seg_d)
+
+    deg_to_rad = math.pi / 180.0
+    meters_per_deg_lat = 111139.0
+
+    def project_onto_route(pt_lon: float, pt_lat: float) -> Tuple[float, float]:
+        min_dev = math.inf
+        proj_dist_along = 0.0
+        for seg in range(len(route) - 1):
+            p0_lon, p0_lat = route[seg][0], route[seg][1]
+            p1_lon, p1_lat = route[seg + 1][0], route[seg + 1][1]
+            lat_mid = (p0_lat + p1_lat) / 2.0
+            m_lat = meters_per_deg_lat
+            m_lon = meters_per_deg_lat * math.cos(lat_mid * deg_to_rad)
+            if abs(m_lon) < 1.0:
+                m_lon = 1.0
+
+            dx = (p1_lon - p0_lon) * m_lon
+            dy = (p1_lat - p0_lat) * m_lat
+            seg_len = math.hypot(dx, dy)
+            if seg_len < 1e-3:
+                dev = calculate_distance_m(pt_lat, pt_lon, p0_lat, p0_lon)
+                if dev < min_dev:
+                    min_dev = dev
+                    proj_dist_along = route_cum_dist[seg]
+                continue
+
+            wx = (pt_lon - p0_lon) * m_lon
+            wy = (pt_lat - p0_lat) * m_lat
+            t = max(0.0, min(1.0, (wx * dx + wy * dy) / (seg_len * seg_len)))
+            closest_x = p0_lon * m_lon + t * dx
+            closest_y = p0_lat * m_lat + t * dy
+            dev = math.hypot((pt_lon * m_lon) - closest_x, (pt_lat * m_lat) - closest_y)
+            if dev < min_dev:
+                min_dev = dev
+                proj_dist_along = route_cum_dist[seg] + t * seg_len
+        return min_dev, proj_dist_along
+
+    last_proj_dist = -1.0
+    for idx, wp in enumerate(waypoints):
+        wp_lat = wp.get_lat()
+        wp_lon = wp.get_lon()
+        min_dev, proj_dist = project_onto_route(wp_lon, wp_lat)
+        if min_dev > max_lateral_dev_m:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Passage plan geometry mismatch: Waypoint WP{idx + 1} ({wp_lon:.4f}, {wp_lat:.4f}) deviates by {min_dev:.1f}m from route track (> {max_lateral_dev_m:.0f}m tolerance)."
+            )
+        # Monotonic progression with 25m tolerance for fillet arc tangent points
+        if proj_dist < last_proj_dist - 25.0:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Passage plan geometry mismatch: Waypoint WP{idx + 1} appears out of order along route track (non-monotonic progression)."
+            )
+        last_proj_dist = proj_dist
+
+
+def _verify_export_safety(
+    waypoints: List[Dict[str, Any]],
+    route_coords: List[List[float]],
+    draft: float,
+    speed_knots: float,
+    ukc: float,
+    safety_contour: Optional[float] = None,
+    block_coefficient: float = 0.65,
+    tide_offset_m: float = 0.0,
+    wave_height_m: float = 0.0,
+    turning_radius_m: float = 150.0,
+    beam_m: Optional[float] = None,
+    gm_m: Optional[float] = None,
+    exposed_waters: bool = False,
+    strict_dukc: bool = True,
+    is_safe_claim: Optional[bool] = None,
+    safety_status_claim: Optional[str] = None,
+) -> Tuple[bool, str, List[str]]:
+    """
+    Performs server-side ECDIS safety verification on passage plan prior to export:
+    - Calculates canonical search budget (squat, heel, wave allowance, tide offset).
+    - Prevents client-supplied safety_contour from weakening canonical minimum depth threshold.
+    - Rejects synthetic demonstration bathymetry as uncertified for navigation.
+    - Samples depths along route track and evaluates full 2D corridor (XTD) area swath.
     Returns (is_safe, safety_status, alarm_codes).
     """
-    wps_dicts: List[Dict[str, Any]] = []
-    for wp in req.waypoints:
-        lat = wp.get_lat()
-        lon = wp.get_lon()
-        wps_dicts.append({
-            "lon": lon,
-            "lat": lat,
-            "turn_radius_m": wp.turn_radius_m or 150.0,
-            "rot_deg_min": wp.rot_deg_min or 0.0,
-            "wop_distance_m": wp.wop_distance_m or 0.0,
-            "leg_bearing_deg": wp.leg_bearing_deg or 0.0,
-            "leg_distance_nm": wp.leg_distance_nm or 0.0,
-            "port_xtd_nm": wp.port_xtd_nm or 0.10,
-            "stbd_xtd_nm": wp.stbd_xtd_nm or 0.10,
-            "depth_m": wp.depth_m if wp.depth_m is not None else wp.depth_at_waypoint,
-            "clearance_m": wp.clearance_m,
-        })
+    if full_grid.is_synthetic or is_synthetic_mode:
+        return False, "DEMO_UNVERIFIED", ["ALM-10-SYNTHETIC-DATA-NON-NAVIGABLE"]
 
-    if req.route and len(req.route) >= 2:
-        route_coords = req.route
-    else:
-        route_coords = [[w["lon"], w["lat"]] for w in wps_dicts]
+    canonical_budget = compute_search_budget(
+        draft_m=draft,
+        speed_knots=speed_knots,
+        ukc_net_margin_m=ukc,
+        block_coefficient=block_coefficient,
+        tide_offset_m=tide_offset_m,
+        wave_height_m=wave_height_m,
+        turning_radius_m=turning_radius_m,
+        gm_m=gm_m,
+        beam_m=beam_m,
+        exposed_waters=exposed_waters,
+        strict_dukc=strict_dukc,
+    )
+    canonical_min_depth = canonical_budget["min_chart_depth_m"]
+    effective_safety_depth = max(safety_contour or 0.0, canonical_min_depth)
+    dynamic_squat = canonical_budget["dynamic_squat_m"]
+    search_dynamic_draft = canonical_budget["dynamic_draft_m"]
+    effective_ukc = canonical_budget["effective_ukc_m"]
 
     # Sample bathymetric depths along route
     profile_samples: List[Dict[str, Any]] = []
@@ -893,7 +1085,7 @@ def _verify_export_safety(req: ExportRouteRequest) -> Tuple[bool, str, List[str]
         num_pts = max(1, len(seg_depths))
         for s_idx, d_val in enumerate(seg_depths):
             dist_pt = cum_d + seg_d * (s_idx / num_pts)
-            clr = d_val - req.draft - req.ukc
+            clr = (d_val + tide_offset_m) - (search_dynamic_draft + ukc)
             profile_samples.append({
                 "distance_from_start_m": dist_pt,
                 "depth": d_val,
@@ -901,64 +1093,141 @@ def _verify_export_safety(req: ExportRouteRequest) -> Tuple[bool, str, List[str]
             })
         cum_d += seg_d
 
+    port_xtd_m = float(waypoints[0].get("port_xtd_nm", 0.10) or 0.10) * 1852.0 if waypoints else 185.2
+    stbd_xtd_m = float(waypoints[0].get("stbd_xtd_nm", 0.10) or 0.10) * 1852.0 if waypoints else 185.2
+
     safety_audit = verify_ecdis_route_safety(
-        waypoints=wps_dicts,
+        waypoints=waypoints,
         profile=profile_samples,
         fairways_coll=load_fairways_geojson(),
-        draft=req.draft,
-        dynamic_squat=0.0,
-        ukc=req.ukc,
-        speed_knots=req.speed_knots,
-        min_chart_depth_m=req.safety_contour if req.safety_contour is not None else (req.draft + req.ukc),
+        draft=draft,
+        dynamic_squat=dynamic_squat,
+        ukc=effective_ukc,
+        speed_knots=speed_knots,
+        min_chart_depth_m=effective_safety_depth,
+        dynamic_draft_m=search_dynamic_draft,
         grid=full_grid,
-        port_xtd_m=float(req.waypoints[0].port_xtd_nm or 0.10) * 1852.0,
-        stbd_xtd_m=float(req.waypoints[0].stbd_xtd_nm or 0.10) * 1852.0,
+        port_xtd_m=port_xtd_m,
+        stbd_xtd_m=stbd_xtd_m,
         route_coords=route_coords,
+        requested_radius_m=turning_radius_m,
     )
 
-    client_flagged_unsafe = (req.is_safe is False) or (req.safety_status == "CRITICAL_HAZARD")
+    client_flagged_unsafe = (is_safe_claim is False) or (safety_status_claim == "CRITICAL_HAZARD")
     is_safe = bool(safety_audit["is_safe"] and not client_flagged_unsafe)
     status = "SAFE_PASSED" if is_safe else "CRITICAL_HAZARD"
     alarm_codes = [a["code"] for a in safety_audit.get("alarms", [])]
     return is_safe, status, alarm_codes
 
 
+def _prepare_export_data(req: ExportRouteRequest) -> Tuple[List[Dict[str, Any]], List[List[float]], Dict[str, Any], bool, str, List[str]]:
+    if req.plan_id:
+        plan = _SAVED_PLANS.get(req.plan_id)
+        if not plan:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Passage plan '{req.plan_id}' not found or expired. Please re-calculate route."
+            )
+        wps_dicts = plan["waypoints"]
+        route_coords = plan["route"]
+        draft = plan["draft"]
+        speed_knots = plan["speed_knots"]
+        ukc = plan["ukc"]
+        block_coefficient = plan.get("block_coefficient", 0.65)
+        tide_offset_m = plan.get("tide_offset_m", 0.0)
+        wave_height_m = plan.get("wave_height_m", 0.0)
+        turning_radius_m = plan.get("turning_radius_m", 150.0)
+        beam_m = plan.get("beam_m")
+        gm_m = plan.get("gm_m")
+        exposed_waters = plan.get("exposed_waters", False)
+        strict_dukc = plan.get("strict_dukc", True)
+        is_safe_claim = plan.get("is_safe")
+        safety_status_claim = plan.get("safety_status")
+    else:
+        # Validate waypoints/route coupling
+        _validate_route_waypoints_coupling(req.waypoints, req.route)
+        wps_dicts = []
+        for wp in req.waypoints:
+            d = wp.model_dump(exclude_none=True)
+            d["lat"] = wp.get_lat()
+            d["lon"] = wp.get_lon()
+            wps_dicts.append(d)
+        if req.route and len(req.route) >= 2:
+            route_coords = req.route
+        else:
+            route_coords = [[w["lon"], w["lat"]] for w in wps_dicts]
+        draft = req.draft
+        speed_knots = req.speed_knots
+        ukc = req.ukc
+        block_coefficient = req.block_coefficient
+        tide_offset_m = req.tide_offset_m
+        wave_height_m = req.wave_height_m
+        turning_radius_m = req.turning_radius_m
+        beam_m = req.beam_m
+        gm_m = req.gm_m
+        exposed_waters = req.exposed_waters
+        strict_dukc = req.strict_dukc
+        is_safe_claim = req.is_safe
+        safety_status_claim = req.safety_status
+
+    is_safe, safety_status, alarm_codes = _verify_export_safety(
+        waypoints=wps_dicts,
+        route_coords=route_coords,
+        draft=draft,
+        speed_knots=speed_knots,
+        ukc=ukc,
+        safety_contour=req.safety_contour,
+        block_coefficient=block_coefficient,
+        tide_offset_m=tide_offset_m,
+        wave_height_m=wave_height_m,
+        turning_radius_m=turning_radius_m,
+        beam_m=beam_m,
+        gm_m=gm_m,
+        exposed_waters=exposed_waters,
+        strict_dukc=strict_dukc,
+        is_safe_claim=is_safe_claim,
+        safety_status_claim=safety_status_claim,
+    )
+
+    params = {
+        "draft": draft,
+        "speed_knots": speed_knots,
+        "ukc": ukc,
+        "route_name": req.route_name or "SeaPath_Passage_Plan",
+        "safety_contour": req.safety_contour,
+    }
+    return wps_dicts, route_coords, params, is_safe, safety_status, alarm_codes
+
+
 @app.post("/api/export/gpx")
 def export_gpx(req: ExportRouteRequest, response: Response):
     """Generates and downloads standard GPX 1.1 file for GPS and marine chart plotters."""
-    is_safe, safety_status, alarm_codes = _verify_export_safety(req)
+    wps_dicts, route_coords, params, is_safe, safety_status, alarm_codes = _prepare_export_data(req)
     if not is_safe and not req.allow_unverified:
         raise HTTPException(
             status_code=400,
             detail=(
-                f"Cannot export hazardous passage plan: ECDIS safety verification failed. "
+                f"Cannot export hazardous passage plan: ECDIS safety verification failed (status: {safety_status}). "
                 f"Alarms detected: {alarm_codes or ['UNVERIFIED_HAZARD']}. "
-                "Set allow_unverified=true to export with mandatory UNVERIFIED_HAZARD warning annotations."
+                "Set allow_unverified=true to export with mandatory warning annotations."
             )
         )
 
-    wps_dicts = []
-    for wp in req.waypoints:
-        d = wp.model_dump(exclude_none=True)
-        d["lat"] = wp.get_lat()
-        d["lon"] = wp.get_lon()
-        wps_dicts.append(d)
-
     xml_content = export_to_gpx(
         waypoints=wps_dicts,
-        route_coords=req.route,
-        draft=req.draft,
-        speed_knots=req.speed_knots,
-        ukc=req.ukc,
-        route_name=req.route_name or "SeaPath_Passage_Plan",
-        safety_contour=req.safety_contour,
+        route_coords=route_coords,
+        draft=params["draft"],
+        speed_knots=params["speed_knots"],
+        ukc=params["ukc"],
+        route_name=params["route_name"],
+        safety_contour=params["safety_contour"],
         safety_status=safety_status,
         is_safe=is_safe,
     )
-    safe_name = _sanitize_filename(req.route_name)
+    safe_name = _sanitize_filename(params["route_name"])
     headers = {"Content-Disposition": f'attachment; filename="{safe_name}.gpx"'}
     if not is_safe:
-        headers["X-SeaPath-Route-Status"] = "UNVERIFIED_HAZARD"
+        headers["X-SeaPath-Route-Status"] = "DEMO_UNVERIFIED" if safety_status == "DEMO_UNVERIFIED" else "UNVERIFIED_HAZARD"
     return Response(
         content=xml_content,
         media_type="application/gpx+xml",
@@ -969,38 +1238,31 @@ def export_gpx(req: ExportRouteRequest, response: Response):
 @app.post("/api/export/rtz")
 def export_rtz(req: ExportRouteRequest, response: Response):
     """Generates and downloads standard RTZ 1.1 (IEC 61174) XML for commercial ECDIS systems."""
-    is_safe, safety_status, alarm_codes = _verify_export_safety(req)
+    wps_dicts, route_coords, params, is_safe, safety_status, alarm_codes = _prepare_export_data(req)
     if not is_safe and not req.allow_unverified:
         raise HTTPException(
             status_code=400,
             detail=(
-                f"Cannot export hazardous passage plan: ECDIS safety verification failed. "
+                f"Cannot export hazardous passage plan: ECDIS safety verification failed (status: {safety_status}). "
                 f"Alarms detected: {alarm_codes or ['UNVERIFIED_HAZARD']}. "
-                "Set allow_unverified=true to export with mandatory UNVERIFIED_HAZARD warning annotations."
+                "Set allow_unverified=true to export with mandatory warning annotations."
             )
         )
 
-    wps_dicts = []
-    for wp in req.waypoints:
-        d = wp.model_dump(exclude_none=True)
-        d["lat"] = wp.get_lat()
-        d["lon"] = wp.get_lon()
-        wps_dicts.append(d)
-
     xml_content = export_to_rtz(
         waypoints=wps_dicts,
-        draft=req.draft,
-        speed_knots=req.speed_knots,
-        ukc=req.ukc,
-        route_name=req.route_name or "SeaPath_Passage_Plan",
-        safety_contour=req.safety_contour,
+        draft=params["draft"],
+        speed_knots=params["speed_knots"],
+        ukc=params["ukc"],
+        route_name=params["route_name"],
+        safety_contour=params["safety_contour"],
         safety_status=safety_status,
         is_safe=is_safe,
     )
-    safe_name = _sanitize_filename(req.route_name)
+    safe_name = _sanitize_filename(params["route_name"])
     headers = {"Content-Disposition": f'attachment; filename="{safe_name}.rtz"'}
     if not is_safe:
-        headers["X-SeaPath-Route-Status"] = "UNVERIFIED_HAZARD"
+        headers["X-SeaPath-Route-Status"] = "DEMO_UNVERIFIED" if safety_status == "DEMO_UNVERIFIED" else "UNVERIFIED_HAZARD"
     return Response(
         content=xml_content,
         media_type="application/xml",

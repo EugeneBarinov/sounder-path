@@ -302,13 +302,52 @@ def scan_corridor_raster_swath(
                             "hazard_type": h_type,
                         })
 
-    # Sort hazards by severity: unverified first, then shallowest depth, then restricted
-    hazards.sort(key=lambda h: (
+    # Group hazards by category to guarantee worst hazard of EACH category is included
+    by_type: Dict[str, List[Dict[str, Any]]] = {
+        "NODATA_UNVERIFIED": [],
+        "LAND": [],
+        "RESTRICTED_ZONE": [],
+        "SHALLOW_WATER": [],
+    }
+    for h in hazards:
+        ht = h.get("hazard_type", "SHALLOW_WATER")
+        if ht in by_type:
+            by_type[ht].append(h)
+        else:
+            by_type.setdefault(ht, []).append(h)
+
+    # Sort each category individually to find its worst representative
+    by_type["NODATA_UNVERIFIED"].sort(key=lambda h: abs(h.get("xtd_offset_m", 0.0)))
+    by_type["LAND"].sort(key=lambda h: (h.get("depth", 0.0), abs(h.get("xtd_offset_m", 0.0))))
+    by_type["RESTRICTED_ZONE"].sort(key=lambda h: abs(h.get("xtd_offset_m", 0.0)))
+    by_type["SHALLOW_WATER"].sort(key=lambda h: (h.get("depth", 0.0), abs(h.get("xtd_offset_m", 0.0))))
+
+    selected: List[Dict[str, Any]] = []
+    seen_ids = set()
+
+    # Priority 1: Pick the worst representative of EACH detected hazard type
+    for cat in ["NODATA_UNVERIFIED", "LAND", "RESTRICTED_ZONE", "SHALLOW_WATER"]:
+        cat_list = by_type.get(cat, [])
+        if cat_list:
+            top_h = cat_list[0]
+            selected.append(top_h)
+            seen_ids.add((top_h.get("r"), top_h.get("c"), top_h.get("hazard_type")))
+
+    # Priority 2: Fill remaining slots up to limit (30) with remaining hazards sorted by severity
+    remaining = [
+        h for h in hazards
+        if (h.get("r"), h.get("c"), h.get("hazard_type")) not in seen_ids
+    ]
+    remaining.sort(key=lambda h: (
         0 if h.get("is_unverified_coverage") else 1,
         h.get("depth", 0.0),
         0 if h.get("is_restricted") else 1
     ))
-    return hazards[:30]
+
+    limit = 30
+    slots_left = max(0, limit - len(selected))
+    selected.extend(remaining[:slots_left])
+    return selected
 
 
 def verify_ecdis_route_safety(

@@ -513,3 +513,152 @@ def test_separated_corridor_alarms_by_hazard_type():
     for code in ["ALM-04-XTD-CORRIDOR-HAZARD", "ALM-06-UNVERIFIED-DATA-COVERAGE", "ALM-08-RESTRICTED-ZONE-VIOLATION", "ALM-09-LAND-TERRESTRIAL-HAZARD"]:
         alm = next(a for a in audit["alarms"] if a["code"] == code)
         assert alm["severity"] == "CRITICAL"
+
+
+def test_nodata_interior_and_barrier_isolation():
+    """
+    Verify P1.3:
+    1. Points inside NoData interior (with no immediate water neighbor) fail with NODATA_INTERIOR.
+    2. BFS snapping treats NoData as an impermeable barrier and refuses to traverse
+       from NoData across an island to water on the opposite side.
+    """
+    from backend.main import _snap_to_navigable
+
+    depths = np.full((30, 30), 20.0, dtype=np.float32)
+    nodata = np.zeros((30, 30), dtype=bool)
+    land = np.zeros((30, 30), dtype=bool)
+
+    # Columns 0..10: NoData uncharted region
+    nodata[:, 0:11] = True
+    depths[:, 0:11] = -9999.0
+
+    # Columns 11..15: Island landmass
+    land[:, 11:16] = True
+    depths[:, 11:16] = 0.0
+
+    # Columns 16..29: Navigable deep water (20.0m)
+
+    grid = BathymetricGrid(
+        lat_min=44.0,
+        lat_max=44.03,
+        lon_min=33.0,
+        lon_max=33.03,
+        depths=depths,
+        nodata_mask=nodata,
+        land_mask=land,
+    )
+
+    # 1. Point deep inside NoData interior (row 15, col 5): no adjacent water
+    sr, sc, s_dist, reason = _snap_to_navigable(15, 5, grid, min_depth=3.0)
+    assert sr is None
+    assert reason == "NODATA_INTERIOR"
+
+    # 2. Point in NoData on the shore of the island (row 15, col 10):
+    # Its neighbors are NoData (cols 9, 10) and Island land (col 11).
+    # None of its immediate 8 neighbors are navigable water!
+    sr_border, sc_border, s_dist_b, reason_b = _snap_to_navigable(15, 10, grid, min_depth=3.0)
+    assert sr_border is None
+    assert reason_b == "NODATA_INTERIOR"
+
+    # 3. Even with a large snap radius, BFS cannot leap across the 5-cell island
+    # barrier or traverse across NoData to reach the water at col 16
+    sr_iso, sc_iso, s_dist_iso, reason_iso = _snap_to_navigable(15, 10, grid, min_depth=3.0, max_snap_meters=3000.0)
+    assert sr_iso is None
+
+
+def test_pre_truncation_corridor_hazard_categorization_preserves_all_alarms():
+    """
+    Verify P2.5:
+    When a corridor contains 45 shallow water shoals, 1 restricted zone, 1 land cell, and 1 nodata cell,
+    the pre-truncation categorization ensures the worst hazard of EVERY category is preserved in the
+    top 30 items. As a result, ALM-04, ALM-06, ALM-08, and ALM-09 all fire without being masked!
+    """
+    # 50x50 grid with base depth 20.0m
+    depths = np.full((50, 50), 20.0, dtype=np.float32)
+    fw = np.ones((50, 50), dtype=np.float32)
+    land = np.zeros((50, 50), dtype=bool)
+    nodata = np.zeros((50, 50), dtype=bool)
+
+    grid = BathymetricGrid(
+        lat_min=44.0,
+        lat_max=44.05,
+        lon_min=33.0,
+        lon_max=33.05,
+        depths=depths,
+        fairway_weights=fw,
+        land_mask=land,
+        nodata_mask=nodata,
+    )
+
+    # Route along row 25 from col 5 to col 45
+    lat_25, lon_5 = grid.get_cell_coords(25, 5)
+    lat_25, lon_45 = grid.get_cell_coords(25, 45)
+
+    route_coords = [
+        [lon_5, lat_25],
+        [lon_45, lat_25],
+    ]
+
+    waypoints = [
+        {"lon": lon_5, "lat": lat_25, "turn_radius_m": 150.0, "rot_deg_min": 0.0},
+        {"lon": lon_45, "lat": lat_25, "turn_radius_m": 150.0, "rot_deg_min": 0.0},
+    ]
+    profile = [
+        {"distance_from_start_m": 0.0, "depth": 20.0, "clearance": 17.0},
+        {"distance_from_start_m": 3000.0, "depth": 20.0, "clearance": 17.0},
+    ]
+
+    # Create 40 shallow water shoals (depth 1.0 < safety_depth 3.0) along row 26, cols 5..44
+    for c in range(5, 45):
+        grid.depths[26, c] = 1.0
+
+    # Add 1 restricted zone at (24, 20) with deep water depth 20.0m
+    grid.fairway_weights[24, 20] = 1000.0
+
+    # Add 1 land cell at (24, 25) with depth 0.0m
+    grid.land_mask[24, 25] = True
+    grid.depths[24, 25] = 0.0
+
+    # Add 1 nodata cell at (24, 30)
+    grid.nodata_mask[24, 30] = True
+    grid.depths[24, 30] = -9999.0
+
+    # Verify swath scan returns at most 30 hazards
+    hazards = scan_corridor_raster_swath(
+        route_coords=route_coords,
+        port_xtd_m=200.0,
+        stbd_xtd_m=200.0,
+        grid=grid,
+        safety_depth=3.0,
+    )
+    assert len(hazards) <= 30
+
+    # Verify that all 4 hazard types are represented in the returned 30 hazards!
+    types_found = {h["hazard_type"] for h in hazards}
+    assert "SHALLOW_WATER" in types_found
+    assert "RESTRICTED_ZONE" in types_found
+    assert "LAND" in types_found
+    assert "NODATA_UNVERIFIED" in types_found
+
+    # Run full ECDIS audit
+    audit = verify_ecdis_route_safety(
+        waypoints=waypoints,
+        profile=profile,
+        fairways_coll={"type": "FeatureCollection", "features": []},
+        draft=2.0,
+        dynamic_squat=0.5,
+        ukc=0.5,
+        speed_knots=10.0,
+        min_chart_depth_m=3.0,
+        grid=grid,
+        port_xtd_m=200.0,
+        stbd_xtd_m=200.0,
+        route_coords=route_coords,
+    )
+
+    alarm_codes = [a["code"] for a in audit["alarms"]]
+    assert "ALM-04-XTD-CORRIDOR-HAZARD" in alarm_codes
+    assert "ALM-06-UNVERIFIED-DATA-COVERAGE" in alarm_codes
+    assert "ALM-08-RESTRICTED-ZONE-VIOLATION" in alarm_codes
+    assert "ALM-09-LAND-TERRESTRIAL-HAZARD" in alarm_codes
+

@@ -316,3 +316,229 @@ def test_server_side_export_rejects_hazardous_passage_plan(client):
     }
     res_bad = client.post("/api/export/gpx", json=bad_payload)
     assert res_bad.status_code == 422
+
+
+def test_client_cannot_bypass_dukc_via_low_safety_contour(client):
+    """
+    Verify that a client-supplied low safety_contour cannot bypass server-side safety checks.
+    The server calculates canonical compute_search_budget() and enforces
+    effective_safety_depth = max(req.safety_contour, canonical_min_chart_depth).
+    """
+    # A route where seabed depth is around 2.0m (near Crimean shoreline)
+    # Draft 1.8m + speed 12 kts (squat ~0.35m) + UKC 0.5m -> requires > 2.65m depth.
+    # Client passes safety_contour=1.0 and is_safe=True in an attempt to bypass.
+    payload = {
+        "waypoints": [
+            {"lat": 45.18, "lon": 33.36},  # Yevpatoriya approach ~2m depth
+            {"lat": 45.19, "lon": 33.37},
+        ],
+        "draft": 1.8,
+        "speed_knots": 12.0,
+        "ukc": 0.5,
+        "safety_contour": 1.0,  # Deliberately lowered
+        "is_safe": True,        # Client claims safe
+        "allow_unverified": False,
+    }
+    res = client.post("/api/export/gpx", json=payload)
+    assert res.status_code == 400
+    assert "Cannot export hazardous passage plan" in res.json()["detail"]
+
+
+def test_plan_id_export_workflow(client):
+    """
+    Verify passage plan export via server-issued plan_id:
+    1. Calculate route via /api/route -> receive plan_id
+    2. Export GPX using plan_id directly (zero geometry divergence)
+    3. Export RTZ using plan_id directly with CIRM XSD validation
+    4. Verify 404 for non-existent plan_id
+    """
+    import xmlschema
+    from pathlib import Path
+
+    xsd_path = Path(__file__).resolve().parent.parent / "backend" / "schemas" / "rtz_1_1.xsd"
+    rtz_schema = xmlschema.XMLSchema(str(xsd_path))
+
+    route_req = {
+        "start_lon": 34.0,
+        "start_lat": 44.0,
+        "goal_lon": 35.0,
+        "goal_lat": 44.2,
+        "draft": 1.5,
+        "speed_knots": 10.0,
+        "ukc": 0.5,
+    }
+    res_route = client.post("/api/route", json=route_req)
+    assert res_route.status_code == 200
+    route_data = res_route.json()
+    assert "plan_id" in route_data
+    plan_id = route_data["plan_id"]
+    assert len(plan_id) > 10
+
+    # 1. Export GPX via plan_id
+    res_gpx = client.post("/api/export/gpx", json={"plan_id": plan_id})
+    assert res_gpx.status_code == 200
+    assert "application/gpx+xml" in res_gpx.headers["content-type"]
+    assert "WP01" in res_gpx.text
+
+    # 2. Export RTZ via plan_id
+    res_rtz = client.post("/api/export/rtz", json={"plan_id": plan_id})
+    assert res_rtz.status_code == 200
+    assert "application/xml" in res_rtz.headers["content-type"]
+    rtz_schema.validate(res_rtz.text)
+
+    # 3. Non-existent plan_id returns 404
+    res_404 = client.post("/api/export/gpx", json={"plan_id": "00000000-0000-0000-0000-000000000000"})
+    assert res_404.status_code == 404
+    assert "not found or expired" in res_404.json()["detail"]
+
+
+def test_export_geometry_coupling_validation(client):
+    """
+    Verify server prevents route/waypoint divergence and bypasses:
+    - Departure endpoint divergence > 50m
+    - Destination endpoint divergence > 50m
+    - Intermediate waypoint lateral divergence > 50m
+    - Non-monotonic waypoint sequence along route track
+    """
+    valid_route = [
+        [34.00, 44.00],
+        [34.50, 44.10],
+        [35.00, 44.20],
+    ]
+
+    # Case 1: Departure mismatch (WP1 is 5 km north of route departure)
+    bad_dep_payload = {
+        "waypoints": [
+            {"lat": 44.05, "lon": 34.00},  # ~5.5 km north
+            {"lat": 44.20, "lon": 35.00},
+        ],
+        "route": valid_route,
+        "draft": 1.5,
+        "speed_knots": 10.0,
+        "ukc": 0.5,
+    }
+    res_dep = client.post("/api/export/gpx", json=bad_dep_payload)
+    assert res_dep.status_code == 400
+    assert "Departure waypoint WP1" in res_dep.json()["detail"]
+
+    # Case 2: Destination mismatch (WP2 is 5 km south of route destination)
+    bad_dest_payload = {
+        "waypoints": [
+            {"lat": 44.00, "lon": 34.00},
+            {"lat": 44.15, "lon": 35.00},  # ~5.5 km south
+        ],
+        "route": valid_route,
+        "draft": 1.5,
+        "speed_knots": 10.0,
+        "ukc": 0.5,
+    }
+    res_dest = client.post("/api/export/gpx", json=bad_dest_payload)
+    assert res_dest.status_code == 400
+    assert "Destination waypoint" in res_dest.json()["detail"]
+
+    # Case 3: Intermediate waypoint lateral deviation (> 50m off route track)
+    bad_mid_payload = {
+        "waypoints": [
+            {"lat": 44.00, "lon": 34.00},
+            {"lat": 44.30, "lon": 34.50},  # ~22 km off polyline
+            {"lat": 44.20, "lon": 35.00},
+        ],
+        "route": valid_route,
+        "draft": 1.5,
+        "speed_knots": 10.0,
+        "ukc": 0.5,
+    }
+    res_mid = client.post("/api/export/gpx", json=bad_mid_payload)
+    assert res_mid.status_code == 400
+    assert "deviates by" in res_mid.json()["detail"]
+
+    # Case 4: Non-monotonic waypoint sequence (WP2 is placed AFTER WP3 along track)
+    bad_order_payload = {
+        "waypoints": [
+            {"lat": 44.00, "lon": 34.00},
+            {"lat": 44.20, "lon": 35.00},
+            {"lat": 44.10, "lon": 34.50},  # Backwards!
+        ],
+        "route": valid_route,
+        "draft": 1.5,
+        "speed_knots": 10.0,
+        "ukc": 0.5,
+    }
+    res_order = client.post("/api/export/gpx", json=bad_order_payload)
+    assert res_order.status_code == 400
+    assert "Destination waypoint" in res_order.json()["detail"] or "out of order" in res_order.json()["detail"]
+
+
+def test_synthetic_bathymetry_non_executable_status(monkeypatch, client):
+    """
+    Verify P1.4: In synthetic bathymetry mode, routes are explicitly marked
+    DEMO_UNVERIFIED / SYNTHETIC_DEMO_NON_NAVIGABLE with is_executable_passage_plan=False.
+    Export without allow_unverified=True is blocked.
+    """
+    import backend.main as main_mod
+
+    monkeypatch.setattr(main_mod, "is_synthetic_mode", True)
+    monkeypatch.setattr(main_mod.full_grid, "is_synthetic", True)
+
+    payload = {
+        "start_lon": 34.0,
+        "start_lat": 44.0,
+        "goal_lon": 35.0,
+        "goal_lat": 44.2,
+        "draft": 1.5,
+        "speed_knots": 10.0,
+        "ukc": 0.5,
+    }
+    res = client.post("/api/route", json=payload)
+    assert res.status_code == 200
+    data = res.json()
+    props = data["properties"]
+
+    assert props["is_executable_passage_plan"] is False
+    assert props["data_integrity"] == "SYNTHETIC_DEMO_NON_NAVIGABLE"
+    assert props["safety_check"]["status"] == "DEMO_UNVERIFIED"
+    assert props["safety_check"]["is_safe"] is False
+    alarm_codes = [a["code"] for a in props["safety_check"]["alarms"]]
+    assert "ALM-10-SYNTHETIC-DATA-NON-NAVIGABLE" in alarm_codes
+
+    plan_id = data["plan_id"]
+
+    # Export must fail closed unless allow_unverified=True
+    res_export_blocked = client.post("/api/export/gpx", json={"plan_id": plan_id})
+    assert res_export_blocked.status_code == 400
+    assert "DEMO_UNVERIFIED" in res_export_blocked.json()["detail"]
+
+    # Export with allow_unverified=True must succeed with DEMO_UNVERIFIED header
+    res_export_override = client.post("/api/export/gpx", json={"plan_id": plan_id, "allow_unverified": True})
+    assert res_export_override.status_code == 200
+    assert res_export_override.headers.get("X-SeaPath-Route-Status") == "DEMO_UNVERIFIED"
+
+
+def test_real_subprocess_production_fail_closed_missing_geotiff():
+    """
+    Verify P2.6: Real subprocess execution with SEAPATH_ENV=production and a non-existent
+    GeoTIFF dataset immediately aborts at module load time with RuntimeError and exit code 1.
+    """
+    import subprocess
+    import sys
+    import os
+    from pathlib import Path
+
+    base_dir = Path(__file__).resolve().parent.parent
+    env = os.environ.copy()
+    env["SEAPATH_ENV"] = "production"
+    env["SEAPATH_GEOTIFF_PATH"] = str(base_dir / "data" / "raw" / "nonexistent_operational_file.tif")
+    env["PYTHONPATH"] = str(base_dir)
+
+    proc = subprocess.run(
+        [sys.executable, "-c", "import backend.main"],
+        cwd=str(base_dir),
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+
+    assert proc.returncode != 0, "Production mode without GeoTIFF must fail closed with non-zero exit code"
+    assert "PRODUCTION FAILURE" in proc.stderr
+    assert "RuntimeError" in proc.stderr
+

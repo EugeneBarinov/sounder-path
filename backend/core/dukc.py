@@ -72,7 +72,7 @@ def calculate_turning_heel(
 
     # Lever arm: vertical center of gravity above center of buoyancy
     lever_arm = max(0.5, 0.25 * draft_m)
-    gm = max(0.5, gm_m)
+    gm = max(0.5, gm_m if gm_m is not None else 1.5)
 
     tan_theta = (v_ms ** 2 * lever_arm) / (GRAVITY_G * turning_radius_m * gm)
     # Clamp maximum realistic steady heel angle to 20 degrees for safety
