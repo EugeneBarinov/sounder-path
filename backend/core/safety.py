@@ -102,6 +102,8 @@ def verify_ecdis_route_safety(
     dynamic_squat: float,
     ukc: float,
     speed_knots: float,
+    min_chart_depth_m: Optional[float] = None,
+    dynamic_draft_m: Optional[float] = None,
 ) -> Dict[str, Any]:
     """
     Automated ECDIS Route Checking per IEC 61174:2015.
@@ -112,7 +114,8 @@ def verify_ecdis_route_safety(
     4. Proximity to military / ecological restricted zones (RESARE).
     """
     alarms: List[Dict[str, Any]] = []
-    safety_depth = draft + dynamic_squat + ukc
+    safety_depth = min_chart_depth_m if min_chart_depth_m is not None else (draft + dynamic_squat + ukc)
+    effective_dyn_draft = dynamic_draft_m if dynamic_draft_m is not None else (draft + dynamic_squat)
 
     # 1. Depth Soundings Safety Check
     min_observed_clearance = math.inf
@@ -189,6 +192,7 @@ def verify_ecdis_route_safety(
         "alarms": alarms,
         "metrics": {
             "safety_depth_m": round(safety_depth, 2),
+            "dynamic_draft_m": round(effective_dyn_draft, 2),
             "dynamic_squat_m": round(dynamic_squat, 2),
             "min_clearance_m": round(min_observed_clearance, 2) if min_observed_clearance != math.inf else 0.0,
             "rot_threshold_deg_min": rot_threshold,

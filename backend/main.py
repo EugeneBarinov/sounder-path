@@ -133,6 +133,7 @@ class ExportRouteRequest(BaseModel):
     draft: float = 1.2
     speed_knots: float = 10.0
     ukc: float = 0.5
+    safety_contour: Optional[float] = None
     route_name: Optional[str] = "SeaPath_Passage_Plan"
 
 
@@ -469,6 +470,8 @@ def calculate_route(req: RouteRequest):
         dynamic_squat=dynamic_squat,
         ukc=req.ukc,
         speed_knots=req.speed_knots,
+        min_chart_depth_m=min_required_chart_depth,
+        dynamic_draft_m=search_dynamic_draft,
     )
 
     # 4. Bottleneck & Choke Point Analysis + Speed Adaptation Advisory
@@ -481,6 +484,9 @@ def calculate_route(req: RouteRequest):
         turning_radius_m=req.turning_radius_m,
         wave_height_m=req.wave_height_m,
         tide_offset_m=req.tide_offset_m,
+        beam_m=req.beam_m,
+        gm_m=req.gm_m,
+        exposed_waters=req.exposed_waters,
     )
 
     # 5. Full PIANC DUKC Budget (отчётный, на самой мелкой точке профиля)
@@ -579,6 +585,7 @@ def export_rtz(req: ExportRouteRequest):
         speed_knots=req.speed_knots,
         ukc=req.ukc,
         route_name=req.route_name or "SeaPath_Passage_Plan",
+        safety_contour=req.safety_contour,
     )
     return Response(
         content=xml_content,

@@ -58,7 +58,7 @@ def rasterize_fairway_weights(
 
     lat_step = (lat_max - lat_min) / grid_rows
     lon_step = (lon_max - lon_min) / grid_cols
-    transform = Affine.translation(lon_min, lat_max) * Affine.scale(lon_step, -lat_step)
+    transform = Affine.translation(lon_min, lat_max) @ Affine.scale(lon_step, -lat_step)
 
     # 1. Rasterize Fairway / TSS attraction polygons first
     fairway_shapes = []

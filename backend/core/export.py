@@ -58,8 +58,20 @@ def export_to_gpx(
 
         brg = wp.get("leg_bearing_deg", 0.0)
         dist = wp.get("leg_distance_nm", 0.0)
-        depth = wp.get("depth_m", 0.0)
-        ukc_val = wp.get("clearance_m", 0.0)
+        depth = (
+            wp.get("depth_m")
+            if wp.get("depth_m") is not None
+            else (
+                wp.get("depth_at_waypoint")
+                if wp.get("depth_at_waypoint") is not None
+                else wp.get("depth", 0.0)
+            )
+        )
+        ukc_val = (
+            wp.get("clearance_m")
+            if wp.get("clearance_m") is not None
+            else wp.get("clearance", 0.0)
+        )
         turn_ang = wp.get("turn_angle_deg", 0.0)
         radius = wp.get("turn_radius_m", 0.0)
 
@@ -91,6 +103,7 @@ def export_to_rtz(
     speed_knots: float,
     ukc: float,
     route_name: str = "SeaPath_Passage_Plan",
+    safety_contour: Optional[float] = None,
 ) -> str:
     """
     Generate RTZ 1.1 (IEC 61174:2015 Annex S) XML format for commercial ECDIS plotters.
@@ -141,12 +154,14 @@ def export_to_rtz(
         port_xtd = wp.get("port_xtd_nm", 0.10)
         stbd_xtd = wp.get("stbd_xtd_nm", 0.10)
 
+        contour_val = safety_contour if safety_contour is not None else (draft + ukc)
+
         # Leg specification (IEC 61174 standards)
         leg_el = ET.SubElement(wp_el, "leg", {
             "legType": "Straight",
             "portXTD": f"{port_xtd:.2f}",
             "starboardXTD": f"{stbd_xtd:.2f}",
-            "safetyContour": f"{(draft + ukc):.1f}",
+            "safetyContour": f"{contour_val:.1f}",
         })
 
     return _format_xml(route)

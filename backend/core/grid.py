@@ -140,26 +140,36 @@ class BathymetricGrid:
         blocks = cropped.reshape(h // factor, factor, w // factor, factor)
         coarse_depths = blocks.min(axis=(1, 3))
 
+        coarse_fw = None
+        if self.fairway_weights is not None and self.fairway_weights.shape == (self.rows, self.cols):
+            cropped_fw = self.fairway_weights[:h, :w]
+            fw_blocks = cropped_fw.reshape(h // factor, factor, w // factor, factor)
+            # Preserves navigational danger (>=500) via max pooling, else min pooling for fairway discount
+            max_fw = fw_blocks.max(axis=(1, 3))
+            min_fw = fw_blocks.min(axis=(1, 3))
+            coarse_fw = np.where(max_fw >= 500.0, max_fw, min_fw).astype(np.float32)
+
         return BathymetricGrid(
             lat_min=self.lat_min,
             lat_max=self.lat_max,
             lon_min=self.lon_min,
             lon_max=self.lon_max,
             depths=coarse_depths,
+            fairway_weights=coarse_fw,
         )
 
     def get_cell_coords(self, r: int, c: int) -> Tuple[float, float]:
         """Convert grid index (row, col) to center coordinates (lat, lon)."""
-        lat_step = (self.lat_max - self.lat_min) / self.rows
-        lon_step = (self.lon_max - self.lon_min) / self.cols
+        lat_step = max(1e-9, (self.lat_max - self.lat_min) / max(1, self.rows))
+        lon_step = max(1e-9, (self.lon_max - self.lon_min) / max(1, self.cols))
         lat = self.lat_max - (r + 0.5) * lat_step
         lon = self.lon_min + (c + 0.5) * lon_step
         return lat, lon
 
     def lonlat_to_cell(self, lon: float, lat: float) -> Tuple[int, int]:
         """Convert geographic coordinates (lon, lat) to bounded grid indices (row, col)."""
-        lat_step = (self.lat_max - self.lat_min) / self.rows
-        lon_step = (self.lon_max - self.lon_min) / self.cols
+        lat_step = max(1e-9, (self.lat_max - self.lat_min) / max(1, self.rows))
+        lon_step = max(1e-9, (self.lon_max - self.lon_min) / max(1, self.cols))
 
         r = int((self.lat_max - lat) / lat_step)
         c = int((lon - self.lon_min) / lon_step)
@@ -215,11 +225,17 @@ class BathymetricGrid:
         with open(path, mode="r", newline="", encoding="utf-8") as f:
             reader = csv.DictReader(f)
             for row in reader:
+                norm_row = {str(k).strip().lower(): v for k, v in row.items() if k is not None}
                 try:
-                    lat = float(row["lat"])
-                    lon = float(row["lon"])
-                    depth = float(row["depth"])
-                except (ValueError, KeyError):
+                    lat_val = norm_row.get("lat") or norm_row.get("latitude")
+                    lon_val = norm_row.get("lon") or norm_row.get("lng") or norm_row.get("longitude")
+                    depth_val = norm_row.get("depth") or norm_row.get("depth_m") or norm_row.get("sounding")
+                    if lat_val is None or lon_val is None or depth_val is None:
+                        continue
+                    lat = float(lat_val)
+                    lon = float(lon_val)
+                    depth = float(depth_val)
+                except (ValueError, TypeError):
                     continue
 
                 if not (self.lat_min <= lat <= self.lat_max and self.lon_min <= lon <= self.lon_max):

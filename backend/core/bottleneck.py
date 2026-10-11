@@ -25,6 +25,9 @@ def analyze_route_bottlenecks(
     turning_radius_m: float = 250.0,
     wave_height_m: float = 0.0,
     tide_offset_m: float = 0.0,
+    beam_m: Optional[float] = None,
+    gm_m: float = 1.5,
+    exposed_waters: bool = False,
 ) -> Dict[str, Any]:
     """
     Scans the bathymetric profile of a route to identify the critical choke point.
@@ -38,8 +41,8 @@ def analyze_route_bottlenecks(
     if not profile:
         return {"has_bottleneck": False, "bottlenecks": []}
 
-    wave_allowance = calculate_wave_response(wave_height_m)
-    heel_info = calculate_turning_heel(speed_knots, turning_radius_m, draft_m)
+    wave_allowance = calculate_wave_response(wave_height_m, exposed_waters=exposed_waters)
+    heel_info = calculate_turning_heel(speed_knots, turning_radius_m, draft_m, beam_m=beam_m, gm_m=gm_m)
     heel_sinkage = heel_info["heel_sinkage_m"]
 
     min_clearance = math.inf

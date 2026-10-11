@@ -97,6 +97,12 @@ NativeRouteResult NativeRouter::find_path(
         min_depth = static_cast<float>(dynamic_draft + ukc);
     }
 
+    // -- Шаг 2. Защита от старта/финиша на мели или в запретной зоне -----
+    if (grid->depth(start_r, start_c) <= min_depth || grid->is_restricted(start_r, start_c) ||
+        grid->depth(goal_r, goal_c) <= min_depth || grid->is_restricted(goal_r, goal_c)) {
+        return result;
+    }
+
     // Increment run_id to avoid O(N) memset on every search
     ++current_run;
     if (current_run == 0) {

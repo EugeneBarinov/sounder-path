@@ -172,6 +172,16 @@ class Router:
             min_depth = dynamic_draft + ukc
 
         rows, cols = self.grid.rows, self.grid.cols
+        if not (0 <= start_r < rows and 0 <= start_c < cols and 0 <= goal_r < rows and 0 <= goal_c < cols):
+            return None
+
+        if (
+            float(self.grid.depths[start_r, start_c]) <= min_depth
+            or self.grid.is_restricted(start_r, start_c)
+            or float(self.grid.depths[goal_r, goal_c]) <= min_depth
+            or self.grid.is_restricted(goal_r, goal_c)
+        ):
+            return None
 
         # Priority queue entries: (f_score, g_score, row, col)
         open_heap: List[Tuple[float, float, int, int]] = []
