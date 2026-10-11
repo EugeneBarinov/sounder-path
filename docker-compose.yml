@@ -11,8 +11,30 @@ services:
       - ./data:/app/data:ro
     environment:
       - PYTHONUNBUFFERED=1
+      - SEAPATH_ENV=production
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/grid')"]
+      test: ["CMD", "python", "-c", "import urllib.request, json, os; res = urllib.request.urlopen('http://localhost:8000/api/health'); data = json.loads(res.read()); is_prod = os.environ.get('SEAPATH_ENV', 'production').lower() == 'production'; exit(1 if is_prod and (data.get('is_synthetic') or data.get('data_status') != 'operational') else 0)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  # Demonstration Service: Runs on synthetic bathymetry without requiring local E8_2024.tif
+  # Usage: docker compose --profile demo up seapath-ecdis-demo
+  seapath-ecdis-demo:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: seapath-ecdis-demo
+    ports:
+      - "8001:8000"
+    restart: "no"
+    profiles:
+      - demo
+    environment:
+      - PYTHONUNBUFFERED=1
+      - SEAPATH_ENV=demo
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')"]
       interval: 30s
       timeout: 5s
       retries: 3

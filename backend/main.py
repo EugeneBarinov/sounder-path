@@ -178,16 +178,76 @@ class RouteRequest(BaseModel):
         return v
 
 
+class ExportWaypoint(BaseModel):
+    lat: Optional[float] = None
+    latitude: Optional[float] = None
+    lon: Optional[float] = None
+    lng: Optional[float] = None
+    longitude: Optional[float] = None
+    turn_radius_m: Optional[float] = Field(default=150.0, ge=0.0)
+    rot_deg_min: Optional[float] = Field(default=0.0)
+    wop_distance_m: Optional[float] = Field(default=0.0)
+    leg_bearing_deg: Optional[float] = Field(default=0.0)
+    leg_distance_nm: Optional[float] = Field(default=0.0)
+    port_xtd_nm: Optional[float] = Field(default=0.10, ge=0.001)
+    stbd_xtd_nm: Optional[float] = Field(default=0.10, ge=0.001)
+    depth_m: Optional[float] = None
+    clearance_m: Optional[float] = None
+    depth_at_waypoint: Optional[float] = None
+    depth: Optional[float] = None
+    clearance: Optional[float] = None
+
+    def get_lat(self) -> float:
+        v = self.lat if self.lat is not None else self.latitude
+        if v is None:
+            raise ValueError("Waypoint latitude is required.")
+        return float(v)
+
+    def get_lon(self) -> float:
+        v = self.lon if self.lon is not None else (self.lng if self.lng is not None else self.longitude)
+        if v is None:
+            raise ValueError("Waypoint longitude is required.")
+        return float(v)
+
+    @field_validator("latitude", "lat")
+    @classmethod
+    def check_lat(cls, v: Optional[float]) -> Optional[float]:
+        if v is not None and not (-90.0 <= v <= 90.0):
+            raise ValueError("Latitude out of valid geographic range [-90, 90].")
+        return v
+
+    @field_validator("longitude", "lng", "lon")
+    @classmethod
+    def check_lon(cls, v: Optional[float]) -> Optional[float]:
+        if v is not None and not (-180.0 <= v <= 180.0):
+            raise ValueError("Longitude out of valid geographic range [-180, 180].")
+        return v
+
+
 class ExportRouteRequest(BaseModel):
-    waypoints: List[Dict[str, Any]]
+    waypoints: List[ExportWaypoint]
     route: List[List[float]] = Field(default_factory=list)
-    draft: float = 1.2
-    speed_knots: float = 10.0
-    ukc: float = 0.5
+    draft: float = Field(default=1.2, gt=0.0)
+    speed_knots: float = Field(default=10.0, ge=0.0)
+    ukc: float = Field(default=0.5, ge=0.0)
     safety_contour: Optional[float] = None
     route_name: Optional[str] = "SeaPath_Passage_Plan"
     safety_status: Optional[str] = None
     is_safe: Optional[bool] = None
+    allow_unverified: bool = Field(default=False, description="Explicit flag allowing export of unverified or hazardous routes with mandatory warning annotations")
+
+    @field_validator("waypoints")
+    @classmethod
+    def validate_wps(cls, v: List[ExportWaypoint]) -> List[ExportWaypoint]:
+        if len(v) < 2:
+            raise ValueError("Passage plan must contain at least 2 waypoints.")
+        for idx, wp in enumerate(v):
+            try:
+                wp.get_lat()
+                wp.get_lon()
+            except ValueError as err:
+                raise ValueError(f"Waypoint {idx + 1}: {err}")
+        return v
 
 
 # ---------------------------------------------------------------------------
@@ -199,47 +259,75 @@ def _snap_to_navigable(
     grid: BathymetricGrid,
     min_depth: float,
     max_snap_meters: float = 1500.0,
+    orig_lon: Optional[float] = None,
+    orig_lat: Optional[float] = None,
 ) -> Tuple[Optional[int], Optional[int], float, Optional[str]]:
     """
     Breadth-first search to snap shoreline/berth coordinates to the nearest
     navigable node satisfying safety depth constraints (depth > min_depth)
     and bypassing restricted zones.
     Strictly prevents leaping across land barriers (islands/peninsulas) or prohibited zones.
+    Measures exact distance from user's clicked (orig_lon, orig_lat).
     Returns (snapped_r, snapped_c, snap_distance_m, snap_reason).
     """
     if not (0 <= r < grid.rows and 0 <= c < grid.cols):
         return None, None, 0.0, "OUT_OF_BOUNDS"
 
     is_restr = grid.is_restricted(r, c)
-    is_land = (float(grid.depths[r, c]) <= 0.0) or (grid.land_mask is not None and grid.land_mask[r, c])
+    is_nodata = bool(grid.nodata_mask[r, c]) if getattr(grid, "nodata_mask", None) is not None else False
     cur_d = float(grid.depths[r, c])
+    is_land = (cur_d <= 0.0 and not is_nodata) or (getattr(grid, "land_mask", None) is not None and bool(grid.land_mask[r, c]))
 
-    if cur_d > min_depth and not is_restr and not is_land:
+    if cur_d > min_depth and not is_restr and not is_land and not is_nodata:
         return r, c, 0.0, None
 
     if is_restr:
         reason = "RESTRICTED_ZONE"
     elif is_land:
         reason = "LAND_SHORELINE"
+    elif is_nodata:
+        reason = "NODATA_UNVERIFIED"
     else:
         reason = "INSUFFICIENT_DEPTH"
 
-    lat_orig, lon_orig = grid.get_cell_coords(r, c)
-    init_is_water = (cur_d > 0.0 and not is_land and not is_restr)
+    lat_cell, lon_cell = grid.get_cell_coords(r, c)
+    lat_user = orig_lat if orig_lat is not None else lat_cell
+    lon_user = orig_lon if orig_lon is not None else lon_cell
+
+    init_is_water = (cur_d > 0.0 and not is_land and not is_restr and not is_nodata)
     queue = deque([(r, c, 0, init_is_water)])
     visited = {(r, c)}
     max_steps = 15  # Up to 15 grid cells (~1500m)
 
+    # Pre-check for land interior or restricted interior:
+    # If starting on land, check if any immediate 8-neighbor is water.
+    # If start is land and NO neighbor is water, point is in the interior of island/continent.
+    if is_land or is_restr:
+        has_immediate_water = False
+        for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (-1, 1), (1, -1), (1, 1)]:
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < grid.rows and 0 <= nc < grid.cols:
+                nd = float(grid.depths[nr, nc])
+                nnd = bool(grid.nodata_mask[nr, nc]) if getattr(grid, "nodata_mask", None) is not None else False
+                nl = (nd <= 0.0 and not nnd) or (getattr(grid, "land_mask", None) is not None and bool(grid.land_mask[nr, nc]))
+                nrst = grid.is_restricted(nr, nc)
+                if nd > 0.0 and not nl and not nrst and not nnd:
+                    has_immediate_water = True
+                    break
+        if not has_immediate_water:
+            return None, None, 0.0, "LAND_INTERIOR" if is_land else "RESTRICTED_ZONE_INTERIOR"
+
     while queue:
         cr, cc, steps, entered_water = queue.popleft()
         c_depth = float(grid.depths[cr, cc])
-        c_land = (c_depth <= 0.0) or (grid.land_mask is not None and grid.land_mask[cr, cc])
+        c_nodata = bool(grid.nodata_mask[cr, cc]) if getattr(grid, "nodata_mask", None) is not None else False
+        c_land = (c_depth <= 0.0 and not c_nodata) or (getattr(grid, "land_mask", None) is not None and bool(grid.land_mask[cr, cc]))
         c_restr = grid.is_restricted(cr, cc)
 
-        # Candidate check: must satisfy required depth and not be restricted
-        if c_depth > min_depth and not c_restr and not c_land:
+        # Candidate check: must satisfy required depth and not be restricted or land/nodata
+        if c_depth > min_depth and not c_restr and not c_land and not c_nodata:
             lat_c, lon_c = grid.get_cell_coords(cr, cc)
-            dist_m = calculate_distance_m(lat_orig, lon_orig, lat_c, lon_c)
+            dist_m = calculate_distance_m(lat_user, lon_user, lat_c, lon_c)
             if dist_m <= max_snap_meters:
                 # Obstacle barrier check: line-of-sight must not cut across dry land once water entered
                 line_cells = grid.sample_depth_along_segment(r, c, cr, cc)
@@ -261,12 +349,19 @@ def _snap_to_navigable(
             nr, nc = cr + dr, cc + dc
             if 0 <= nr < grid.rows and 0 <= nc < grid.cols and (nr, nc) not in visited:
                 n_depth = float(grid.depths[nr, nc])
-                n_land = (n_depth <= 0.0) or (grid.land_mask is not None and grid.land_mask[nr, nc])
+                n_nodata = bool(grid.nodata_mask[nr, nc]) if getattr(grid, "nodata_mask", None) is not None else False
+                n_land = (n_depth <= 0.0 and not n_nodata) or (getattr(grid, "land_mask", None) is not None and bool(grid.land_mask[nr, nc]))
                 n_restr = grid.is_restricted(nr, nc)
-                n_is_water = (n_depth > 0.0 and not n_land and not n_restr)
+                n_is_water = (n_depth > 0.0 and not n_land and not n_restr and not n_nodata)
 
-                # Strict barrier invariant:
-                # Once search has entered water, it is strictly forbidden from crossing back onto land or restricted zones!
+                # Strict barrier invariants:
+                # 1. If starting on land, cannot step to another land cell: only 1 step directly to water!
+                if is_land and not entered_water and not n_is_water:
+                    continue
+                # 2. If starting in restricted zone, cannot traverse restricted cells!
+                if is_restr and not entered_water and not n_is_water:
+                    continue
+                # 3. Once water is entered, strictly forbidden from crossing back onto land, restricted, or nodata!
                 if entered_water and not n_is_water:
                     continue
 
@@ -274,6 +369,7 @@ def _snap_to_navigable(
                 queue.append((nr, nc, steps + 1, entered_water or n_is_water))
 
     return None, None, 0.0, reason
+
 
 
 def _is_within_coverage(lon: float, lat: float, grid: BathymetricGrid) -> bool:
@@ -314,9 +410,25 @@ def _attach_coordinates_to_profile(profile: List[Dict[str, Any]], route_coords: 
 # API Routes
 # ---------------------------------------------------------------------------
 @app.get("/api/health")
-def health_check():
+def health_check(response: Response):
+    is_prod = _IS_PRODUCTION
+    data_status = "operational" if not is_synthetic_mode else "synthetic_demo"
+    if is_prod and is_synthetic_mode:
+        response.status_code = 503
+        return {
+            "status": "unhealthy",
+            "environment": "production",
+            "data_status": data_status,
+            "is_synthetic": True,
+            "error": "Operational GeoTIFF dataset not loaded in production environment",
+            "dataset_rows": routing_grid.rows,
+            "dataset_cols": routing_grid.cols,
+            "bounds": [routing_grid.lon_min, routing_grid.lat_min, routing_grid.lon_max, routing_grid.lat_max],
+        }
     return {
         "status": "healthy",
+        "environment": "production" if is_prod else "development",
+        "data_status": data_status,
         "dataset_rows": routing_grid.rows,
         "dataset_cols": routing_grid.cols,
         "is_synthetic": is_synthetic_mode,
@@ -425,6 +537,31 @@ def calculate_route(req: RouteRequest):
     search_dynamic_draft = search_budget["dynamic_draft_m"]
     min_required_chart_depth = search_budget["min_chart_depth_m"]
 
+    # Pre-snap all waypoints to navigable water before leg pathfinding
+    snapped_points: List[Tuple[int, int]] = []
+    snapped_wps_info: List[Dict[str, Any]] = []
+
+    for idx, pt in enumerate(points):
+        pt_r, pt_c = routing_grid.lonlat_to_cell(pt[0], pt[1])
+        sr, sc, s_dist, s_reason = _snap_to_navigable(
+            pt_r, pt_c, routing_grid, min_required_chart_depth,
+            orig_lon=pt[0], orig_lat=pt[1]
+        )
+        if sr is None:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Waypoint {idx + 1} ({pt[0]:.4f}, {pt[1]:.4f}): no navigable channel found satisfying safety depth ({min_required_chart_depth:.1f}m) within 1500m (reason: {s_reason})."
+            )
+        snapped_points.append((sr, sc))
+        snapped_wps_info.append({
+            "index": idx + 1,
+            "snapped": s_dist > 0.0,
+            "snap_distance_m": s_dist,
+            "snap_reason": s_reason,
+            "original_coords": [pt[0], pt[1]],
+            "snapped_cell": [sr, sc],
+        })
+
     # Calculate routes along each leg
     combined_route: List[List[float]] = []
     combined_profile: List[Dict[str, Any]] = []
@@ -432,25 +569,8 @@ def calculate_route(req: RouteRequest):
     cum_dist_m = 0.0
 
     for k in range(len(points) - 1):
-        p_start = points[k]
-        p_goal = points[k + 1]
-
-        start_r, start_c = routing_grid.lonlat_to_cell(p_start[0], p_start[1])
-        goal_r, goal_c = routing_grid.lonlat_to_cell(p_goal[0], p_goal[1])
-
-        start_r, start_c, snap_start_dist, snap_start_reason = _snap_to_navigable(start_r, start_c, routing_grid, min_required_chart_depth)
-        goal_r, goal_c, snap_goal_dist, snap_goal_reason = _snap_to_navigable(goal_r, goal_c, routing_grid, min_required_chart_depth)
-
-        if start_r is None:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Waypoint {k + 1}: no navigable channel found satisfying safety depth ({min_required_chart_depth:.1f}m) within 1500m."
-            )
-        if goal_r is None:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Waypoint {k + 2}: no navigable channel found satisfying safety depth ({min_required_chart_depth:.1f}m) within 1500m."
-            )
+        start_r, start_c = snapped_points[k]
+        goal_r, goal_c = snapped_points[k + 1]
 
         # -- Вызов роутера с готовым бюджетом ----------------------------------
         # draft/speed/ukc ниже — для совместимости (старый роутер без новых
@@ -561,14 +681,23 @@ def calculate_route(req: RouteRequest):
             wp["rot_deg_min"] = 0.0
             wp["wop_distance_m"] = 0.0
 
-        if i == 0 and snap_start_dist > 0.0:
-            wp["snap_offset_m"] = snap_start_dist
-            wp["snap_reason"] = snap_start_reason
-            wp["original_coords"] = [points[0][0], points[0][1]]
-        elif i == n_wps - 1 and snap_goal_dist > 0.0:
-            wp["snap_offset_m"] = snap_goal_dist
-            wp["snap_reason"] = snap_goal_reason
-            wp["original_coords"] = [points[-1][0], points[-1][1]]
+        if i == 0 and snapped_wps_info[0]["snapped"]:
+            wp["snap_offset_m"] = snapped_wps_info[0]["snap_distance_m"]
+            wp["snap_reason"] = snapped_wps_info[0]["snap_reason"]
+            wp["original_coords"] = snapped_wps_info[0]["original_coords"]
+        elif i == n_wps - 1 and snapped_wps_info[-1]["snapped"]:
+            wp["snap_offset_m"] = snapped_wps_info[-1]["snap_distance_m"]
+            wp["snap_reason"] = snapped_wps_info[-1]["snap_reason"]
+            wp["original_coords"] = snapped_wps_info[-1]["original_coords"]
+        elif 0 < i < n_wps - 1:
+            for s_info in snapped_wps_info[1:-1]:
+                if s_info["snapped"]:
+                    sc_lat, sc_lon = routing_grid.get_cell_coords(s_info["snapped_cell"][0], s_info["snapped_cell"][1])
+                    if calculate_distance_m(wp["lat"], wp["lon"], sc_lat, sc_lon) < 150.0:
+                        wp["snap_offset_m"] = s_info["snap_distance_m"]
+                        wp["snap_reason"] = s_info["snap_reason"]
+                        wp["original_coords"] = s_info["original_coords"]
+                        break
 
         combined_waypoints.append(wp)
 
@@ -679,12 +808,14 @@ def calculate_route(req: RouteRequest):
         "is_navigable_candidate": True,
         "is_executable_passage_plan": bool(not has_maneuver_violation and safety_audit["is_safe"]),
         "waypoint_snapping": {
-            "start_snapped": snap_start_dist > 0.0,
-            "start_snap_distance_m": snap_start_dist,
-            "start_snap_reason": snap_start_reason,
-            "goal_snapped": snap_goal_dist > 0.0,
-            "goal_snap_distance_m": snap_goal_dist,
-            "goal_snap_reason": snap_goal_reason,
+            "start_snapped": snapped_wps_info[0]["snapped"],
+            "start_snap_distance_m": snapped_wps_info[0]["snap_distance_m"],
+            "start_snap_reason": snapped_wps_info[0]["snap_reason"],
+            "goal_snapped": snapped_wps_info[-1]["snapped"],
+            "goal_snap_distance_m": snapped_wps_info[-1]["snap_distance_m"],
+            "goal_snap_reason": snapped_wps_info[-1]["snap_reason"],
+            "all_waypoints_snapped": any(w["snapped"] for w in snapped_wps_info),
+            "snapped_waypoints": [w for w in snapped_wps_info if w["snapped"]],
         },
     }
 
@@ -718,46 +849,162 @@ def _sanitize_filename(name: Optional[str], default: str = "passage_plan") -> st
     return clean[:64] or default
 
 
+def _verify_export_safety(req: ExportRouteRequest) -> Tuple[bool, str, List[str]]:
+    """
+    Performs server-side ECDIS safety verification on passage plan prior to export.
+    Returns (is_safe, safety_status, alarm_codes).
+    """
+    wps_dicts: List[Dict[str, Any]] = []
+    for wp in req.waypoints:
+        lat = wp.get_lat()
+        lon = wp.get_lon()
+        wps_dicts.append({
+            "lon": lon,
+            "lat": lat,
+            "turn_radius_m": wp.turn_radius_m or 150.0,
+            "rot_deg_min": wp.rot_deg_min or 0.0,
+            "wop_distance_m": wp.wop_distance_m or 0.0,
+            "leg_bearing_deg": wp.leg_bearing_deg or 0.0,
+            "leg_distance_nm": wp.leg_distance_nm or 0.0,
+            "port_xtd_nm": wp.port_xtd_nm or 0.10,
+            "stbd_xtd_nm": wp.stbd_xtd_nm or 0.10,
+            "depth_m": wp.depth_m if wp.depth_m is not None else wp.depth_at_waypoint,
+            "clearance_m": wp.clearance_m,
+        })
+
+    if req.route and len(req.route) >= 2:
+        route_coords = req.route
+    else:
+        route_coords = [[w["lon"], w["lat"]] for w in wps_dicts]
+
+    # Sample bathymetric depths along route
+    profile_samples: List[Dict[str, Any]] = []
+    cum_d = 0.0
+    for i in range(len(route_coords) - 1):
+        p0 = route_coords[i]
+        p1 = route_coords[i + 1]
+        seg_d = calculate_distance_m(p0[1], p0[0], p1[1], p1[0])
+        if full_grid.is_within_coverage(p0[0], p0[1]) and full_grid.is_within_coverage(p1[0], p1[1]):
+            r0, c0 = full_grid.lonlat_to_cell(p0[0], p0[1])
+            r1, c1 = full_grid.lonlat_to_cell(p1[0], p1[1])
+            seg_depths = full_grid.sample_depth_along_segment(r0, c0, r1, c1)
+        else:
+            seg_depths = [0.0]
+        num_pts = max(1, len(seg_depths))
+        for s_idx, d_val in enumerate(seg_depths):
+            dist_pt = cum_d + seg_d * (s_idx / num_pts)
+            clr = d_val - req.draft - req.ukc
+            profile_samples.append({
+                "distance_from_start_m": dist_pt,
+                "depth": d_val,
+                "clearance": clr,
+            })
+        cum_d += seg_d
+
+    safety_audit = verify_ecdis_route_safety(
+        waypoints=wps_dicts,
+        profile=profile_samples,
+        fairways_coll=load_fairways_geojson(),
+        draft=req.draft,
+        dynamic_squat=0.0,
+        ukc=req.ukc,
+        speed_knots=req.speed_knots,
+        min_chart_depth_m=req.safety_contour if req.safety_contour is not None else (req.draft + req.ukc),
+        grid=full_grid,
+        port_xtd_m=float(req.waypoints[0].port_xtd_nm or 0.10) * 1852.0,
+        stbd_xtd_m=float(req.waypoints[0].stbd_xtd_nm or 0.10) * 1852.0,
+        route_coords=route_coords,
+    )
+
+    client_flagged_unsafe = (req.is_safe is False) or (req.safety_status == "CRITICAL_HAZARD")
+    is_safe = bool(safety_audit["is_safe"] and not client_flagged_unsafe)
+    status = "SAFE_PASSED" if is_safe else "CRITICAL_HAZARD"
+    alarm_codes = [a["code"] for a in safety_audit.get("alarms", [])]
+    return is_safe, status, alarm_codes
+
+
 @app.post("/api/export/gpx")
-def export_gpx(req: ExportRouteRequest):
+def export_gpx(req: ExportRouteRequest, response: Response):
     """Generates and downloads standard GPX 1.1 file for GPS and marine chart plotters."""
+    is_safe, safety_status, alarm_codes = _verify_export_safety(req)
+    if not is_safe and not req.allow_unverified:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Cannot export hazardous passage plan: ECDIS safety verification failed. "
+                f"Alarms detected: {alarm_codes or ['UNVERIFIED_HAZARD']}. "
+                "Set allow_unverified=true to export with mandatory UNVERIFIED_HAZARD warning annotations."
+            )
+        )
+
+    wps_dicts = []
+    for wp in req.waypoints:
+        d = wp.model_dump(exclude_none=True)
+        d["lat"] = wp.get_lat()
+        d["lon"] = wp.get_lon()
+        wps_dicts.append(d)
+
     xml_content = export_to_gpx(
-        waypoints=req.waypoints,
+        waypoints=wps_dicts,
         route_coords=req.route,
         draft=req.draft,
         speed_knots=req.speed_knots,
         ukc=req.ukc,
         route_name=req.route_name or "SeaPath_Passage_Plan",
         safety_contour=req.safety_contour,
-        safety_status=req.safety_status,
-        is_safe=req.is_safe,
+        safety_status=safety_status,
+        is_safe=is_safe,
     )
     safe_name = _sanitize_filename(req.route_name)
+    headers = {"Content-Disposition": f'attachment; filename="{safe_name}.gpx"'}
+    if not is_safe:
+        headers["X-SeaPath-Route-Status"] = "UNVERIFIED_HAZARD"
     return Response(
         content=xml_content,
         media_type="application/gpx+xml",
-        headers={"Content-Disposition": f'attachment; filename="{safe_name}.gpx"'},
+        headers=headers,
     )
 
 
 @app.post("/api/export/rtz")
-def export_rtz(req: ExportRouteRequest):
+def export_rtz(req: ExportRouteRequest, response: Response):
     """Generates and downloads standard RTZ 1.1 (IEC 61174) XML for commercial ECDIS systems."""
+    is_safe, safety_status, alarm_codes = _verify_export_safety(req)
+    if not is_safe and not req.allow_unverified:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Cannot export hazardous passage plan: ECDIS safety verification failed. "
+                f"Alarms detected: {alarm_codes or ['UNVERIFIED_HAZARD']}. "
+                "Set allow_unverified=true to export with mandatory UNVERIFIED_HAZARD warning annotations."
+            )
+        )
+
+    wps_dicts = []
+    for wp in req.waypoints:
+        d = wp.model_dump(exclude_none=True)
+        d["lat"] = wp.get_lat()
+        d["lon"] = wp.get_lon()
+        wps_dicts.append(d)
+
     xml_content = export_to_rtz(
-        waypoints=req.waypoints,
+        waypoints=wps_dicts,
         draft=req.draft,
         speed_knots=req.speed_knots,
         ukc=req.ukc,
         route_name=req.route_name or "SeaPath_Passage_Plan",
         safety_contour=req.safety_contour,
-        safety_status=req.safety_status,
-        is_safe=req.is_safe,
+        safety_status=safety_status,
+        is_safe=is_safe,
     )
     safe_name = _sanitize_filename(req.route_name)
+    headers = {"Content-Disposition": f'attachment; filename="{safe_name}.rtz"'}
+    if not is_safe:
+        headers["X-SeaPath-Route-Status"] = "UNVERIFIED_HAZARD"
     return Response(
         content=xml_content,
         media_type="application/xml",
-        headers={"Content-Disposition": f'attachment; filename="{safe_name}.rtz"'},
+        headers=headers,
     )
 
 

@@ -358,3 +358,158 @@ def test_exhaustive_swath_scan_does_not_abort_early():
     has_leg3_shoal = any(h["depth"] == 0.5 and h.get("r") == 40 for h in hazards)
     assert has_leg3_shoal, "Corridor scan aborted prematurely! Critical shoal in Leg 3 was missed."
     assert any(h["hazard_type"] == "SHALLOW_WATER" for h in hazards)
+
+
+def test_snapping_rejects_interior_of_island_and_restricted_zone():
+    """Verify that points in the interior of dry land or restricted zones are safely rejected."""
+    from backend.main import _snap_to_navigable
+
+    depths = np.full((30, 30), 10.0, dtype=np.float32)
+    # Island from row 5..25, col 10..20
+    depths[5:25, 10:20] = 0.0
+
+    fw = np.ones((30, 30), dtype=np.float32)
+    # Restricted zone from row 2..5, col 2..5
+    fw[2:6, 2:6] = 1000.0
+
+    grid = BathymetricGrid(
+        lat_min=44.0,
+        lat_max=44.03,
+        lon_min=33.0,
+        lon_max=33.03,
+        depths=depths,
+        fairway_weights=fw,
+    )
+
+    # 1. Point deep inside island (row 15, col 15) has no adjacent water
+    sr, sc, s_dist, reason = _snap_to_navigable(15, 15, grid, min_depth=3.0)
+    assert sr is None
+    assert reason == "LAND_INTERIOR"
+
+    # 2. Point deep inside restricted zone (row 3, col 3) has no adjacent unrestricted water
+    sr_res, sc_res, s_dist_res, reason_res = _snap_to_navigable(3, 3, grid, min_depth=3.0)
+    assert sr_res is None
+    assert reason_res == "RESTRICTED_ZONE_INTERIOR"
+
+
+def test_asymmetric_xtd_endcap_swath_detection():
+    """
+    Verify that asymmetric XTD (20m port / 1000m stbd) uses elliptical endcaps
+    and detects hazards within the longitudinal endcap reach on the wide side,
+    while correctly excluding points beyond the narrow side.
+    """
+    # 50x50 grid, 20m depth everywhere (~70m per cell)
+    depths = np.full((50, 50), 20.0, dtype=np.float32)
+    grid = BathymetricGrid(
+        lat_min=44.0,
+        lat_max=44.05,
+        lon_min=33.0,
+        lon_max=33.05,
+        depths=depths,
+    )
+
+    # Route along row 25 from col 15 to col 35 (west to east)
+    lat_25, lon_15 = grid.get_cell_coords(25, 15)
+    lat_25, lon_35 = grid.get_cell_coords(25, 35)
+
+    route_coords = [
+        [lon_15, lat_25],
+        [lon_35, lat_25],
+    ]
+
+    port_xtd_m = 20.0
+    stbd_xtd_m = 1000.0  # Wide starboard side (south in this heading)
+    safety_depth = 4.0
+
+    # 1. Shoal behind start on starboard side (row 27, col 14) -> s < 0, d_xtd > 0
+    # Inside the 510m longitudinal stern endcap!
+    grid.depths[27, 14] = 1.0
+
+    # 2. Shoal ahead of goal on starboard side (row 27, col 36) -> s > seg_len, d_xtd > 0
+    # Inside the 510m longitudinal bow endcap!
+    grid.depths[27, 36] = 1.2
+
+    # 3. Shoal on port side (north) at row 23 (approx 200m offset), far beyond 20m port XTD
+    grid.depths[23, 25] = 1.5
+
+    hazards = scan_corridor_raster_swath(
+        route_coords=route_coords,
+        port_xtd_m=port_xtd_m,
+        stbd_xtd_m=stbd_xtd_m,
+        grid=grid,
+        safety_depth=safety_depth,
+    )
+
+    detected_depths = [h["depth"] for h in hazards]
+    # Both endcap starboard shoals must be detected
+    assert 1.0 in detected_depths, "Stern endcap shoal on starboard side was not detected!"
+    assert 1.2 in detected_depths, "Bow endcap shoal on starboard side was not detected!"
+    # Port shoal beyond 20m must NOT be detected
+    assert 1.5 not in detected_depths, "Shoal beyond port XTD was incorrectly included!"
+
+
+def test_separated_corridor_alarms_by_hazard_type():
+    """Verify verify_ecdis_route_safety separates alarms by hazard type (ALM-04, ALM-06, ALM-08, ALM-09)."""
+    depths = np.full((30, 30), 15.0, dtype=np.float32)
+    fw = np.ones((30, 30), dtype=np.float32)
+    land = np.zeros((30, 30), dtype=bool)
+    nodata = np.zeros((30, 30), dtype=bool)
+
+    # Route row 15, cols 5..25
+    grid = BathymetricGrid(
+        lat_min=44.0,
+        lat_max=44.03,
+        lon_min=33.0,
+        lon_max=33.03,
+        depths=depths,
+        fairway_weights=fw,
+        land_mask=land,
+        nodata_mask=nodata,
+    )
+
+    # 1. Shallow water at (16, 10)
+    grid.depths[16, 10] = 1.0
+    # 2. Restricted zone at (16, 14)
+    grid.fairway_weights[16, 14] = 1000.0
+    # 3. Land at (16, 18)
+    grid.land_mask[16, 18] = True
+    grid.depths[16, 18] = 0.0
+    # 4. NoData at (16, 22)
+    grid.nodata_mask[16, 22] = True
+    grid.depths[16, 22] = 0.0
+
+    lat_mid, lon_start = grid.get_cell_coords(15, 5)
+    lat_mid, lon_end = grid.get_cell_coords(15, 25)
+
+    waypoints = [
+        {"lon": lon_start, "lat": lat_mid, "turn_radius_m": 150.0, "rot_deg_min": 0.0},
+        {"lon": lon_end, "lat": lat_mid, "turn_radius_m": 150.0, "rot_deg_min": 0.0},
+    ]
+    profile = [
+        {"distance_from_start_m": 0.0, "depth": 15.0, "clearance": 12.0},
+        {"distance_from_start_m": 2000.0, "depth": 15.0, "clearance": 12.0},
+    ]
+
+    audit = verify_ecdis_route_safety(
+        waypoints=waypoints,
+        profile=profile,
+        fairways_coll={"type": "FeatureCollection", "features": []},
+        draft=2.0,
+        dynamic_squat=0.5,
+        ukc=0.5,
+        speed_knots=10.0,
+        min_chart_depth_m=3.0,
+        grid=grid,
+        port_xtd_m=200.0,
+        stbd_xtd_m=200.0,
+    )
+
+    alarm_codes = [a["code"] for a in audit["alarms"]]
+    assert "ALM-04-XTD-CORRIDOR-HAZARD" in alarm_codes
+    assert "ALM-06-UNVERIFIED-DATA-COVERAGE" in alarm_codes
+    assert "ALM-08-RESTRICTED-ZONE-VIOLATION" in alarm_codes
+    assert "ALM-09-LAND-TERRESTRIAL-HAZARD" in alarm_codes
+
+    for code in ["ALM-04-XTD-CORRIDOR-HAZARD", "ALM-06-UNVERIFIED-DATA-COVERAGE", "ALM-08-RESTRICTED-ZONE-VIOLATION", "ALM-09-LAND-TERRESTRIAL-HAZARD"]:
+        alm = next(a for a in audit["alarms"] if a["code"] == code)
+        assert alm["severity"] == "CRITICAL"

@@ -162,15 +162,28 @@ def test_api_export_gpx_and_rtz(client):
     # Strict CIRM RTZ 1.1 XSD Validation
     rtz_schema.validate(res_rtz.text)
 
-    # Hazardous route export check
+    # Hazardous route export check: must be rejected with 400 when allow_unverified=False
     payload_haz = dict(payload)
     payload_haz["is_safe"] = False
     payload_haz["safety_status"] = "CRITICAL_HAZARD"
 
+    res_rejected_gpx = client.post("/api/export/gpx", json=payload_haz)
+    assert res_rejected_gpx.status_code == 400
+    assert "Cannot export hazardous passage plan" in res_rejected_gpx.json()["detail"]
+
+    res_rejected_rtz = client.post("/api/export/rtz", json=payload_haz)
+    assert res_rejected_rtz.status_code == 400
+
+    # Hazardous route with allow_unverified=True must succeed with warning annotations and headers
+    payload_haz["allow_unverified"] = True
     res_gpx_haz = client.post("/api/export/gpx", json=payload_haz)
+    assert res_gpx_haz.status_code == 200
+    assert res_gpx_haz.headers.get("X-SeaPath-Route-Status") == "UNVERIFIED_HAZARD"
     assert "CRITICAL WARNING" in res_gpx_haz.text
 
     res_rtz_haz = client.post("/api/export/rtz", json=payload_haz)
+    assert res_rtz_haz.status_code == 200
+    assert res_rtz_haz.headers.get("X-SeaPath-Route-Status") == "UNVERIFIED_HAZARD"
     assert "UNVERIFIED_HAZARD" in res_rtz_haz.text
     assert "CRITICAL WARNING" in res_rtz_haz.text
     # Strict CIRM RTZ 1.1 XSD Validation for hazardous export
@@ -202,3 +215,104 @@ def test_full_grid_restricted_zone_detection():
             break
 
     assert tested, "At least one restricted zone must fall inside grid coverage and be verified"
+
+
+def test_production_fail_closed_health_status(monkeypatch, client):
+    """Verify that in production mode, synthetic bathymetry causes /api/health to fail-closed with 503."""
+    import backend.main as main_mod
+
+    # Case 1: In production with synthetic mode -> 503 Unhealthy
+    monkeypatch.setattr(main_mod, "_IS_PRODUCTION", True)
+    monkeypatch.setattr(main_mod, "is_synthetic_mode", True)
+    res_fail = client.get("/api/health")
+    assert res_fail.status_code == 503
+    d_fail = res_fail.json()
+    assert d_fail["status"] == "unhealthy"
+    assert d_fail["environment"] == "production"
+    assert d_fail["data_status"] == "synthetic_demo"
+    assert d_fail["is_synthetic"] is True
+
+    # Case 2: In production with operational GeoTIFF -> 200 Healthy
+    monkeypatch.setattr(main_mod, "is_synthetic_mode", False)
+    res_ok = client.get("/api/health")
+    assert res_ok.status_code == 200
+    d_ok = res_ok.json()
+    assert d_ok["status"] == "healthy"
+    assert d_ok["environment"] == "production"
+    assert d_ok["data_status"] == "operational"
+    assert d_ok["is_synthetic"] is False
+
+
+def test_multi_waypoint_snapping_metadata(client):
+    """Verify that 3-waypoint passage plans retain independent snap metadata for each waypoint."""
+    payload = {
+        "waypoints": [
+            [33.40, 45.18],  # Near Yevpatoriya harbor approach (snaps to navigable channel)
+            [34.00, 44.00],  # Mid-sea deep water
+            [35.00, 44.20],  # South Crimea deep water
+        ],
+        "draft": 1.2,
+        "speed_knots": 10.0,
+        "ukc": 0.5,
+    }
+    res = client.post("/api/route", json=payload)
+    assert res.status_code == 200
+    data = res.json()
+    props = data["properties"]
+    snap_info = props["waypoint_snapping"]
+
+    assert "start_snapped" in snap_info
+    assert "goal_snapped" in snap_info
+    assert "all_waypoints_snapped" in snap_info
+    assert "snapped_waypoints" in snap_info
+    assert isinstance(snap_info["snapped_waypoints"], list)
+
+    wps = data["waypoints"]
+    assert len(wps) >= 3
+    # Check that initial waypoint preserved its original coordinates
+    if snap_info["start_snapped"]:
+        assert wps[0].get("snap_offset_m", 0.0) > 0.0
+        assert wps[0].get("original_coords") == [33.40, 45.18]
+
+
+def test_server_side_export_rejects_hazardous_passage_plan(client):
+    """Verify server rejects export of passage plans crossing dry land or shoals unless allow_unverified=True."""
+    # Route through dry Crimean landmass
+    land_waypoints = [
+        {"lat": 45.30, "lon": 34.00},
+        {"lat": 45.35, "lon": 34.05},
+    ]
+    payload = {
+        "waypoints": land_waypoints,
+        "draft": 2.0,
+        "speed_knots": 10.0,
+        "ukc": 0.5,
+        "allow_unverified": False,
+    }
+
+    # Must be rejected with 400 Bad Request
+    res_gpx = client.post("/api/export/gpx", json=payload)
+    assert res_gpx.status_code == 400
+    assert "Cannot export hazardous passage plan" in res_gpx.json()["detail"]
+
+    res_rtz = client.post("/api/export/rtz", json=payload)
+    assert res_rtz.status_code == 400
+
+    # With allow_unverified=True, must succeed with UNVERIFIED_HAZARD warning
+    payload["allow_unverified"] = True
+    res_gpx_override = client.post("/api/export/gpx", json=payload)
+    assert res_gpx_override.status_code == 200
+    assert res_gpx_override.headers.get("X-SeaPath-Route-Status") == "UNVERIFIED_HAZARD"
+
+    # Malformed coordinate schema (e.g. invalid latitude 120.0) must fail validation with 422
+    bad_payload = {
+        "waypoints": [
+            {"lat": 120.0, "lon": 34.0},
+            {"lat": 44.0, "lon": 35.0},
+        ],
+        "draft": 2.0,
+        "speed_knots": 10.0,
+        "ukc": 0.5,
+    }
+    res_bad = client.post("/api/export/gpx", json=bad_payload)
+    assert res_bad.status_code == 422

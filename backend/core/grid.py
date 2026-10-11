@@ -108,7 +108,8 @@ class BathymetricGrid:
                 dst_transform, dst_width, dst_height = calculate_default_transform(
                     src.crs, target_crs, src.width, src.height, *src.bounds
                 )
-                destination = np.zeros((dst_height, dst_width), dtype=np.float32)
+                nodata_val = float(src.nodata) if src.nodata is not None else -9999.0
+                destination = np.full((dst_height, dst_width), nodata_val, dtype=np.float32)
                 reproject(
                     source=rasterio.band(src, 1),
                     destination=destination,
@@ -117,10 +118,10 @@ class BathymetricGrid:
                     dst_transform=dst_transform,
                     dst_crs=target_crs,
                     resampling=Resampling.bilinear,
+                    dst_nodata=nodata_val,
                 )
-                nodata_val = src.nodata if src.nodata is not None else -9999.0
-                finite_mask = np.isfinite(destination)
-                nodata_mask = (destination == nodata_val) | (~finite_mask)
+                finite_mask = np.isfinite(destination) & (destination != nodata_val)
+                nodata_mask = (destination == nodata_val) | (~np.isfinite(destination))
                 destination = np.where(finite_mask, destination, 0.0)
                 land_mask = (~nodata_mask) & (destination > 0.0)
                 depths = -destination

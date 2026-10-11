@@ -24,7 +24,8 @@ FROM python:3.12-slim-bookworm AS runner
 WORKDIR /app
 
 ENV PYTHONUNBUFFERED=1 \
-    PYTHONDONTWRITEBYTECODE=1
+    PYTHONDONTWRITEBYTECODE=1 \
+    SEAPATH_ENV=production
 
 # Copy installed site-packages and binaries from builder
 COPY --from=builder /usr/local/lib/python3.12/site-packages /usr/local/lib/python3.12/site-packages
@@ -41,6 +42,6 @@ COPY data /app/data
 EXPOSE 8000
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
-    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/grid')" || exit 1
+    CMD python -c "import urllib.request, json, os; res = urllib.request.urlopen('http://localhost:8000/api/health'); data = json.loads(res.read()); is_prod = os.environ.get('SEAPATH_ENV', 'production').lower() == 'production'; exit(1 if is_prod and (data.get('is_synthetic') or data.get('data_status') != 'operational') else 0)" || exit 1
 
 CMD ["uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "8000"]

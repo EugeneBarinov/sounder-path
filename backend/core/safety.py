@@ -192,9 +192,11 @@ def scan_corridor_raster_swath(
         nx = uy   # Unit normal pointing starboard
         ny = -ux
 
+        r_endcap = 0.5 * (port_xtd_m + stbd_xtd_m)
         max_xtd = max(port_xtd_m, stbd_xtd_m)
-        d_lat_deg = (max_xtd + cell_radius_m + 50.0) / m_per_deg_lat
-        d_lon_deg = (max_xtd + cell_radius_m + 50.0) / m_per_deg_lon
+        max_reach = max(max_xtd, r_endcap) + cell_radius_m + 50.0
+        d_lat_deg = max_reach / m_per_deg_lat
+        d_lon_deg = max_reach / m_per_deg_lon
 
         min_lat = min(lat0, lat1) - d_lat_deg
         max_lat = max(lat0, lat1) + d_lat_deg
@@ -235,26 +237,58 @@ def scan_corridor_raster_swath(
                 s = wx * ux + wy * uy
                 d_xtd = wx * nx + wy * ny  # > 0 starboard, < 0 port
 
-                # Check if cell footprint physically intersects corridor swath
-                is_along = (-(cell_radius_m + 10.0) <= s <= seg_len + cell_radius_m + 10.0)
-                if seg == 0:
-                    is_along = (-port_xtd_m <= s <= seg_len + cell_radius_m)
-                if seg == n - 2:
-                    is_along = (is_along or (0.0 <= s <= seg_len + stbd_xtd_m))
+                r_endcap = 0.5 * (port_xtd_m + stbd_xtd_m)
+                lat_xtd = stbd_xtd_m if d_xtd >= 0.0 else port_xtd_m
 
-                # Footprint collision: cell center within [-(XTD + R_cell), +(XTD + R_cell)]
-                if is_along and (-(port_xtd_m + cell_radius_m) <= d_xtd <= (stbd_xtd_m + cell_radius_m)):
+                # Physical intersection of cell footprint with corridor swath & endcaps
+                is_inside = False
+                if 0.0 <= s <= seg_len:
+                    # Directly along leg
+                    if -port_xtd_m - cell_radius_m <= d_xtd <= stbd_xtd_m + cell_radius_m:
+                        is_inside = True
+                elif s < 0.0:
+                    if seg == 0:
+                        # Stern endcap: semi-ellipse matching generate_safety_corridor_polygon
+                        norm_s = (-s) / max(1.0, r_endcap + cell_radius_m)
+                        norm_d = abs(d_xtd) / max(1.0, lat_xtd + cell_radius_m)
+                        if norm_s * norm_s + norm_d * norm_d <= 1.0:
+                            is_inside = True
+                    else:
+                        # Intermediate vertex junction tolerance
+                        if s >= -cell_radius_m and (-port_xtd_m - cell_radius_m <= d_xtd <= stbd_xtd_m + cell_radius_m):
+                            is_inside = True
+                elif s > seg_len:
+                    if seg == n - 2:
+                        # Bow endcap: semi-ellipse matching generate_safety_corridor_polygon
+                        norm_s = (s - seg_len) / max(1.0, r_endcap + cell_radius_m)
+                        norm_d = abs(d_xtd) / max(1.0, lat_xtd + cell_radius_m)
+                        if norm_s * norm_s + norm_d * norm_d <= 1.0:
+                            is_inside = True
+                    else:
+                        # Intermediate vertex junction tolerance
+                        if s <= seg_len + cell_radius_m and (-port_xtd_m - cell_radius_m <= d_xtd <= stbd_xtd_m + cell_radius_m):
+                            is_inside = True
+
+                if is_inside:
                     visited_cells.add((r, c))
                     depth_val = float(grid.depths[r, c])
                     is_restricted = grid.is_restricted(r, c)
+                    is_nodata = bool(grid.nodata_mask[r, c]) if getattr(grid, "nodata_mask", None) is not None else False
+                    is_land = (depth_val <= 0.0 and not is_nodata) or (getattr(grid, "land_mask", None) is not None and bool(grid.land_mask[r, c]))
 
-                    if depth_val <= safety_depth or is_restricted:
+                    if depth_val <= safety_depth or is_restricted or is_nodata or is_land:
                         if is_restricted:
                             h_type = "RESTRICTED_ZONE"
-                        elif depth_val <= 0.0:
+                            is_unverified = False
+                        elif is_nodata:
+                            h_type = "NODATA_UNVERIFIED"
+                            is_unverified = True
+                        elif is_land:
                             h_type = "LAND"
+                            is_unverified = False
                         else:
                             h_type = "SHALLOW_WATER"
+                            is_unverified = False
 
                         hazards.append({
                             "r": r,
@@ -264,6 +298,7 @@ def scan_corridor_raster_swath(
                             "depth": round(depth_val, 2),
                             "xtd_offset_m": round(d_xtd, 1),
                             "is_restricted": is_restricted,
+                            "is_unverified_coverage": is_unverified,
                             "hazard_type": h_type,
                         })
 
@@ -400,36 +435,67 @@ def verify_ecdis_route_safety(
             safety_depth=safety_depth,
         )
 
-        # Alarm 1: Unverified coverage (XTD extends into uncharted waters)
-        unverified_h = next((h for h in corridor_hazards if h.get("is_unverified_coverage")), None)
+        # Alarm 1: Unverified coverage / NoData (XTD extends into uncharted waters)
+        unverified_h = next((h for h in corridor_hazards if h.get("is_unverified_coverage") or h.get("hazard_type") == "NODATA_UNVERIFIED"), None)
         if unverified_h:
             alarms.append({
                 "severity": "CRITICAL",
                 "code": "ALM-06-UNVERIFIED-DATA-COVERAGE",
                 "title": "Uncharted Waters Inside XTD Safety Corridor",
                 "detail": (
-                    f"XTD safety corridor ({port_xtd_m:.0f}m port / {stbd_xtd_m:.0f}m stbd) extends outside the boundaries "
-                    f"of verified bathymetry coverage near ({unverified_h['lon']:.4f}, {unverified_h['lat']:.4f}). "
-                    f"Navigating within corridor risks unchartered hazards."
+                    f"XTD safety corridor ({port_xtd_m:.0f}m port / {stbd_xtd_m:.0f}m stbd) extends outside verified bathymetry "
+                    f"or into unsurveyed NoData area near ({unverified_h['lon']:.4f}, {unverified_h['lat']:.4f}). "
+                    f"Navigating within corridor risks uncharted hazards."
                 ),
                 "hazard_location": [unverified_h["lon"], unverified_h["lat"]],
             })
 
-        # Alarm 2: Shoals / Navigational hazards inside XTD
-        shoal_hazards = [h for h in corridor_hazards if not h.get("is_unverified_coverage")]
-        if shoal_hazards:
-            worst_h = min(shoal_hazards, key=lambda h: h["depth"])
+        # Alarm 2: Submerged shoals / shallow water inside XTD
+        shallow_hazards = [h for h in corridor_hazards if h.get("hazard_type") == "SHALLOW_WATER"]
+        if shallow_hazards:
+            worst_shallow = min(shallow_hazards, key=lambda h: h["depth"])
             alarms.append({
                 "severity": "CRITICAL",
                 "code": "ALM-04-XTD-CORRIDOR-HAZARD",
                 "title": "Safety Corridor Shoal / Grounding Danger Inside XTD",
                 "detail": (
-                    f"Submerged shoal ({worst_h['depth']:.1f}m <= {safety_depth:.1f}m) detected inside full 2D "
-                    f"XTD safety corridor at ({worst_h['lon']:.4f}, {worst_h['lat']:.4f}), offset {abs(worst_h['xtd_offset_m']):.0f}m "
-                    f"to {'Starboard' if worst_h['xtd_offset_m'] > 0 else 'Port'}. Vessel drifting within allowed XTD will ground."
+                    f"Submerged shoal ({worst_shallow['depth']:.1f}m <= {safety_depth:.1f}m) detected inside full 2D "
+                    f"XTD safety corridor at ({worst_shallow['lon']:.4f}, {worst_shallow['lat']:.4f}), offset {abs(worst_shallow['xtd_offset_m']):.0f}m "
+                    f"to {'Starboard' if worst_shallow['xtd_offset_m'] > 0 else 'Port'}. Vessel drifting within allowed XTD will ground."
                 ),
-                "hazard_depth_m": worst_h["depth"],
-                "hazard_location": [worst_h["lon"], worst_h["lat"]],
+                "hazard_depth_m": worst_shallow["depth"],
+                "hazard_location": [worst_shallow["lon"], worst_shallow["lat"]],
+            })
+
+        # Alarm 3: Prohibited / Restricted navigational areas (RESARE) inside XTD
+        restr_hazards = [h for h in corridor_hazards if h.get("hazard_type") == "RESTRICTED_ZONE"]
+        if restr_hazards:
+            worst_restr = restr_hazards[0]
+            alarms.append({
+                "severity": "CRITICAL",
+                "code": "ALM-08-RESTRICTED-ZONE-VIOLATION",
+                "title": "Prohibited / Restricted Area (RESARE) Inside XTD Corridor",
+                "detail": (
+                    f"XTD safety corridor intersects prohibited or restricted navigational zone at "
+                    f"({worst_restr['lon']:.4f}, {worst_restr['lat']:.4f}), offset {abs(worst_restr['xtd_offset_m']):.0f}m "
+                    f"to {'Starboard' if worst_restr['xtd_offset_m'] > 0 else 'Port'}."
+                ),
+                "hazard_location": [worst_restr["lon"], worst_restr["lat"]],
+            })
+
+        # Alarm 4: Terrestrial land / shoreline penetration inside XTD
+        land_hazards = [h for h in corridor_hazards if h.get("hazard_type") == "LAND"]
+        if land_hazards:
+            worst_land = land_hazards[0]
+            alarms.append({
+                "severity": "CRITICAL",
+                "code": "ALM-09-LAND-TERRESTRIAL-HAZARD",
+                "title": "Terrestrial Landmass / Shoreline Penetration Inside XTD",
+                "detail": (
+                    f"XTD safety corridor penetrates dry land at ({worst_land['lon']:.4f}, {worst_land['lat']:.4f}), "
+                    f"offset {abs(worst_land['xtd_offset_m']):.0f}m to {'Starboard' if worst_land['xtd_offset_m'] > 0 else 'Port'}."
+                ),
+                "hazard_location": [worst_land["lon"], worst_land["lat"]],
             })
 
     is_grid_available = (grid is not None and hasattr(grid, "lonlat_to_cell") and len(active_route_coords) >= 2)
