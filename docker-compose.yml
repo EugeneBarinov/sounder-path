@@ -9,9 +9,11 @@ services:
     restart: unless-stopped
     volumes:
       - ./data:/app/data:ro
+      - seapath-cache:/app/cache
     environment:
       - PYTHONUNBUFFERED=1
       - SEAPATH_ENV=production
+      - SEAPATH_CACHE_DIR=/app/cache/plans
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request, json, os; res = urllib.request.urlopen('http://localhost:8000/api/health'); data = json.loads(res.read()); is_prod = os.environ.get('SEAPATH_ENV', 'production').lower() == 'production'; exit(1 if is_prod and (data.get('is_synthetic') or data.get('data_status') != 'operational') else 0)"]
       interval: 30s
@@ -30,11 +32,19 @@ services:
     restart: "no"
     profiles:
       - demo
+    volumes:
+      - ./data:/app/data:ro
+      - seapath-cache:/app/cache
     environment:
       - PYTHONUNBUFFERED=1
       - SEAPATH_ENV=demo
+      - SEAPATH_CACHE_DIR=/app/cache/plans
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')"]
       interval: 30s
       timeout: 5s
       retries: 3
+
+volumes:
+  seapath-cache:
+

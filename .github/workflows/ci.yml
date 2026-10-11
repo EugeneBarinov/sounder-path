@@ -45,3 +45,37 @@ jobs:
       - name: Verify benchmark execution
         run: |
           python scripts/benchmark.py
+
+  docker-compose-test:
+    name: Docker Compose Clean Startup Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Build and Start Docker Compose (Demo Profile)
+        run: |
+          docker compose --profile demo up -d --build seapath-ecdis-demo
+
+      - name: Wait for healthy service & verify health endpoint
+        run: |
+          for i in {1..30}; do
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8001/api/health || true)
+            if [ "$STATUS" = "200" ]; then
+              echo "Service is healthy! HTTP 200 received."
+              curl -s http://localhost:8001/api/health
+              break
+            fi
+            echo "Waiting for service to start... ($i/30)"
+            sleep 2
+          done
+          if [ "$STATUS" != "200" ]; then
+            echo "Failed: Service did not become healthy."
+            docker compose logs
+            exit 1
+          fi
+
+      - name: Tear down Docker Compose
+        run: |
+          docker compose --profile demo down -v
+

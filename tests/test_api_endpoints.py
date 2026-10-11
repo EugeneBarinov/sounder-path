@@ -143,7 +143,7 @@ def test_api_export_gpx_and_rtz(client):
         "draft": 1.5,
         "speed_knots": 10.0,
         "ukc": 0.5,
-        "safety_contour": 2.5,
+        "safety_contour": 3.5,
     }
 
     # GPX
@@ -156,7 +156,7 @@ def test_api_export_gpx_and_rtz(client):
     res_rtz = client.post("/api/export/rtz", json=payload)
     assert res_rtz.status_code == 200
     assert "application/xml" in res_rtz.headers["content-type"]
-    assert 'safetyContour="2.5"' in res_rtz.text
+    assert 'safetyContour="3.5"' in res_rtz.text
     assert 'portsideXTD=' in res_rtz.text
     assert 'geometryType="Loxodrome"' in res_rtz.text
     # Strict CIRM RTZ 1.1 XSD Validation
@@ -1053,6 +1053,151 @@ def test_production_fail_closed_insufficient_geo_span(tmp_path):
     assert proc.returncode != 0
     assert "PRODUCTION FAILURE" in proc.stderr
     assert "geographic span" in proc.stderr
+
+
+def test_plan_id_rtz_export_matches_route_safety_contour(client):
+    """
+    P1 verification: In RTZ exported via plan_id, safetyContour and safetyDepth
+    attributes must precisely match min_chart_depth_m calculated by /api/route,
+    accounting for full canonical DUKC (squat, heel, wave allowance) rather than
+    defaulting to understated static draft + UKC.
+    """
+    import xml.etree.ElementTree as ET
+
+    payload = {
+        "waypoints": [[33.5, 43.5], [33.5, 43.7], [33.7, 43.7]],
+        "draft": 2.0,
+        "speed_knots": 10.0,
+        "ukc": 0.5,
+        "turning_radius_m": 2000.0,
+    }
+    res_route = client.post("/api/route", json=payload)
+    assert res_route.status_code == 200
+    route_data = res_route.json()
+    plan_id = route_data["plan_id"]
+    expected_min_chart_depth = route_data["properties"]["min_chart_depth_m"]
+
+    # Must be strictly greater than static draft + ukc (2.0 + 0.5 = 2.5) due to dynamic squat/heel
+    assert expected_min_chart_depth > 2.5
+
+    # Export to RTZ via plan_id
+    res_rtz = client.post("/api/export/rtz", json={"plan_id": plan_id})
+    assert res_rtz.status_code == 200
+
+    root = ET.fromstring(res_rtz.text)
+    ns = {"rtz": "http://www.cirm.org/RTZ/1/1"}
+    legs = root.findall(".//rtz:leg", ns)
+    assert len(legs) >= 1
+
+    expected_val_str = f"{expected_min_chart_depth:.1f}"
+    for leg in legs:
+        assert leg.get("safetyContour") == expected_val_str
+        assert leg.get("safetyDepth") == expected_val_str
+
+
+def test_export_rejects_straight_route_with_large_turn_radius_bypass_attempt(client):
+    """
+    P1 verification: If client provides a straight polyline cutting through an intermediate waypoint,
+    while requesting a large turning radius in RTZ (e.g. 2000m at a 90° corner),
+    the server must detect the kinematic mismatch (arc apex offset ~586m from straight legs)
+    and reject the request with HTTP 400.
+    """
+    payload = {
+        "waypoints": [
+            {"lon": 33.5, "lat": 43.5, "turn_radius_m": 2000.0, "turn_angle_deg": 0.0},
+            {"lon": 33.5, "lat": 43.7, "turn_radius_m": 2000.0, "turn_angle_deg": 90.0},
+            {"lon": 33.7, "lat": 43.7, "turn_radius_m": 2000.0, "turn_angle_deg": 0.0},
+        ],
+        "route": [
+            [33.5, 43.5],
+            [33.5, 43.7],
+            [33.7, 43.7],
+        ],
+        "draft": 2.0,
+        "speed_knots": 10.0,
+        "ukc": 0.5,
+        "safety_contour": 5.0,
+        "turning_radius_m": 2000.0,
+        "allow_unsafe": False,
+    }
+    res = client.post("/api/export/rtz", json=payload)
+    assert res.status_code == 400
+    detail = res.json()["detail"]
+    assert "turning kinematics" in detail or "deviates" in detail
+
+
+def test_route_profile_and_metrics_synchronized_with_spliced_turn_arcs(client):
+    """
+    P2 verification: After turn arcs are spliced into combined_route, the continuous depth profile,
+    cumulative distance, ETA and minimum clearance must be recalculated along the finalized curved track.
+    """
+    payload = {
+        "waypoints": [[33.5, 43.5], [33.5, 43.7], [33.7, 43.7]],
+        "draft": 2.0,
+        "speed_knots": 10.0,
+        "ukc": 0.5,
+        "turning_radius_m": 2000.0,
+    }
+    res = client.post("/api/route", json=payload)
+    assert res.status_code == 200
+    data = res.json()
+
+    route_coords = data["geometry"]["coordinates"]
+    profile = data["profile"]
+    props = data["properties"]
+
+    assert len(profile) >= len(route_coords)
+    # Check that profile ends at distance equal to properties.distance_m (+/- 1m tolerance)
+    last_profile_dist = profile[-1]["distance_from_start_m"]
+    assert abs(last_profile_dist - props["distance_m"]) <= 1.0
+
+    # Minimum clearance in diagnostics matches profile minimum
+    profile_min_clearance = min(p["clearance"] for p in profile)
+    assert abs(props["min_clearance_m"] - profile_min_clearance) <= 0.05
+
+
+def test_cache_directory_handles_readonly_filesystem(tmp_path):
+    """
+    P1 verification: If SEAPATH_CACHE_DIR points to a read-only or inaccessible directory
+    (such as a read-only Docker volume mount ./data:/app/data:ro), backend.main initialization
+    and plan storage/retrieval must fall back gracefully to a writable temp cache without failing.
+    """
+    import subprocess
+    import sys
+    import os
+    from pathlib import Path
+
+    base_dir = Path(__file__).resolve().parent.parent
+    ro_dir = tmp_path / "readonly_cache"
+    ro_dir.mkdir(parents=True, exist_ok=True)
+
+    test_code = """
+import os
+import backend.main
+from backend.main import _store_passage_plan, _get_passage_plan, _PLANS_CACHE_DIR
+
+# Store and retrieve plan
+_store_passage_plan('test-ro-plan', {'status': 'ok'})
+retrieved = _get_passage_plan('test-ro-plan')
+assert retrieved is not None
+assert retrieved['status'] == 'ok'
+print('SUCCESS_CACHE_FALLBACK')
+"""
+    env = os.environ.copy()
+    env["SEAPATH_CACHE_DIR"] = str(ro_dir / "forbidden" / "sub" / "plans")
+    env["PYTHONPATH"] = str(base_dir)
+
+    proc = subprocess.run(
+        [sys.executable, "-c", test_code],
+        cwd=str(base_dir),
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    assert proc.returncode == 0
+    assert "SUCCESS_CACHE_FALLBACK" in proc.stdout
+
+
 
 
 

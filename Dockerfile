@@ -39,6 +39,8 @@ COPY backend /app/backend
 COPY frontend /app/frontend
 COPY data /app/data
 
+RUN mkdir -p /app/cache/plans
+
 EXPOSE 8000
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \

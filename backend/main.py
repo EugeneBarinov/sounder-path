@@ -613,8 +613,23 @@ def get_depth_at(lon: float, lat: float):
 # ---------------------------------------------------------------------------
 # Server-Side Passage Plan Registry (Cache for export validation)
 # ---------------------------------------------------------------------------
-_PLANS_CACHE_DIR = _BASE_DIR / "data" / "cache" / "plans"
-_PLANS_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+_CACHE_DIR_ENV = os.getenv("SEAPATH_CACHE_DIR")
+if _CACHE_DIR_ENV:
+    _candidate_cache = Path(_CACHE_DIR_ENV)
+else:
+    _candidate_cache = _BASE_DIR / ".cache" / "plans"
+
+try:
+    _candidate_cache.mkdir(parents=True, exist_ok=True)
+    _test_file = _candidate_cache / ".write_test"
+    _test_file.touch()
+    _test_file.unlink(missing_ok=True)
+    _PLANS_CACHE_DIR = _candidate_cache
+except Exception:
+    import tempfile
+    _PLANS_CACHE_DIR = Path(tempfile.gettempdir()) / "seapath_cache" / "plans"
+    _PLANS_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
 _SAVED_PLANS: "OrderedDict[str, Dict[str, Any]]" = OrderedDict()
 
 def _store_passage_plan(plan_id: str, plan_data: Dict[str, Any]) -> None:
@@ -931,6 +946,52 @@ def calculate_route(req: RouteRequest):
     if turn_geoms_list:
         combined_route = splice_turn_arcs_into_route(combined_route, turn_geoms_list)
 
+    # Rebuild synchronized continuous depth soundings profile and metrics along finalized combined_route
+    updated_profile: List[Dict[str, Any]] = []
+    final_cum_dist_m = 0.0
+
+    for seg_idx in range(len(combined_route)):
+        lon0, lat0 = combined_route[seg_idx]
+
+        if seg_idx < len(combined_route) - 1:
+            lon1, lat1 = combined_route[seg_idx + 1]
+            seg_len_m = calculate_distance_m(lat0, lon0, lat1, lon1)
+
+            r0, c0 = full_grid.lonlat_to_cell(lon0, lat0)
+            r1, c1 = full_grid.lonlat_to_cell(lon1, lat1)
+            depths_along = full_grid.sample_depth_along_segment(r0, c0, r1, c1)
+            n_samples = len(depths_along)
+
+            for k, d in enumerate(depths_along):
+                fraction = k / max(1, n_samples - 1)
+                sample_dist = final_cum_dist_m + seg_len_m * fraction
+                sample_lat = lat0 + (lat1 - lat0) * fraction
+                sample_lon = lon0 + (lon1 - lon0) * fraction
+                clearance_val = (d + req.tide_offset_m) - (search_dynamic_draft + req.ukc)
+                updated_profile.append({
+                    "distance_from_start_m": round(sample_dist, 1),
+                    "depth": round(float(d), 2),
+                    "clearance": round(float(clearance_val), 2),
+                    "lat": round(sample_lat, 6),
+                    "lon": round(sample_lon, 6),
+                })
+            final_cum_dist_m += seg_len_m
+        elif len(combined_route) == 1:
+            r0, c0 = full_grid.lonlat_to_cell(lon0, lat0)
+            d = full_grid.get_depth(r0, c0)
+            clearance_val = (d + req.tide_offset_m) - (search_dynamic_draft + req.ukc)
+            updated_profile.append({
+                "distance_from_start_m": 0.0,
+                "depth": round(float(d), 2),
+                "clearance": round(float(clearance_val), 2),
+                "lat": round(lat0, 6),
+                "lon": round(lon0, 6),
+            })
+
+    if updated_profile:
+        combined_profile = updated_profile
+        cum_dist_m = final_cum_dist_m
+
     total_dist_nm = round(cum_dist_m / 1852.0, 2)
     eta_hours = round(total_dist_nm / req.speed_knots, 2) if req.speed_knots > 0 else None
     min_clearance = min((p["clearance"] for p in combined_profile), default=0.0)
@@ -1070,6 +1131,7 @@ def calculate_route(req: RouteRequest):
     }
 
     _store_passage_plan(plan_id, {
+        "plan_id": plan_id,
         "waypoints": combined_waypoints,
         "route": combined_route,
         "profile": combined_profile,
@@ -1088,6 +1150,9 @@ def calculate_route(req: RouteRequest):
         "strict_dukc": req.strict_dukc,
         "port_xtd_m": req.port_xtd_m,
         "stbd_xtd_m": req.stbd_xtd_m,
+        "min_chart_depth_m": min_required_chart_depth,
+        "safety_contour": min_required_chart_depth,
+        "properties": diagnostics,
         "is_safe": safety_audit["is_safe"],
         "safety_status": safety_audit["status"],
         "safety_check": safety_audit,
@@ -1267,17 +1332,18 @@ def _verify_export_safety(
     strict_dukc: bool = True,
     is_safe_claim: Optional[bool] = None,
     safety_status_claim: Optional[str] = None,
-) -> Tuple[bool, str, List[str]]:
+) -> Tuple[bool, str, List[str], float]:
     """
     Performs server-side ECDIS safety verification on passage plan prior to export:
     - Calculates canonical search budget (squat, heel, wave allowance, tide offset).
     - Prevents client-supplied safety_contour from weakening canonical minimum depth threshold.
     - Rejects synthetic demonstration bathymetry as uncertified for navigation.
     - Samples depths along route track and evaluates full 2D corridor (XTD) area swath.
-    Returns (is_safe, safety_status, alarm_codes).
+    Returns (is_safe, safety_status, alarm_codes, effective_safety_depth).
     """
     if full_grid.is_synthetic or is_synthetic_mode or safety_status_claim == "DEMO_UNVERIFIED":
-        return False, "DEMO_UNVERIFIED", ["ALM-10-SYNTHETIC-DATA-NON-NAVIGABLE"]
+        fallback_depth = safety_contour if (safety_contour is not None and math.isfinite(safety_contour) and safety_contour > 0.0) else (draft + ukc)
+        return False, "DEMO_UNVERIFIED", ["ALM-10-SYNTHETIC-DATA-NON-NAVIGABLE"], float(fallback_depth)
 
     canonical_budget = compute_search_budget(
         draft_m=draft,
@@ -1364,7 +1430,7 @@ def _verify_export_safety(
         status = "SAFE_PASSED"
 
     alarm_codes = [a["code"] for a in safety_audit.get("alarms", [])]
-    return is_safe, status, alarm_codes
+    return is_safe, status, alarm_codes, effective_safety_depth
 
 
 def _prepare_export_data(req: ExportRouteRequest) -> Tuple[List[Dict[str, Any]], List[List[float]], Dict[str, Any], bool, str, List[str]]:
@@ -1391,7 +1457,11 @@ def _prepare_export_data(req: ExportRouteRequest) -> Tuple[List[Dict[str, Any]],
         is_safe_claim = plan.get("is_safe")
         safety_status_claim = plan.get("safety_status")
         # Plan-based export enforces server-computed safety contour
-        safety_contour_eval = plan.get("properties", {}).get("min_chart_depth_m")
+        safety_contour_eval = (
+            plan.get("safety_contour")
+            or plan.get("min_chart_depth_m")
+            or plan.get("properties", {}).get("min_chart_depth_m")
+        )
     else:
         # Validate waypoints/route coupling
         _validate_route_waypoints_coupling(req.waypoints, req.route)
@@ -1405,6 +1475,53 @@ def _prepare_export_data(req: ExportRouteRequest) -> Tuple[List[Dict[str, Any]],
         safety_status_claim = req.safety_status
         if req.route and len(req.route) >= 2:
             route_coords = req.route
+            # Verify turn arc kinematics coupling:
+            # If any intermediate waypoint has a turning radius that causes an arc departure,
+            # ensure that req.route actually conforms to the circular turn arc rather than
+            # cutting through the corner in a straight line to bypass safety checks.
+            for i in range(1, len(wps_dicts) - 1):
+                wp_cur = wps_dicts[i]
+                wp_prev = wps_dicts[i - 1]
+                wp_next = wps_dicts[i + 1]
+                raw_r = wp_cur.get("turn_radius_m")
+                act_r = float(raw_r) if (raw_r is not None and float(raw_r) > 10.0) else float(req.turning_radius_m or 150.0)
+                wp_cur["turn_radius_m"] = act_r
+
+                geom = calculate_turn_arc_geometry(
+                    prev_lon=wp_prev["lon"],
+                    prev_lat=wp_prev["lat"],
+                    wp_lon=wp_cur["lon"],
+                    wp_lat=wp_cur["lat"],
+                    next_lon=wp_next["lon"],
+                    next_lat=wp_next["lat"],
+                    radius_m=act_r,
+                    speed_knots=req.speed_knots,
+                )
+                if geom and geom.get("arc_coordinates"):
+                    arc_pts = geom["arc_coordinates"]
+                    apex = arc_pts[len(arc_pts) // 2]
+                    delta_apex = calculate_distance_m(wp_cur["lat"], wp_cur["lon"], apex[1], apex[0])
+                    if delta_apex >= 30.0:
+                        d_apex_to_route = min(
+                            calculate_distance_m(p[1], p[0], apex[1], apex[0])
+                            for p in req.route
+                        )
+                        max_allowed_dev = max(50.0, 0.35 * delta_apex)
+                        if d_apex_to_route > max_allowed_dev:
+                            raise HTTPException(
+                                status_code=400,
+                                detail=(
+                                    f"Client route geometry does not conform to waypoint {i + 1} turning kinematics "
+                                    f"(radius {act_r:.0f}m, angle {geom['turn_angle_deg']}°): route deviates by "
+                                    f"{d_apex_to_route:.1f}m from required turn arc (allowed: <= {max_allowed_dev:.1f}m). "
+                                    "Omit 'route' to auto-generate certified filleted trajectory, or supply a route conforming to turn arcs."
+                                )
+                            )
+                    wp_cur["effective_turn_radius_m"] = geom["effective_radius_m"]
+                    if not geom.get("is_feasible", True):
+                        wp_cur["maneuver_feasible"] = False
+                        is_safe_claim = False
+                        safety_status_claim = "CRITICAL_HAZARD"
         else:
             # Construct real physical navigation track with circular fillet turn arcs
             route_coords, turn_geoms = construct_filleted_path(
@@ -1436,7 +1553,7 @@ def _prepare_export_data(req: ExportRouteRequest) -> Tuple[List[Dict[str, Any]],
         safety_status_claim = req.safety_status
         safety_contour_eval = req.safety_contour
 
-    is_safe, safety_status, alarm_codes = _verify_export_safety(
+    is_safe, safety_status, alarm_codes, verified_safety_depth = _verify_export_safety(
         waypoints=wps_dicts,
         route_coords=route_coords,
         draft=draft,
@@ -1460,7 +1577,7 @@ def _prepare_export_data(req: ExportRouteRequest) -> Tuple[List[Dict[str, Any]],
         "speed_knots": speed_knots,
         "ukc": ukc,
         "route_name": req.route_name or "SeaPath_Passage_Plan",
-        "safety_contour": safety_contour_eval,
+        "safety_contour": verified_safety_depth,
     }
     return wps_dicts, route_coords, params, is_safe, safety_status, alarm_codes
 
