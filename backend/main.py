@@ -11,9 +11,10 @@ from typing import Optional, Tuple, List, Dict, Any
 import uuid
 
 from fastapi import FastAPI, HTTPException, Request, Response
-from fastapi.responses import FileResponse
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator, ConfigDict
 
 from backend.core.grid import BathymetricGrid
 from backend.core.router import Router
@@ -35,6 +36,38 @@ app = FastAPI(
     version="1.0.0",
 )
 
+@app.exception_handler(RequestValidationError)
+async def request_validation_exception_handler(request: Request, exc: RequestValidationError):
+    """
+    Handle validation errors, ensuring non-finite numbers (NaN, Inf) and exception objects
+    in error details do not crash the JSON serializer when returning 422 Unprocessable Entity.
+    """
+    sanitized_errors = []
+    for err in exc.errors():
+        err_dict = {}
+        for k, v in err.items():
+            if k == "ctx" and isinstance(v, dict):
+                err_dict[k] = {ck: str(cv) if isinstance(cv, (Exception, type)) else cv for ck, cv in v.items()}
+            elif k == "input":
+                if isinstance(v, float) and (math.isnan(v) or math.isinf(v)):
+                    err_dict[k] = str(v)
+                elif isinstance(v, dict):
+                    err_dict[k] = {
+                        dk: str(dv) if isinstance(dv, float) and (math.isnan(dv) or math.isinf(dv)) else dv
+                        for dk, dv in v.items()
+                    }
+                else:
+                    err_dict[k] = v
+            else:
+                err_dict[k] = v
+        sanitized_errors.append(err_dict)
+    return JSONResponse(
+        status_code=422,
+        content={"detail": sanitized_errors},
+    )
+
+
+
 # ---------------------------------------------------------------------------
 # Development middleware: Prevent client-side caching of local static assets
 # ---------------------------------------------------------------------------
@@ -53,17 +86,36 @@ async def no_cache_header_middleware(request: Request, call_next):
 # Bathymetric Data Initialization
 # ---------------------------------------------------------------------------
 _BASE_DIR = Path(__file__).resolve().parent.parent
-_RAW_DATA_DIR = _BASE_DIR / "data" / "raw"
+_DATA_DIR_OVERRIDE = os.environ.get("SEAPATH_DATA_DIR")
+_RAW_DATA_DIR = Path(_DATA_DIR_OVERRIDE) if _DATA_DIR_OVERRIDE else (_BASE_DIR / "data" / "raw")
 _GEOTIFF_PATH_ENV = os.environ.get("SEAPATH_GEOTIFF_PATH")
-if _GEOTIFF_PATH_ENV:
-    _GEOTIFF_PATH = Path(_GEOTIFF_PATH_ENV)
-elif (_RAW_DATA_DIR / "E8_2024.tif").exists():
-    _GEOTIFF_PATH = _RAW_DATA_DIR / "E8_2024.tif"
-elif (_RAW_DATA_DIR / "operational_sample.tif").exists():
-    _GEOTIFF_PATH = _RAW_DATA_DIR / "operational_sample.tif"
-else:
-    _GEOTIFF_PATH = _RAW_DATA_DIR / "E8_2024.tif"
 _IS_PRODUCTION = os.environ.get("SEAPATH_ENV", "").strip().lower() == "production"
+
+if _IS_PRODUCTION:
+    # Production Fail-Closed Policy:
+    # 1. Automatic fallback to lightweight test sample (operational_sample.tif) is STRICTLY PROHIBITED.
+    # 2. If SEAPATH_GEOTIFF_PATH is set explicitly to operational_sample.tif, reject it as test-only data.
+    # 3. Requires full operational dataset E8_2024.tif or a dedicated verified production raster.
+    if _GEOTIFF_PATH_ENV:
+        candidate_path = Path(_GEOTIFF_PATH_ENV)
+        if candidate_path.name == "operational_sample.tif":
+            raise RuntimeError(
+                "[PRODUCTION FAILURE] Critical: 'operational_sample.tif' is a lightweight CI/test sample "
+                "and is strictly prohibited in production environment. Full regional bathymetry (e.g. E8_2024.tif) is required."
+            )
+        _GEOTIFF_PATH = candidate_path
+    else:
+        _GEOTIFF_PATH = _RAW_DATA_DIR / "E8_2024.tif"
+else:
+    # Development / Test / CI environment
+    if _GEOTIFF_PATH_ENV:
+        _GEOTIFF_PATH = Path(_GEOTIFF_PATH_ENV)
+    elif (_RAW_DATA_DIR / "E8_2024.tif").exists():
+        _GEOTIFF_PATH = _RAW_DATA_DIR / "E8_2024.tif"
+    elif (_RAW_DATA_DIR / "operational_sample.tif").exists():
+        _GEOTIFF_PATH = _RAW_DATA_DIR / "operational_sample.tif"
+    else:
+        _GEOTIFF_PATH = _RAW_DATA_DIR / "E8_2024.tif"
 
 is_synthetic_mode = False
 if _GEOTIFF_PATH.exists():
@@ -149,6 +201,7 @@ except Exception as _err:
 # Models
 # ---------------------------------------------------------------------------
 class RouteRequest(BaseModel):
+    model_config = ConfigDict(allow_inf_nan=False, extra="ignore")
     start_lon: Optional[float] = Field(default=None, description="Departure longitude in decimal degrees")
     start_lat: Optional[float] = Field(default=None, description="Departure latitude in decimal degrees")
     goal_lon: Optional[float] = Field(default=None, description="Destination longitude in decimal degrees")
@@ -166,14 +219,8 @@ class RouteRequest(BaseModel):
     wave_height_m: float = Field(default=0.0, ge=0.0, le=5.0, description="Significant wave height Hs in meters")
     gm_m: float = Field(default=1.5, ge=0.5, le=4.0, description="Transverse metacentric height GM in meters")
     # -- Параметры единого бюджета поиска (см. dukc.compute_search_budget) --
-    # beam_m=None → оценка max(3.0, 2.5*draft) внутри calculate_turning_heel.
-    # Явно заданный бим точнее оценки и всегда в приоритете.
     beam_m: Optional[float] = Field(default=None, description="Vessel beam in meters (None = estimate 2.5*draft)")
-    # exposed_waters=False → укрытая вода, волна 0.35*Hs; True → открытое
-    # море, 0.50*Hs по PIANC. Дефолт sheltered, чтобы не ужесточать резко.
     exposed_waters: bool = Field(default=False, description="Exposed coastal waters flag for wave allowance (PIANC 0.50*Hs vs 0.35*Hs)")
-    # strict_dukc=True → порог поиска включает squat+крен+волну (безопасно).
-    # False → legacy только squat, для A/B-сравнения и отката.
     strict_dukc: bool = Field(default=True, description="Use full PIANC search budget (squat+heel+wave) instead of legacy squat-only")
 
     @field_validator("waypoints")
@@ -185,16 +232,22 @@ class RouteRequest(BaseModel):
             for idx, pt in enumerate(v):
                 if not isinstance(pt, (list, tuple)) or len(pt) != 2:
                     raise ValueError(f"Waypoint {idx + 1} must be an exact [lon, lat] coordinate pair.")
+                for coord in pt:
+                    if not math.isfinite(float(coord)):
+                        raise ValueError(f"Waypoint {idx + 1} coordinate must be finite.")
         return v
 
 
 class ExportWaypoint(BaseModel):
+    model_config = ConfigDict(allow_inf_nan=False, extra="ignore")
     lat: Optional[float] = None
     latitude: Optional[float] = None
     lon: Optional[float] = None
     lng: Optional[float] = None
     longitude: Optional[float] = None
     turn_radius_m: Optional[float] = Field(default=150.0, ge=0.0)
+    turn_angle_deg: Optional[float] = Field(default=0.0)
+    maneuver_feasible: Optional[bool] = Field(default=True)
     rot_deg_min: Optional[float] = Field(default=0.0)
     wop_distance_m: Optional[float] = Field(default=0.0)
     leg_bearing_deg: Optional[float] = Field(default=0.0)
@@ -206,35 +259,53 @@ class ExportWaypoint(BaseModel):
     depth_at_waypoint: Optional[float] = None
     depth: Optional[float] = None
     clearance: Optional[float] = None
+    heel_sinkage_m: Optional[float] = Field(default=0.0)
+    heel_angle_deg: Optional[float] = Field(default=0.0)
+    snap_offset_m: Optional[float] = None
+    snap_reason: Optional[str] = None
+    original_coords: Optional[List[float]] = None
 
     def get_lat(self) -> float:
         v = self.lat if self.lat is not None else self.latitude
         if v is None:
             raise ValueError("Waypoint latitude is required.")
-        return float(v)
+        fv = float(v)
+        if not math.isfinite(fv):
+            raise ValueError("Waypoint latitude must be a finite number.")
+        return fv
 
     def get_lon(self) -> float:
         v = self.lon if self.lon is not None else (self.lng if self.lng is not None else self.longitude)
         if v is None:
             raise ValueError("Waypoint longitude is required.")
-        return float(v)
+        fv = float(v)
+        if not math.isfinite(fv):
+            raise ValueError("Waypoint longitude must be a finite number.")
+        return fv
 
     @field_validator("latitude", "lat")
     @classmethod
     def check_lat(cls, v: Optional[float]) -> Optional[float]:
-        if v is not None and not (-90.0 <= v <= 90.0):
-            raise ValueError("Latitude out of valid geographic range [-90, 90].")
+        if v is not None:
+            if not math.isfinite(v):
+                raise ValueError("Latitude must be a finite number.")
+            if not (-90.0 <= v <= 90.0):
+                raise ValueError("Latitude out of valid geographic range [-90, 90].")
         return v
 
     @field_validator("longitude", "lng", "lon")
     @classmethod
     def check_lon(cls, v: Optional[float]) -> Optional[float]:
-        if v is not None and not (-180.0 <= v <= 180.0):
-            raise ValueError("Longitude out of valid geographic range [-180, 180].")
+        if v is not None:
+            if not math.isfinite(v):
+                raise ValueError("Longitude must be a finite number.")
+            if not (-180.0 <= v <= 180.0):
+                raise ValueError("Longitude out of valid geographic range [-180, 180].")
         return v
 
 
 class ExportRouteRequest(BaseModel):
+    model_config = ConfigDict(allow_inf_nan=False, extra="ignore")
     plan_id: Optional[str] = None
     waypoints: Optional[List[ExportWaypoint]] = None
     route: List[List[float]] = Field(default_factory=list)
@@ -254,6 +325,19 @@ class ExportRouteRequest(BaseModel):
     gm_m: Optional[float] = None
     exposed_waters: bool = False
     strict_dukc: bool = True
+
+    @field_validator("safety_contour", "draft", "speed_knots", "ukc", "block_coefficient", "tide_offset_m", "wave_height_m", "turning_radius_m", mode="before")
+    @classmethod
+    def validate_finite_numbers(cls, v: Any) -> Any:
+        if v is not None:
+            try:
+                fv = float(v)
+                if not math.isfinite(fv):
+                    raise ValueError("Numeric values must be finite (NaN and Inf are forbidden).")
+                return fv
+            except (TypeError, ValueError) as err:
+                raise ValueError(f"Invalid numeric value: {err}")
+        return v
 
     @model_validator(mode="after")
     def validate_plan_or_waypoints(self):
@@ -1011,17 +1095,40 @@ def _validate_route_waypoints_coupling(
         return min_dev, proj_dist_along
 
     last_proj_dist = -1.0
+    num_wp = len(waypoints)
     for idx, wp in enumerate(waypoints):
         wp_lat = wp.get_lat()
         wp_lon = wp.get_lon()
         min_dev, proj_dist = project_onto_route(wp_lon, wp_lat)
-        if min_dev > max_lateral_dev_m:
+
+        # Dynamic kinematic tolerance for course alteration / turn waypoints (fillet arc kinematics)
+        allowed_dev = max_lateral_dev_m
+        if 0 < idx < num_wp - 1:
+            # Kinematic fillet arc offset: Δ = R * (1 / cos(turn_angle / 2) - 1)
+            turn_r = float(wp.turn_radius_m or 150.0)
+            t_angle = float(wp.turn_angle_deg or 0.0)
+            if t_angle <= 0.0:
+                # Infer turn angle from surrounding waypoints
+                prev_wp = waypoints[idx - 1]
+                next_wp = waypoints[idx + 1]
+                b_in = calculate_bearing_deg(prev_wp.get_lat(), prev_wp.get_lon(), wp_lat, wp_lon)
+                b_out = calculate_bearing_deg(wp_lat, wp_lon, next_wp.get_lat(), next_wp.get_lon())
+                t_angle = abs((b_out - b_in + 180.0) % 360.0 - 180.0)
+
+            if t_angle >= 1.0 and turn_r > 10.0:
+                half_ang_rad = math.radians(min(170.0, t_angle) / 2.0)
+                cos_val = math.cos(half_ang_rad)
+                if cos_val > 0.05:
+                    kinematic_offset = turn_r * (1.0 / cos_val - 1.0)
+                    allowed_dev = max(allowed_dev, kinematic_offset + 35.0)
+
+        if min_dev > allowed_dev:
             raise HTTPException(
                 status_code=400,
-                detail=f"Passage plan geometry mismatch: Waypoint WP{idx + 1} ({wp_lon:.4f}, {wp_lat:.4f}) deviates by {min_dev:.1f}m from route track (> {max_lateral_dev_m:.0f}m tolerance)."
+                detail=f"Passage plan geometry mismatch: Waypoint WP{idx + 1} ({wp_lon:.4f}, {wp_lat:.4f}) deviates by {min_dev:.1f}m from route track (> {allowed_dev:.0f}m tolerance)."
             )
-        # Monotonic progression with 25m tolerance for fillet arc tangent points
-        if proj_dist < last_proj_dist - 25.0:
+        # Monotonic progression with tolerance for fillet arc tangent points
+        if proj_dist < last_proj_dist - 35.0:
             raise HTTPException(
                 status_code=400,
                 detail=f"Passage plan geometry mismatch: Waypoint WP{idx + 1} appears out of order along route track (non-monotonic progression)."
@@ -1055,7 +1162,7 @@ def _verify_export_safety(
     - Samples depths along route track and evaluates full 2D corridor (XTD) area swath.
     Returns (is_safe, safety_status, alarm_codes).
     """
-    if full_grid.is_synthetic or is_synthetic_mode:
+    if full_grid.is_synthetic or is_synthetic_mode or safety_status_claim == "DEMO_UNVERIFIED":
         return False, "DEMO_UNVERIFIED", ["ALM-10-SYNTHETIC-DATA-NON-NAVIGABLE"]
 
     canonical_budget = compute_search_budget(
@@ -1072,7 +1179,12 @@ def _verify_export_safety(
         strict_dukc=strict_dukc,
     )
     canonical_min_depth = canonical_budget["min_chart_depth_m"]
-    effective_safety_depth = max(safety_contour or 0.0, canonical_min_depth)
+    # Guard against NaN / Inf / non-positive safety_contour
+    if safety_contour is not None and math.isfinite(safety_contour) and safety_contour > 0.0:
+        effective_safety_depth = max(float(safety_contour), canonical_min_depth)
+    else:
+        effective_safety_depth = canonical_min_depth
+
     dynamic_squat = canonical_budget["dynamic_squat_m"]
     search_dynamic_draft = canonical_budget["dynamic_draft_m"]
     effective_ukc = canonical_budget["effective_ukc_m"]
@@ -1123,7 +1235,19 @@ def _verify_export_safety(
 
     client_flagged_unsafe = (is_safe_claim is False) or (safety_status_claim == "CRITICAL_HAZARD")
     is_safe = bool(safety_audit["is_safe"] and not client_flagged_unsafe)
-    status = "SAFE_PASSED" if is_safe else "CRITICAL_HAZARD"
+
+    # Preserve WARNING_ADVISORY status instead of overwriting with SAFE_PASSED
+    if not is_safe:
+        status = "CRITICAL_HAZARD"
+    elif (
+        safety_audit.get("status") == "WARNING_ADVISORY"
+        or safety_status_claim == "WARNING_ADVISORY"
+        or any(a.get("severity") == "WARNING" for a in safety_audit.get("alarms", []))
+    ):
+        status = "WARNING_ADVISORY"
+    else:
+        status = "SAFE_PASSED"
+
     alarm_codes = [a["code"] for a in safety_audit.get("alarms", [])]
     return is_safe, status, alarm_codes
 
@@ -1151,6 +1275,8 @@ def _prepare_export_data(req: ExportRouteRequest) -> Tuple[List[Dict[str, Any]],
         strict_dukc = plan.get("strict_dukc", True)
         is_safe_claim = plan.get("is_safe")
         safety_status_claim = plan.get("safety_status")
+        # Plan-based export enforces server-computed safety contour
+        safety_contour_eval = plan.get("properties", {}).get("min_chart_depth_m")
     else:
         # Validate waypoints/route coupling
         _validate_route_waypoints_coupling(req.waypoints, req.route)
@@ -1177,6 +1303,7 @@ def _prepare_export_data(req: ExportRouteRequest) -> Tuple[List[Dict[str, Any]],
         strict_dukc = req.strict_dukc
         is_safe_claim = req.is_safe
         safety_status_claim = req.safety_status
+        safety_contour_eval = req.safety_contour
 
     is_safe, safety_status, alarm_codes = _verify_export_safety(
         waypoints=wps_dicts,
@@ -1184,7 +1311,7 @@ def _prepare_export_data(req: ExportRouteRequest) -> Tuple[List[Dict[str, Any]],
         draft=draft,
         speed_knots=speed_knots,
         ukc=ukc,
-        safety_contour=req.safety_contour,
+        safety_contour=safety_contour_eval,
         block_coefficient=block_coefficient,
         tide_offset_m=tide_offset_m,
         wave_height_m=wave_height_m,
@@ -1202,7 +1329,7 @@ def _prepare_export_data(req: ExportRouteRequest) -> Tuple[List[Dict[str, Any]],
         "speed_knots": speed_knots,
         "ukc": ukc,
         "route_name": req.route_name or "SeaPath_Passage_Plan",
-        "safety_contour": req.safety_contour,
+        "safety_contour": safety_contour_eval,
     }
     return wps_dicts, route_coords, params, is_safe, safety_status, alarm_codes
 
@@ -1236,6 +1363,8 @@ def export_gpx(req: ExportRouteRequest, response: Response):
     headers = {"Content-Disposition": f'attachment; filename="{safe_name}.gpx"'}
     if not is_safe:
         headers["X-SeaPath-Route-Status"] = "DEMO_UNVERIFIED" if safety_status == "DEMO_UNVERIFIED" else "UNVERIFIED_HAZARD"
+    else:
+        headers["X-SeaPath-Route-Status"] = safety_status
     return Response(
         content=xml_content,
         media_type="application/gpx+xml",
@@ -1271,6 +1400,8 @@ def export_rtz(req: ExportRouteRequest, response: Response):
     headers = {"Content-Disposition": f'attachment; filename="{safe_name}.rtz"'}
     if not is_safe:
         headers["X-SeaPath-Route-Status"] = "DEMO_UNVERIFIED" if safety_status == "DEMO_UNVERIFIED" else "UNVERIFIED_HAZARD"
+    else:
+        headers["X-SeaPath-Route-Status"] = safety_status
     return Response(
         content=xml_content,
         media_type="application/xml",

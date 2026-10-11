@@ -158,6 +158,10 @@ def scan_corridor_raster_swath(
     if len(route_coords) < 2 or not hasattr(grid, "lonlat_to_cell") or not hasattr(grid, "get_cell_coords"):
         return []
 
+    # Safeguard against NaN / Inf / non-positive safety depth threshold
+    if not math.isfinite(safety_depth) or safety_depth <= 0.0:
+        safety_depth = 2.0
+
     hazards: List[Dict[str, Any]] = []
     visited_cells = set()
     n = len(route_coords)

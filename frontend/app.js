@@ -1369,24 +1369,46 @@ window.calculateRoute = async function () {
                 }
             }
 
-            // Обновление индикатора критического аларма в Topbar
-            const isCritical = data.safety_check && data.safety_check.status === 'CRITICAL_HAZARD';
+            // Обновление индикатора опасности / демо-статуса в Topbar и коридоре XTD
+            const sc = data.safety_check || {};
+            const isHazard = sc.status === 'CRITICAL_HAZARD';
+            const isDemo = sc.status === 'DEMO_UNVERIFIED' || (data.properties && data.properties.is_executable_passage_plan === false);
+            const isUnsafe = (sc.is_safe === false) || isHazard || isDemo;
+
             if (topbarAlarmPill) {
-                if (isCritical) {
+                if (isUnsafe) {
                     topbarAlarmPill.style.display = 'flex';
-                    const critAlm = (data.safety_check.alarms || []).find(a => a.severity === 'CRITICAL');
+                    if (isDemo) {
+                        topbarAlarmPill.style.background = 'rgba(239, 68, 68, 0.25)';
+                        topbarAlarmPill.style.borderColor = '#ef4444';
+                        if (topbarAlarmText) {
+                            topbarAlarmText.innerText = '⚠️ ДЕМО-РЕЖИМ (СИНТЕТИКА — НЕ ДЛЯ НАВИГАЦИИ)';
+                        }
+                    } else {
+                        topbarAlarmPill.style.background = 'rgba(239, 68, 68, 0.2)';
+                        topbarAlarmPill.style.borderColor = '#ef4444';
+                        const critAlm = (sc.alarms || []).find(a => a.severity === 'CRITICAL');
+                        if (topbarAlarmText) {
+                            topbarAlarmText.innerText = `⚠️ ${critAlm ? critAlm.code : 'КРИТИЧЕСКИЙ АЛАРМ'}`;
+                        }
+                    }
+                } else if (sc.status === 'WARNING_ADVISORY') {
+                    topbarAlarmPill.style.display = 'flex';
+                    topbarAlarmPill.style.background = 'rgba(245, 158, 11, 0.2)';
+                    topbarAlarmPill.style.borderColor = '#f59e0b';
                     if (topbarAlarmText) {
-                        topbarAlarmText.innerText = `⚠️ ${critAlm ? critAlm.code : 'КРИТИЧЕСКИЙ АЛАРМ'}`;
+                        topbarAlarmText.innerText = `⚠️ ПРЕДУПРЕЖДЕНИЯ (${sc.alarms_count || 1})`;
                     }
                 } else {
                     topbarAlarmPill.style.display = 'none';
                 }
             }
 
-            // Цветовая индикация коридора XTD (красный при критической опасности, зеленый при норме)
+            // Цветовая индикация коридора XTD (красный при критической опасности/демо, янтарный при предупреждениях, зеленый при норме)
             if (map.getLayer('route-corridor-line')) {
-                map.setPaintProperty('route-corridor-line', 'line-color', isCritical ? '#ef4444' : '#10b981');
-                map.setPaintProperty('route-corridor-fill', 'fill-color', isCritical ? '#ef4444' : '#10b981');
+                const corridorColor = isUnsafe ? '#ef4444' : (sc.status === 'WARNING_ADVISORY' ? '#f59e0b' : '#10b981');
+                map.setPaintProperty('route-corridor-line', 'line-color', corridorColor);
+                map.setPaintProperty('route-corridor-fill', 'fill-color', corridorColor);
             }
 
             // Отображение отмелей внутри коридора XTD на карте (ALM-04)
@@ -1422,10 +1444,10 @@ window.calculateRoute = async function () {
             }
 
             statusMsg.innerHTML =
-                `✓ <b>${distNm}</b> &nbsp;|&nbsp; Время перехода: <b>${eta}</b>` +
+                `${isUnsafe ? '⚠️' : '✓'} <b>${distNm}</b> &nbsp;|&nbsp; Время перехода: <b>${eta}</b>` +
                 ` &nbsp;|&nbsp; Мин. UKC: <b>${clearance}</b>` +
-                ` &nbsp;|&nbsp; ${waypointsCount} РТ`;
-            statusMsg.style.color = isCritical ? 'var(--status-danger)' : 'var(--status-success)';
+                ` &nbsp;|&nbsp; ${waypointsCount} РТ${isDemo ? ' &nbsp;|&nbsp; <span style="color:#ef4444;font-weight:600;">[СИНТЕТИКА]</span>' : ''}`;
+            statusMsg.style.color = isUnsafe ? 'var(--status-danger)' : (sc.status === 'WARNING_ADVISORY' ? '#f59e0b' : 'var(--status-success)');
 
             renderWaypointsTable(data.waypoints || []);
             renderSafetyDashboard(data.safety_check, data.bottleneck, data.dukc);
@@ -1497,6 +1519,9 @@ function renderSafetyDashboard(safetyData, bottleneckData, dukcData) {
         if (safetyData.status === 'CRITICAL_HAZARD') {
             safetyBadge.innerText = 'ОПАСНОСТЬ';
             safetyBadge.className = 'badge-danger';
+        } else if (safetyData.status === 'DEMO_UNVERIFIED') {
+            safetyBadge.innerText = 'ДЕМО / НЕ СЕРТИФИЦИРОВАН';
+            safetyBadge.className = 'badge-danger';
         } else if (safetyData.status === 'WARNING_ADVISORY') {
             safetyBadge.innerText = `${safetyData.alarms_count} ПРЕДУПР.`;
             safetyBadge.className = 'badge-warn';
@@ -1506,13 +1531,15 @@ function renderSafetyDashboard(safetyData, bottleneckData, dukcData) {
         }
     }
 
-    const bannerClass = safetyData.status === 'CRITICAL_HAZARD'
+    const bannerClass = (safetyData.status === 'CRITICAL_HAZARD' || safetyData.status === 'DEMO_UNVERIFIED')
         ? 'safety-banner-danger'
         : (safetyData.status === 'WARNING_ADVISORY' ? 'safety-banner-warning' : 'safety-banner-passed');
 
     let summaryText = safetyData.summary;
     if (safetyData.status === 'CRITICAL_HAZARD') {
         summaryText = 'Проверка безопасности ECDIS: ОТКЛОНЕНО. Обнаружен пробой безопасной глубины под килем.';
+    } else if (safetyData.status === 'DEMO_UNVERIFIED') {
+        summaryText = 'Проверка безопасности ECDIS: ДЕМО-РЕЖИМ. Маршрут построен на синтетических данных и НЕ сертифицирован для навигации.';
     } else if (safetyData.status === 'WARNING_ADVISORY') {
         summaryText = `Проверка безопасности ECDIS: ВНИМАНИЕ. Обнаружено ${safetyData.alarms_count} навигационных предупреждений.`;
     } else {
@@ -1968,11 +1995,15 @@ async function triggerDownload(url, filename, payload) {
 
 if (exportGpxBtn) {
     exportGpxBtn.addEventListener('click', () => {
-        if (!currentRouteData || !currentRouteData.waypoints) return;
+        if (!currentRouteData) return;
         const p = currentRouteData.properties || {};
         const sc = currentRouteData.safety_check || {};
-        const payload = {
-            waypoints: currentRouteData.waypoints,
+        const planId = currentRouteData.plan_id || p.plan_id;
+        const payload = planId ? {
+            plan_id: planId,
+            route_name: 'SeaPath_Passage_Plan'
+        } : {
+            waypoints: currentRouteData.waypoints || [],
             route: currentRouteData.geometry ? currentRouteData.geometry.coordinates : [],
             draft: draft,
             speed_knots: speedKnots,
@@ -1988,11 +2019,15 @@ if (exportGpxBtn) {
 
 if (exportRtzBtn) {
     exportRtzBtn.addEventListener('click', () => {
-        if (!currentRouteData || !currentRouteData.waypoints) return;
+        if (!currentRouteData) return;
         const p = currentRouteData.properties || {};
         const sc = currentRouteData.safety_check || {};
-        const payload = {
-            waypoints: currentRouteData.waypoints,
+        const planId = currentRouteData.plan_id || p.plan_id;
+        const payload = planId ? {
+            plan_id: planId,
+            route_name: 'SeaPath_Passage_Plan'
+        } : {
+            waypoints: currentRouteData.waypoints || [],
             draft: draft,
             speed_knots: speedKnots,
             ukc: baseUkc,

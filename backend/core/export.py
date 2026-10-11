@@ -45,7 +45,12 @@ def export_to_gpx(
     name_el.text = route_name
     desc_el = ET.SubElement(metadata, "desc")
     contour_str = f" | Safety Contour: {safety_contour:.2f}m" if safety_contour is not None else ""
-    warning_str = " [CRITICAL WARNING: HAZARD DETECTED]" if (is_safe is False or safety_status == "CRITICAL_HAZARD") else ""
+    if is_safe is False or safety_status in ("CRITICAL_HAZARD", "DEMO_UNVERIFIED"):
+        warning_str = " [CRITICAL WARNING: HAZARD DETECTED]"
+    elif safety_status == "WARNING_ADVISORY":
+        warning_str = " [ADVISORY: NAVIGATIONAL WARNINGS PRESENT]"
+    else:
+        warning_str = ""
     desc_el.text = f"Draft: {draft:.1f}m | Speed: {speed_knots:.1f} kts | Required UKC: {ukc:.1f}m{contour_str}{warning_str}"
 
     # Route with navigational waypoints
@@ -128,13 +133,18 @@ def export_to_rtz(
         "xsi:schemaLocation": "http://www.cirm.org/RTZ/1/1 RTZ_v1.1.xsd",
     })
 
-    is_hazardous = (is_safe is False or safety_status == "CRITICAL_HAZARD")
+    is_hazardous = (is_safe is False or safety_status in ("CRITICAL_HAZARD", "DEMO_UNVERIFIED"))
+    is_warning = (safety_status == "WARNING_ADVISORY")
     route_info_attrs = {
         "routeName": route_name,
         "optimizationMethod": "Bathymetric Safety Clearance",
     }
     if is_hazardous:
-        route_info_attrs["routeStatus"] = "UNVERIFIED_HAZARD"
+        route_info_attrs["routeStatus"] = "DEMO_UNVERIFIED" if safety_status == "DEMO_UNVERIFIED" else "UNVERIFIED_HAZARD"
+    elif is_warning:
+        route_info_attrs["routeStatus"] = "WARNING_ADVISORY"
+    elif safety_status:
+        route_info_attrs["routeStatus"] = safety_status
 
     route_info = ET.SubElement(route, "routeInfo", route_info_attrs)
 
@@ -157,6 +167,15 @@ def export_to_rtz(
         })
         ET.SubElement(hazard_ext, "warning").text = (
             "CRITICAL WARNING: Route contains unresolved navigational hazards or insufficient UKC."
+        )
+    elif is_warning:
+        advisory_ext = ET.SubElement(route_exts, "extension", {
+            "manufacturer": "SeaPath",
+            "name": "SafetyNotice",
+            "version": "1.0",
+        })
+        ET.SubElement(advisory_ext, "warning").text = (
+            "NAVIGATIONAL ADVISORY: Route contains non-critical maneuvering or environmental advisories."
         )
 
     waypoints_el = ET.SubElement(route, "waypoints")

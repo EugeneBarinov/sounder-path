@@ -12,6 +12,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     env:
       PYTHONIOENCODING: "utf-8"
+      SEAPATH_GEOTIFF_PATH: "data/raw/operational_sample.tif"
     strategy:
       fail-fast: false
       matrix:

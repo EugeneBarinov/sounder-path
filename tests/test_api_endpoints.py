@@ -542,3 +542,199 @@ def test_real_subprocess_production_fail_closed_missing_geotiff():
     assert "PRODUCTION FAILURE" in proc.stderr
     assert "RuntimeError" in proc.stderr
 
+
+def test_production_fail_closed_sample_fallback_prohibited(tmp_path):
+    """
+    Verify Issue 1: When SEAPATH_ENV=production, SEAPATH_GEOTIFF_PATH is unset,
+    main E8_2024.tif is absent, but operational_sample.tif IS present in data/raw,
+    the server MUST fail-closed with RuntimeError (not silently start on the sample).
+    """
+    import subprocess
+    import sys
+    import os
+    import shutil
+    from pathlib import Path
+
+    base_dir = Path(__file__).resolve().parent.parent
+    mock_raw_dir = tmp_path / "mock_raw"
+    mock_raw_dir.mkdir(parents=True, exist_ok=True)
+    sample_src = base_dir / "data" / "raw" / "operational_sample.tif"
+    if sample_src.exists():
+        shutil.copy2(sample_src, mock_raw_dir / "operational_sample.tif")
+
+    env = os.environ.copy()
+    env["SEAPATH_ENV"] = "production"
+    env["SEAPATH_DATA_DIR"] = str(mock_raw_dir)
+    env.pop("SEAPATH_GEOTIFF_PATH", None)
+    env["PYTHONPATH"] = str(base_dir)
+
+    proc = subprocess.run(
+        [sys.executable, "-c", "import backend.main"],
+        cwd=str(base_dir),
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+
+    assert proc.returncode != 0, "Production mode with only sample GeoTIFF must fail closed"
+    assert "PRODUCTION FAILURE" in proc.stderr
+    assert "RuntimeError" in proc.stderr
+
+
+def test_production_fail_closed_explicit_sample_path_rejected():
+    """
+    Verify Issue 1: In production mode, explicitly passing operational_sample.tif via
+    SEAPATH_GEOTIFF_PATH is rejected as unauthorized test-only dataset.
+    """
+    import subprocess
+    import sys
+    import os
+    from pathlib import Path
+
+    base_dir = Path(__file__).resolve().parent.parent
+    env = os.environ.copy()
+    env["SEAPATH_ENV"] = "production"
+    env["SEAPATH_GEOTIFF_PATH"] = str(base_dir / "data" / "raw" / "operational_sample.tif")
+    env["PYTHONPATH"] = str(base_dir)
+
+    proc = subprocess.run(
+        [sys.executable, "-c", "import backend.main"],
+        cwd=str(base_dir),
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+
+    assert proc.returncode != 0
+    assert "PRODUCTION FAILURE" in proc.stderr
+    assert "operational_sample.tif" in proc.stderr
+
+
+def test_export_rejects_nan_and_inf_safety_contour(client):
+    """
+    Verify Issue 2: NaN and Inf in safety_contour or draft are rejected at schema level with 422.
+    """
+    import json
+    from pydantic import ValidationError
+    from backend.main import ExportRouteRequest
+
+    valid_waypoints = [
+        {"lat": 44.0, "lon": 34.0, "depth_at_waypoint": 200.0, "clearance_m": 198.0},
+        {"lat": 44.2, "lon": 35.0, "depth_at_waypoint": 180.0, "clearance_m": 178.0},
+    ]
+
+    # 1. Pydantic validation rejects NaN and Inf
+    with pytest.raises(ValidationError):
+        ExportRouteRequest(waypoints=valid_waypoints, safety_contour=float("nan"))
+
+    with pytest.raises(ValidationError):
+        ExportRouteRequest(waypoints=valid_waypoints, safety_contour=float("inf"))
+
+    with pytest.raises(ValidationError):
+        ExportRouteRequest(waypoints=valid_waypoints, draft=float("nan"))
+
+    with pytest.raises(ValidationError):
+        ExportRouteRequest(waypoints=valid_waypoints, draft=float("-inf"))
+
+    # 2. HTTP endpoint rejects non-finite values (422 Unprocessable Entity)
+    nan_body = json.dumps({
+        "waypoints": valid_waypoints,
+        "safety_contour": float("nan"),
+    }, allow_nan=True)
+    res_nan = client.post("/api/export/gpx", content=nan_body, headers={"Content-Type": "application/json"})
+    assert res_nan.status_code == 422
+
+    inf_body = json.dumps({
+        "waypoints": valid_waypoints,
+        "safety_contour": float("inf"),
+    }, allow_nan=True)
+    res_inf = client.post("/api/export/gpx", content=inf_body, headers={"Content-Type": "application/json"})
+    assert res_inf.status_code == 422
+
+    draft_nan_body = json.dumps({
+        "waypoints": valid_waypoints,
+        "draft": float("nan"),
+    }, allow_nan=True)
+    res_draft_nan = client.post("/api/export/rtz", content=draft_nan_body, headers={"Content-Type": "application/json"})
+    assert res_draft_nan.status_code == 422
+
+
+
+def test_export_90_deg_turn_with_150m_radius_passes_geometry_coupling(client):
+    """
+    Verify Issue 3: Real passage plan with 90° course alteration and 150m turning radius
+    where vertex is ~62.1m from filleted arc passes geometry coupling validation.
+    """
+    payload = {
+        "start_lon": 34.00,
+        "start_lat": 44.00,
+        "goal_lon": 34.20,
+        "goal_lat": 44.20,
+        "draft": 1.2,
+        "speed_knots": 10.0,
+        "ukc": 0.5,
+        "turning_radius_m": 150.0,
+    }
+    res_route = client.post("/api/route", json=payload)
+    assert res_route.status_code == 200
+    route_data = res_route.json()
+
+    # Export using canonical plan_id
+    plan_id = route_data["plan_id"]
+    res_gpx_plan = client.post("/api/export/gpx", json={"plan_id": plan_id})
+    assert res_gpx_plan.status_code == 200
+
+    # Also test direct coordinates export with the router's generated smoothed track and waypoints
+    export_payload = {
+        "waypoints": route_data["waypoints"],
+        "route": route_data["geometry"]["coordinates"],
+        "draft": 1.2,
+        "speed_knots": 10.0,
+        "ukc": 0.5,
+        "turning_radius_m": 150.0,
+    }
+    res_gpx_direct = client.post("/api/export/gpx", json=export_payload)
+    assert res_gpx_direct.status_code == 200
+    assert "xml" in res_gpx_direct.headers.get("Content-Type", "")
+
+
+def test_export_preserves_warning_advisory_status(client):
+    """
+    Verify Issue 6: When safety_status is WARNING_ADVISORY, the status is preserved
+    in HTTP response header and in RTZ 1.1 XML without being flattened to SAFE_PASSED.
+    """
+    import xmlschema
+    from pathlib import Path
+
+    xsd_path = Path(__file__).resolve().parent.parent / "backend" / "schemas" / "rtz_1_1.xsd"
+    rtz_schema = xmlschema.XMLSchema(str(xsd_path))
+
+    waypoints = [
+        {"lat": 44.0, "lon": 34.0, "depth_at_waypoint": 200.0, "clearance_m": 198.0},
+        {"lat": 44.2, "lon": 35.0, "depth_at_waypoint": 180.0, "clearance_m": 178.0},
+    ]
+    payload = {
+        "waypoints": waypoints,
+        "draft": 1.2,
+        "speed_knots": 10.0,
+        "ukc": 0.5,
+        "safety_status": "WARNING_ADVISORY",
+        "is_safe": True,
+    }
+
+    res_rtz = client.post("/api/export/rtz", json=payload)
+    assert res_rtz.status_code == 200
+    assert res_rtz.headers.get("X-SeaPath-Route-Status") == "WARNING_ADVISORY"
+
+    # RTZ XML must validate against CIRM XSD and contain WARNING_ADVISORY status
+    rtz_xml = res_rtz.text
+    rtz_schema.validate(rtz_xml)
+    assert 'routeStatus="WARNING_ADVISORY"' in rtz_xml
+
+    # GPX export must also preserve status
+    res_gpx = client.post("/api/export/gpx", json=payload)
+    assert res_gpx.status_code == 200
+    assert res_gpx.headers.get("X-SeaPath-Route-Status") == "WARNING_ADVISORY"
+    assert "ADVISORY: NAVIGATIONAL WARNINGS PRESENT" in res_gpx.text
+
+
