@@ -29,6 +29,8 @@ class BathymetricGrid:
         lon_max: float,
         depths: np.ndarray,
         fairway_weights: Optional[np.ndarray] = None,
+        land_mask: Optional[np.ndarray] = None,
+        nodata_mask: Optional[np.ndarray] = None,
     ):
         self.lat_min = float(lat_min)
         self.lat_max = float(lat_max)
@@ -40,6 +42,16 @@ class BathymetricGrid:
             fairway_weights
             if fairway_weights is not None
             else np.ones((self.rows, self.cols), dtype=np.float32)
+        )
+        self.land_mask = (
+            land_mask
+            if land_mask is not None
+            else (depths <= 0.0)
+        )
+        self.nodata_mask = (
+            nodata_mask
+            if nodata_mask is not None
+            else np.zeros((self.rows, self.cols), dtype=bool)
         )
 
     def get_depth(self, r: int, c: int) -> float:
@@ -87,14 +99,18 @@ class BathymetricGrid:
             if src.nodata is not None:
                 raw_data = np.ma.masked_equal(raw_data, src.nodata)
 
-            # Unmasked filled data: nodata pixels become 0.0 (unnavigable)
-            filled = raw_data.filled(0.0).astype(np.float32)
+            nodata_mask = np.ma.getmaskarray(raw_data)
+            unmasked_elev = raw_data.filled(0.0).astype(np.float32)
+
+            # Terrestrial elevation above sea level is dry land
+            land_mask = (~nodata_mask) & (unmasked_elev > 0.0)
+
             # Invert negative elevation to positive water depth
-            depths = -filled
+            depths = -unmasked_elev
             depths = np.nan_to_num(depths, nan=0.0)
 
-            # Mask terrestrial elevation (values above sea level become <= 0.0)
-            depths = np.where(depths < 0.0, 0.0, depths)
+            # Mask terrestrial elevation and nodata pixels to 0.0m
+            depths = np.where((depths < 0.0) | land_mask | nodata_mask, 0.0, depths)
             bounds = src.bounds
 
         return cls(
@@ -103,6 +119,8 @@ class BathymetricGrid:
             lon_min=bounds.left,
             lon_max=bounds.right,
             depths=depths,
+            land_mask=land_mask,
+            nodata_mask=nodata_mask,
         )
 
     @classmethod
@@ -169,6 +187,18 @@ class BathymetricGrid:
             min_fw = fw_blocks.min(axis=(1, 3))
             coarse_fw = np.where(max_fw >= 500.0, max_fw, min_fw).astype(np.float32)
 
+        coarse_land = None
+        if self.land_mask is not None and self.land_mask.shape == (self.rows, self.cols):
+            cropped_land = self.land_mask[:h, :w]
+            land_blocks = cropped_land.reshape(h // factor, factor, w // factor, factor)
+            coarse_land = land_blocks.any(axis=(1, 3))
+
+        coarse_nodata = None
+        if self.nodata_mask is not None and self.nodata_mask.shape == (self.rows, self.cols):
+            cropped_nodata = self.nodata_mask[:h, :w]
+            nodata_blocks = cropped_nodata.reshape(h // factor, factor, w // factor, factor)
+            coarse_nodata = nodata_blocks.any(axis=(1, 3))
+
         return BathymetricGrid(
             lat_min=cropped_lat_min,
             lat_max=self.lat_max,
@@ -176,6 +206,8 @@ class BathymetricGrid:
             lon_max=cropped_lon_max,
             depths=coarse_depths,
             fairway_weights=coarse_fw,
+            land_mask=coarse_land,
+            nodata_mask=coarse_nodata,
         )
 
     def get_cell_coords(self, r: int, c: int) -> Tuple[float, float]:
@@ -265,14 +297,26 @@ class BathymetricGrid:
                 c = int((lon - self.lon_min) / lon_step)
 
                 if 0 <= r < self.rows and 0 <= c < self.cols:
+                    dredged_val = str(norm_row.get("dredged") or norm_row.get("is_canal") or "").strip().lower()
+                    is_dredged = dredged_val in ("1", "true", "yes", "dredged")
+                    # Terrestrial Land Protection:
+                    # Sounding points cannot overwrite known dry land unless explicitly flagged as a dredged channel
+                    if self.land_mask is not None and self.land_mask[r, c] and not is_dredged:
+                        continue
+
                     curr_d = float(self.depths[r, c])
-                    # IHO S-44 Shoal-bias safety rule:
-                    # In navigable water, retain the shallower (more hazardous) depth to prevent grounding.
-                    # In zero-depth/land cells, allow surveyed dredged channel soundings to establish navigable path.
-                    if curr_d > 0.0 and depth > 0.0:
+                    # If cell was missing data (nodata), sounding establishes initial surveyed depth
+                    if self.nodata_mask is not None and self.nodata_mask[r, c]:
+                        self.depths[r, c] = max(0.0, depth)
+                        self.nodata_mask[r, c] = False
+                    elif curr_d > 0.0 and depth > 0.0:
+                        # IHO S-44 Shoal-bias safety rule:
+                        # In navigable water, retain the shallower (more hazardous) depth to prevent grounding.
                         self.depths[r, c] = min(curr_d, depth)
-                    else:
+                    elif is_dredged and depth > 0.0:
                         self.depths[r, c] = depth
+                        if self.land_mask is not None:
+                            self.land_mask[r, c] = False
 
     def to_geojson(self) -> Dict[str, Any]:
         """Export grid boundary coverage as a GeoJSON FeatureCollection."""

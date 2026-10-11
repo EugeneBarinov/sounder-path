@@ -312,6 +312,7 @@ NativeRouteResult NativeRouter::find_path(
                 double eff_r = (tan_half > 0.001) ? (safe_t_dist / tan_half) : turning_radius_m;
 
                 nav_wp.turn_radius_m = std::round(eff_r * 10.0) / 10.0;
+                nav_wp.maneuver_feasible = (safe_t_dist >= tangent_dist * 0.85);
 
                 // Rate of Turn (ROT in deg/min): omega = V / R -> ROT = (5556 / pi) * (V_kts / R_m)
                 double rot = (5556.0 / 3.14159265358979323846) * (speed_knots / eff_r);
@@ -324,11 +325,13 @@ NativeRouteResult NativeRouter::find_path(
             } else {
                 nav_wp.rot_deg_min = 0.0;
                 nav_wp.wop_distance_m = 0.0;
+                nav_wp.maneuver_feasible = true;
             }
         } else {
             nav_wp.turn_angle_deg = 0.0;
             nav_wp.rot_deg_min = 0.0;
             nav_wp.wop_distance_m = 0.0;
+            nav_wp.maneuver_feasible = true;
         }
 
         result.waypoints.push_back(nav_wp);
@@ -336,6 +339,7 @@ NativeRouteResult NativeRouter::find_path(
 
     // 4. Generate smooth kinematically-filleted track with circular turning arcs
     result.success = true;
+    result.diagnostics.has_maneuvering_violation = false;
     double total_distance_m = 0.0;
     double min_clearance = std::numeric_limits<double>::infinity();
 
@@ -433,8 +437,14 @@ NativeRouteResult NativeRouter::find_path(
                                 result.route_coordinates.push_back(ap);
                             }
                             continue;
+                        } else {
+                            result.waypoints[i].maneuver_feasible = false;
+                            result.diagnostics.has_maneuvering_violation = true;
                         }
                     }
+                } else {
+                    result.waypoints[i].maneuver_feasible = false;
+                    result.diagnostics.has_maneuvering_violation = true;
                 }
             }
         }

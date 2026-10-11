@@ -95,6 +95,7 @@ PYBIND11_MODULE(seapath_native, m) {
                 w_dict["stbd_xtd_nm"] = wp.stbd_xtd_nm;
                 w_dict["depth_m"] = wp.depth_at_waypoint;
                 w_dict["clearance_m"] = wp.clearance_m;
+                w_dict["maneuver_feasible"] = wp.maneuver_feasible;
                 py_wps.append(w_dict);
             }
             py_res["waypoints"] = py_wps;
@@ -117,6 +118,7 @@ PYBIND11_MODULE(seapath_native, m) {
             py_diag["min_clearance_m"] = res.diagnostics.min_clearance_m;
             py_diag["dynamic_draft_m"] = res.diagnostics.dynamic_draft_m;
             py_diag["waypoints"] = res.diagnostics.waypoints;
+            py_diag["has_maneuvering_violation"] = res.diagnostics.has_maneuvering_violation;
             if (res.diagnostics.has_eta) {
                 py_diag["eta_hours"] = res.diagnostics.eta_hours;
             } else {

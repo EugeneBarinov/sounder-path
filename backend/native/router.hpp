@@ -28,6 +28,7 @@ struct NavWaypoint {
     double stbd_xtd_nm;         // Starboard Cross Track Distance (NM)
     double depth_at_waypoint;   // Seabed depth at waypoint
     double clearance_m;         // Under-keel clearance at waypoint
+    bool maneuver_feasible;     // Whether vessel commanded turning circle physically fits
 };
 
 struct RouteDiagnostics {
@@ -38,6 +39,7 @@ struct RouteDiagnostics {
     int waypoints;
     double eta_hours;
     bool has_eta;
+    bool has_maneuvering_violation; // True if any waypoint cannot execute commanded turning radius
 };
 
 struct NativeRouteResult {

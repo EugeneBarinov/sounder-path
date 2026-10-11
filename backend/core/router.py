@@ -323,26 +323,193 @@ class Router:
 
         path = self._string_pull(raw_path, min_depth)
 
+        # 1. Build macro waypoint coordinates and passage plan table
+        n_wp = len(path)
+        wp_coords: List[Tuple[float, float]] = []
+        for r, c in path:
+            lat, lon = self.grid.get_cell_coords(r, c)
+            wp_coords.append((lat, lon))
+
+        waypoints: List[Dict[str, Any]] = []
+        has_maneuvering_violation = False
+
+        for i in range(n_wp):
+            r, c = path[i]
+            lat, lon = wp_coords[i]
+            depth = float(self.grid.depths[r, c])
+            clearance = depth - dynamic_draft - ukc
+
+            leg_bearing = 0.0
+            leg_dist_nm = 0.0
+            if i < n_wp - 1:
+                lat_next, lon_next = wp_coords[i + 1]
+                leg_bearing = calculate_bearing_deg(lat, lon, lat_next, lon_next)
+                leg_dist_nm = haversine_distance_m(lat, lon, lat_next, lon_next) / 1852.0
+
+            turn_angle = 0.0
+            turn_radius = 0.0
+            rot_deg_min = 0.0
+            wop_distance_m = 0.0
+            maneuver_feasible = True
+
+            if 0 < i < n_wp - 1:
+                lat_prev, lon_prev = wp_coords[i - 1]
+                brg_in = calculate_bearing_deg(lat_prev, lon_prev, lat, lon)
+                brg_out = leg_bearing
+                diff = (brg_out - brg_in + 180.0) % 360.0 - 180.0
+                turn_angle = abs(diff)
+
+                if turn_angle >= 0.5 and turning_radius_m > 10.0 and speed_knots > 0.0:
+                    rad_half = math.radians(turn_angle / 2.0)
+                    tan_half = math.tan(rad_half)
+                    leg_prev_m = haversine_distance_m(lat_prev, lon_prev, lat, lon)
+                    leg_next_m = leg_dist_nm * 1852.0
+                    tangent_dist = turning_radius_m * tan_half
+                    max_t_dist = min(leg_prev_m * 0.40, leg_next_m * 0.40)
+                    safe_t_dist = min(tangent_dist, max_t_dist)
+                    eff_r = safe_t_dist / tan_half if tan_half > 0.001 else turning_radius_m
+                    turn_radius = eff_r
+
+                    # Maneuvering safety check: leg must support >= 85% of vessel's minimum turning circle
+                    maneuver_feasible = (safe_t_dist >= tangent_dist * 0.85)
+
+                    rot = (5556.0 / math.pi) * (speed_knots / eff_r)
+                    rot_deg_min = round(rot if diff >= 0.0 else -rot, 1)
+                    v_ms = speed_knots * 0.514444
+                    wop_distance_m = round(safe_t_dist + v_ms * 12.0, 1)
+
+            waypoints.append({
+                "index": i + 1,
+                "lat": round(lat, 6),
+                "lon": round(lon, 6),
+                "leg_bearing_deg": round(leg_bearing, 1),
+                "leg_distance_nm": round(leg_dist_nm, 2),
+                "turn_angle_deg": round(turn_angle, 1),
+                "turn_radius_m": round(turn_radius, 1),
+                "rot_deg_min": rot_deg_min,
+                "wop_distance_m": wop_distance_m,
+                "port_xtd_nm": 0.10,
+                "stbd_xtd_nm": 0.10,
+                "depth_m": round(depth, 1),
+                "clearance_m": round(clearance, 1),
+                "maneuver_feasible": maneuver_feasible,
+            })
+
+        # 2. Generate smooth kinematically-filleted track with circular turning arcs
         coordinates: List[List[float]] = []
+
+        for i in range(n_wp):
+            lat_i, lon_i = wp_coords[i]
+
+            if (
+                0 < i < n_wp - 1
+                and abs(waypoints[i]["turn_angle_deg"]) >= 4.0
+                and turning_radius_m > 10.0
+            ):
+                lat_prev, lon_prev = wp_coords[i - 1]
+                lat_next, lon_next = wp_coords[i + 1]
+
+                cos_lat = math.cos(math.radians(lat_i))
+                m_per_deg_lat = 111139.0
+                m_per_deg_lon = 111139.0 * cos_lat
+
+                v1_x = (lon_prev - lon_i) * m_per_deg_lon
+                v1_y = (lat_prev - lat_i) * m_per_deg_lat
+                v2_x = (lon_next - lon_i) * m_per_deg_lon
+                v2_y = (lat_next - lat_i) * m_per_deg_lat
+
+                len1 = math.hypot(v1_x, v1_y)
+                len2 = math.hypot(v2_x, v2_y)
+
+                if len1 > 0.001 and len2 > 0.001:
+                    u1_x, u1_y = v1_x / len1, v1_y / len1
+                    u2_x, u2_y = v2_x / len2, v2_y / len2
+
+                    dot = max(-1.0, min(1.0, u1_x * u2_x + u1_y * u2_y))
+                    gamma = math.acos(dot)
+                    beta = math.pi - gamma
+                    tan_half = math.tan(beta / 2.0)
+
+                    if tan_half > 0.001:
+                        tangent_dist = turning_radius_m * tan_half
+                        max_t_dist = min(len1 * 0.40, len2 * 0.40)
+                        safe_t_dist = min(tangent_dist, max_t_dist)
+                        effective_r = safe_t_dist / tan_half
+
+                        if safe_t_dist >= tangent_dist * 0.85:
+                            t1_x, t1_y = u1_x * safe_t_dist, u1_y * safe_t_dist
+                            t2_x, t2_y = u2_x * safe_t_dist, u2_y * safe_t_dist
+
+                            bisect_x = u1_x + u2_x
+                            bisect_y = u1_y + u2_y
+                            bisect_len = math.hypot(bisect_x, bisect_y)
+
+                            if bisect_len > 0.001:
+                                bx = bisect_x / bisect_len
+                                by = bisect_y / bisect_len
+                                center_dist = effective_r / math.sin(gamma / 2.0)
+                                cx = bx * center_dist
+                                cy = by * center_dist
+
+                                arc_geo_points: List[List[float]] = []
+                                arc_safe = True
+
+                                for step in range(25):
+                                    t = step / 24.0
+                                    chord_x = t1_x + (t2_x - t1_x) * t
+                                    chord_y = t1_y + (t2_y - t1_y) * t
+                                    rad_x = chord_x - cx
+                                    rad_y = chord_y - cy
+                                    rad_len = math.hypot(rad_x, rad_y)
+
+                                    px = cx + (rad_x / rad_len) * effective_r
+                                    py = cy + (rad_y / rad_len) * effective_r
+
+                                    pt_lat = lat_i + py / m_per_deg_lat
+                                    pt_lon = lon_i + px / m_per_deg_lon
+
+                                    cell_r, cell_c = self.grid.lonlat_to_cell(pt_lon, pt_lat)
+                                    if (
+                                        float(self.grid.depths[cell_r, cell_c]) <= min_depth
+                                        or self.grid.is_restricted(cell_r, cell_c)
+                                    ):
+                                        arc_safe = False
+                                        break
+                                    arc_geo_points.append([round(pt_lon, 6), round(pt_lat, 6)])
+
+                                if arc_safe:
+                                    coordinates.extend(arc_geo_points)
+                                    continue
+                                else:
+                                    waypoints[i]["maneuver_feasible"] = False
+                                    has_maneuvering_violation = True
+                        else:
+                            waypoints[i]["maneuver_feasible"] = False
+                            has_maneuvering_violation = True
+
+            # Default: add apex waypoint
+            coordinates.append([round(lon_i, 6), round(lat_i, 6)])
+
+        # 3. Build continuous depth soundings profile along smoothed track
         profile: List[Dict[str, Any]] = []
         min_clearance = math.inf
         total_distance_m = 0.0
 
-        for seg_idx in range(len(path)):
-            r0, c0 = path[seg_idx]
-            lat0, lon0 = self.grid.get_cell_coords(r0, c0)
-            coordinates.append([lon0, lat0])
+        for seg_idx in range(len(coordinates)):
+            lon0, lat0 = coordinates[seg_idx]
 
-            if seg_idx < len(path) - 1:
-                r1, c1 = path[seg_idx + 1]
-                lat1, lon1 = self.grid.get_cell_coords(r1, c1)
+            if seg_idx < len(coordinates) - 1:
+                lon1, lat1 = coordinates[seg_idx + 1]
                 seg_len_m = haversine_distance_m(lat0, lon0, lat1, lon1)
+
+                r0, c0 = self.grid.lonlat_to_cell(lon0, lat0)
+                r1, c1 = self.grid.lonlat_to_cell(lon1, lat1)
 
                 depths_along = self.grid.sample_depth_along_segment(r0, c0, r1, c1)
                 n_samples = len(depths_along)
 
-                for i, d in enumerate(depths_along):
-                    fraction = i / max(1, n_samples - 1)
+                for k, d in enumerate(depths_along):
+                    fraction = k / max(1, n_samples - 1)
                     sample_dist = total_distance_m + seg_len_m * fraction
                     sample_lat = lat0 + (lat1 - lat0) * fraction
                     sample_lon = lon0 + (lon1 - lon0) * fraction
@@ -360,7 +527,8 @@ class Router:
 
                 total_distance_m += seg_len_m
             else:
-                terminal_depth = float(self.grid.depths[r0, c0])
+                r_last, c_last = self.grid.lonlat_to_cell(lon0, lat0)
+                terminal_depth = float(self.grid.depths[r_last, c_last])
                 clearance = terminal_depth - dynamic_draft - ukc
                 if clearance < min_clearance:
                     min_clearance = clearance
@@ -376,64 +544,6 @@ class Router:
         distance_nm = total_distance_m / 1852.0
         eta_hours = (distance_nm / speed_knots) if speed_knots > 0.0 else None
 
-        # Build structured passage plan waypoints
-        waypoints: List[Dict[str, Any]] = []
-        n_wp = len(path)
-        for i in range(n_wp):
-            r, c = path[i]
-            lat, lon = self.grid.get_cell_coords(r, c)
-            depth = float(self.grid.depths[r, c])
-            clearance = depth - dynamic_draft - ukc
-
-            leg_bearing = 0.0
-            leg_dist_nm = 0.0
-            if i < n_wp - 1:
-                r_next, c_next = path[i + 1]
-                lat_next, lon_next = self.grid.get_cell_coords(r_next, c_next)
-                leg_bearing = calculate_bearing_deg(lat, lon, lat_next, lon_next)
-                leg_dist_nm = haversine_distance_m(lat, lon, lat_next, lon_next) / 1852.0
-
-            turn_angle = 0.0
-            turn_radius = 0.0
-            rot_deg_min = 0.0
-            wop_distance_m = 0.0
-            if 0 < i < n_wp - 1:
-                r_prev, c_prev = path[i - 1]
-                lat_prev, lon_prev = self.grid.get_cell_coords(r_prev, c_prev)
-                brg_in = calculate_bearing_deg(lat_prev, lon_prev, lat, lon)
-                brg_out = leg_bearing
-                diff = (brg_out - brg_in + 180.0) % 360.0 - 180.0
-                turn_angle = abs(diff)
-                if turn_angle >= 0.5 and turning_radius_m > 10.0 and speed_knots > 0.0:
-                    rad_half = math.radians(turn_angle / 2.0)
-                    tan_half = math.tan(rad_half)
-                    leg_prev_m = haversine_distance_m(lat_prev, lon_prev, lat, lon)
-                    leg_next_m = leg_dist_nm * 1852.0
-                    tangent_dist = turning_radius_m * tan_half
-                    max_t_dist = min(leg_prev_m * 0.40, leg_next_m * 0.40)
-                    safe_t_dist = min(tangent_dist, max_t_dist)
-                    eff_r = safe_t_dist / tan_half if tan_half > 0.001 else turning_radius_m
-                    turn_radius = eff_r
-                    rot = (5556.0 / math.pi) * (speed_knots / eff_r)
-                    rot_deg_min = round(rot if diff >= 0.0 else -rot, 1)
-                    v_ms = speed_knots * 0.514444
-                    wop_distance_m = round(safe_t_dist + v_ms * 12.0, 1)
-
-            waypoints.append({
-                "lat": round(lat, 6),
-                "lon": round(lon, 6),
-                "leg_bearing_deg": round(leg_bearing, 1),
-                "leg_distance_nm": round(leg_dist_nm, 2),
-                "turn_angle_deg": round(turn_angle, 1),
-                "turn_radius_m": round(turn_radius, 1),
-                "rot_deg_min": rot_deg_min,
-                "wop_distance_m": wop_distance_m,
-                "port_xtd_nm": 0.10,
-                "stbd_xtd_nm": 0.10,
-                "depth_m": round(depth, 1),
-                "clearance_m": round(clearance, 1),
-            })
-
         return {
             "route": coordinates,
             "profile": profile,
@@ -444,6 +554,7 @@ class Router:
                 "eta_hours": round(eta_hours, 2) if eta_hours is not None else None,
                 "min_clearance_m": round(min_clearance, 2),
                 "dynamic_draft_m": round(dynamic_draft, 2),
-                "waypoints": len(path),
+                "waypoints": len(waypoints),
+                "has_maneuvering_violation": has_maneuvering_violation,
             },
         }

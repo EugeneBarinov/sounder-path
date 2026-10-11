@@ -19,7 +19,7 @@ from backend.core.router import Router
 from backend.core.fairways import rasterize_fairway_weights, load_fairways_geojson
 from backend.core.export import export_to_gpx, export_to_rtz
 from backend.core.safety import generate_safety_corridor_polygon, verify_ecdis_route_safety
-from backend.core.dukc import compute_dukc_budget, calculate_tidal_window, compute_search_budget
+from backend.core.dukc import compute_dukc_budget, calculate_tidal_window, compute_search_budget, calculate_turning_heel
 from backend.core.bottleneck import analyze_route_bottlenecks
 from backend.core.kinematics import (
     generate_turn_arcs_feature_collection,
@@ -94,9 +94,11 @@ try:
         fairway_weights
     )
     router = seapath_native.NativeRouter(native_grid)
+    _HAS_NATIVE = True
     print("[ROUTER] Activated high-performance C++ native navigation core (seapath_native)")
 except Exception as _err:
     router = Router(routing_grid)
+    _HAS_NATIVE = False
     print(f"[ROUTER] Running Python reference router ({_err})")
 
 # ---------------------------------------------------------------------------
@@ -474,7 +476,22 @@ def calculate_route(req: RouteRequest):
         speed_knots=req.speed_knots,
     )
 
-    # 3. ECDIS Route Safety Verification (IEC 61174)
+    # Calculate actual turning heel sinkage per waypoint from its executed radius
+    for wp in combined_waypoints:
+        turn_ang = wp.get("turn_angle_deg", 0.0)
+        act_r = wp.get("turn_radius_m", req.turning_radius_m)
+        if abs(turn_ang) >= 4.0 and act_r > 10.0 and req.speed_knots > 0:
+            heel_wp = calculate_turning_heel(req.speed_knots, act_r, req.draft, req.beam_m, req.gm_m)
+            wp["heel_sinkage_m"] = heel_wp["heel_sinkage_m"]
+            wp["heel_angle_deg"] = heel_wp["heel_angle_deg"]
+        else:
+            wp["heel_sinkage_m"] = 0.0
+            wp["heel_angle_deg"] = 0.0
+
+    max_actual_heel = max((wp.get("heel_sinkage_m", 0.0) for wp in combined_waypoints), default=0.0)
+    has_maneuver_violation = any(wp.get("maneuver_feasible") is False for wp in combined_waypoints)
+
+    # 3. ECDIS Route Safety Verification (IEC 61174) with Full 2D XTD Scan
     safety_audit = verify_ecdis_route_safety(
         waypoints=combined_waypoints,
         profile=combined_profile,
@@ -488,6 +505,8 @@ def calculate_route(req: RouteRequest):
         corridor_feature=corridor_feature,
         grid=routing_grid,
         requested_radius_m=req.turning_radius_m,
+        port_xtd_m=req.port_xtd_m,
+        stbd_xtd_m=req.stbd_xtd_m,
     )
 
     # 4. Bottleneck & Choke Point Analysis + Speed Adaptation Advisory
@@ -506,14 +525,6 @@ def calculate_route(req: RouteRequest):
     )
 
     # 5. Full PIANC DUKC Budget (отчётный, на самой мелкой точке профиля)
-    # Что делаем: берём min глубину по всему склеенному профилю и считаем
-    # полный бюджет compute_dukc_budget: squat (с h/T по ФАКТИЧЕСКОЙ глубине,
-    # а не пред-оценке!) + крен + волна + прилив. Это отчёт для штурмана.
-    # Чем отличается от search_budget выше: search_budget — консервативный
-    # порог ДО поиска (h/T по статике), dukc_budget — точный разбор ПОСЛЕ
-    # (h/T по реальной мели). Поэтому dukc может показать squat чуть больше/
-    # меньше поискового — это нормально: поиск брал запас с запасом.
-    # beam_m/gm_m/exposed_waters пробрасываем из запроса — те же, что в поиске.
     min_chart_depth = min((p["depth"] for p in combined_profile), default=10.0)
     dukc_budget = compute_dukc_budget(
         draft_m=req.draft,
@@ -530,12 +541,6 @@ def calculate_route(req: RouteRequest):
     )
 
     # -- Диагностика ответа: всё из одного бюджета, без пересчётов -----------
-    # dynamic_draft_m — полная динамическая осадка (draft+squat+heel+wave),
-    # dynamic_squat_m — только проседание, heel/wave — отдельно: фронт рисует
-    # бейджи Squat/Cb/динам.осадка именно из этих полей.
-    # min_chart_depth_m — порог, которым резал A*; strict_dukc — каким режимом
-    # считали (True=PIANC, False=legacy). Фронт/лог по этим двум полям может
-    # понять, почему маршрут не нашёлся: поднять прилив или убавить ход.
     diagnostics = {
         "distance_m": round(cum_dist_m, 0),
         "distance_nm": total_dist_nm,
@@ -544,12 +549,15 @@ def calculate_route(req: RouteRequest):
         "dynamic_draft_m": round(search_dynamic_draft, 2),
         "dynamic_squat_m": round(dynamic_squat, 2),
         "heel_sinkage_m": round(search_budget["heel_sinkage_m"], 3),
+        "max_actual_heel_sinkage_m": round(max_actual_heel, 3),
         "wave_allowance_m": round(search_budget["wave_allowance_m"], 3),
         "min_chart_depth_m": round(min_required_chart_depth, 2),
         "strict_dukc": req.strict_dukc,
         "waypoints": len(combined_waypoints),
         "tide_offset_m": req.tide_offset_m,
         "wave_height_m": req.wave_height_m,
+        "routing_engine": "seapath_native_cpp" if _HAS_NATIVE else "python_fallback",
+        "has_maneuvering_violation": has_maneuver_violation,
     }
 
     return {

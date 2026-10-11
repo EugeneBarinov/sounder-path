@@ -225,8 +225,11 @@ def test_safety_check_turn_radius_restriction_alarm():
     )
 
     alarm_codes = [a["code"] for a in res["alarms"]]
-    assert "ALM-05-RADIUS-RESTRICTION" in alarm_codes
-    alm = next(a for a in res["alarms"] if a["code"] == "ALM-05-RADIUS-RESTRICTION")
+    assert "ALM-05-MANEUVERING-LIMIT-VIOLATION" in alarm_codes
+    alm = next(a for a in res["alarms"] if a["code"] == "ALM-05-MANEUVERING-LIMIT-VIOLATION")
     assert alm["waypoint_index"] == 2
     assert "80m" in alm["detail"]
     assert "250m" in alm["detail"]
+    assert alm["severity"] == "CRITICAL"
+    assert res["is_safe"] is False
+    assert res["status"] == "CRITICAL_HAZARD"
