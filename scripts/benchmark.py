@@ -17,11 +17,15 @@ print("--- SEAPATH ENGINE BENCHMARK ---")
 
 BASE = Path(__file__).resolve().parent.parent
 tif = BASE / "data" / "raw" / "E8_2024.tif"
+sample_tif = BASE / "data" / "raw" / "operational_sample.tif"
 if tif.exists():
     print(f"Loading {tif.name}...")
     grid = BathymetricGrid.load_from_geotiff(tif).downsample(factor=10)
+elif sample_tif.exists():
+    print(f"Loading operational sample: {sample_tif.name}...")
+    grid = BathymetricGrid.load_from_geotiff(sample_tif)
 else:
-    print("[DEMO] E8_2024.tif not found — using synthetic grid.")
+    print("[DEMO] Operational GeoTIFF not found — using synthetic grid.")
     grid = BathymetricGrid.create_synthetic()
 
 # Что делаем в бенчмарке (честное сравнение Python vs C++):

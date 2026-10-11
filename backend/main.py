@@ -55,7 +55,14 @@ async def no_cache_header_middleware(request: Request, call_next):
 _BASE_DIR = Path(__file__).resolve().parent.parent
 _RAW_DATA_DIR = _BASE_DIR / "data" / "raw"
 _GEOTIFF_PATH_ENV = os.environ.get("SEAPATH_GEOTIFF_PATH")
-_GEOTIFF_PATH = Path(_GEOTIFF_PATH_ENV) if _GEOTIFF_PATH_ENV else (_RAW_DATA_DIR / "E8_2024.tif")
+if _GEOTIFF_PATH_ENV:
+    _GEOTIFF_PATH = Path(_GEOTIFF_PATH_ENV)
+elif (_RAW_DATA_DIR / "E8_2024.tif").exists():
+    _GEOTIFF_PATH = _RAW_DATA_DIR / "E8_2024.tif"
+elif (_RAW_DATA_DIR / "operational_sample.tif").exists():
+    _GEOTIFF_PATH = _RAW_DATA_DIR / "operational_sample.tif"
+else:
+    _GEOTIFF_PATH = _RAW_DATA_DIR / "E8_2024.tif"
 _IS_PRODUCTION = os.environ.get("SEAPATH_ENV", "").strip().lower() == "production"
 
 is_synthetic_mode = False
@@ -94,7 +101,8 @@ if _LOCAL_SURVEY_CSV.exists():
 
 # 2. Downsample for routing AFTER soundings fusion
 if not is_synthetic_mode and _GEOTIFF_PATH.exists():
-    routing_grid = full_grid.downsample(factor=10)
+    _downsample_factor = 10 if full_grid.rows >= 2000 else 1
+    routing_grid = full_grid.downsample(factor=_downsample_factor) if _downsample_factor > 1 else full_grid
 else:
     routing_grid = full_grid
 routing_grid.is_synthetic = is_synthetic_mode
