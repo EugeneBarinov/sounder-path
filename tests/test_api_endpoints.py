@@ -1198,7 +1198,7 @@ print('SUCCESS_CACHE_FALLBACK')
     assert "SUCCESS_CACHE_FALLBACK" in proc.stdout
 
 
-def test_export_safety_verifies_per_leg_xtd_preventing_shoal_bypass(client):
+def test_export_safety_verifies_per_leg_xtd_preventing_shoal_bypass(client, monkeypatch):
     """
     P1 verification: Each route segment must be audited against its leg's specific XTD.
     If Leg 1 has a narrow corridor (0.05 NM = ~92m) and Leg 2 expands to wide corridor
@@ -1207,46 +1207,58 @@ def test_export_safety_verifies_per_leg_xtd_preventing_shoal_bypass(client):
     Conversely, if Leg 2 is configured with narrow XTD (0.05 NM), the shoal is outside the
     evaluated corridor and the route passes safety verification with HTTP 200.
     """
+    import numpy as np
     import backend.main as main_mod
+    from backend.core.grid import BathymetricGrid
 
-    g = main_mod.full_grid
-    # Cell along Leg 2 (lon 34.45, lat 43.503 is ~333m north of centerline lat 43.5)
-    r, c = g.lonlat_to_cell(34.45, 43.503)
-    orig_depth = float(g.depths[r, c])
-    try:
-        # Place shallow obstruction (1.0m depth vs 2.5m minimum required depth)
-        g.depths[r, c] = 1.0
+    # Create a high-resolution grid (100x100 over 0.1 deg ~ 110m cells)
+    test_grid = BathymetricGrid(
+        lat_min=44.0,
+        lat_max=44.1,
+        lon_min=33.0,
+        lon_max=33.1,
+        depths=np.full((100, 100), 20.0, dtype=np.float32),
+    )
+    test_grid.is_synthetic = False
 
-        # Case 1: Leg 2 expands to wide corridor (0.50 NM = 926m) -> must detect shoal & return 400
-        payload_wide = {
-            "waypoints": [
-                {"lon": 34.0, "lat": 43.5, "port_xtd_nm": 0.05, "stbd_xtd_nm": 0.05},
-                {"lon": 34.3, "lat": 43.5, "port_xtd_nm": 0.50, "stbd_xtd_nm": 0.50},
-                {"lon": 34.6, "lat": 43.5, "port_xtd_nm": 0.50, "stbd_xtd_nm": 0.50},
-            ],
-            "draft": 2.0,
-            "speed_knots": 10.0,
-            "ukc": 0.5,
-        }
-        res_wide = client.post("/api/export/rtz", json=payload_wide)
-        assert res_wide.status_code == 400
-        assert "ALM-04-XTD-CORRIDOR-HAZARD" in res_wide.json()["detail"]
+    # Route runs along latitude 44.05:
+    # Leg 1: (33.01, 44.05) -> (33.05, 44.05) with narrow XTD 0.05 NM (~92m)
+    # Leg 2: (33.05, 44.05) -> (33.09, 44.05)
+    # Lateral offset 0.003 deg latitude ~ 333m north (latitude 44.053)
+    r_shoal, c_shoal = test_grid.lonlat_to_cell(33.07, 44.053)
+    test_grid.depths[r_shoal, c_shoal] = 1.0  # Shallow dangerous shoal (1.0m)
 
-        # Case 2: Leg 2 has narrow corridor (0.05 NM = 92m) -> shoal is outside corridor -> must succeed
-        payload_narrow = {
-            "waypoints": [
-                {"lon": 34.0, "lat": 43.5, "port_xtd_nm": 0.05, "stbd_xtd_nm": 0.05},
-                {"lon": 34.3, "lat": 43.5, "port_xtd_nm": 0.05, "stbd_xtd_nm": 0.05},
-                {"lon": 34.6, "lat": 43.5, "port_xtd_nm": 0.05, "stbd_xtd_nm": 0.05},
-            ],
-            "draft": 2.0,
-            "speed_knots": 10.0,
-            "ukc": 0.5,
-        }
-        res_narrow = client.post("/api/export/rtz", json=payload_narrow)
-        assert res_narrow.status_code == 200
-    finally:
-        g.depths[r, c] = orig_depth
+    monkeypatch.setattr(main_mod, "full_grid", test_grid)
+    monkeypatch.setattr(main_mod, "is_synthetic_mode", False)
+
+    # Case 1: Leg 2 expands to wide corridor (0.50 NM = 926m) -> detects shoal & rejects export
+    payload_wide = {
+        "waypoints": [
+            {"lon": 33.01, "lat": 44.05, "port_xtd_nm": 0.05, "stbd_xtd_nm": 0.05},
+            {"lon": 33.05, "lat": 44.05, "port_xtd_nm": 0.50, "stbd_xtd_nm": 0.50},
+            {"lon": 33.09, "lat": 44.05, "port_xtd_nm": 0.50, "stbd_xtd_nm": 0.50},
+        ],
+        "draft": 2.0,
+        "speed_knots": 10.0,
+        "ukc": 0.5,
+    }
+    res_wide = client.post("/api/export/rtz", json=payload_wide)
+    assert res_wide.status_code == 400
+    assert "ALM-04-XTD-CORRIDOR-HAZARD" in res_wide.json()["detail"]
+
+    # Case 2: Leg 2 maintains narrow corridor (0.05 NM = 92m) -> shoal is outside corridor -> succeeds
+    payload_narrow = {
+        "waypoints": [
+            {"lon": 33.01, "lat": 44.05, "port_xtd_nm": 0.05, "stbd_xtd_nm": 0.05},
+            {"lon": 33.05, "lat": 44.05, "port_xtd_nm": 0.05, "stbd_xtd_nm": 0.05},
+            {"lon": 33.09, "lat": 44.05, "port_xtd_nm": 0.05, "stbd_xtd_nm": 0.05},
+        ],
+        "draft": 2.0,
+        "speed_knots": 10.0,
+        "ukc": 0.5,
+    }
+    res_narrow = client.post("/api/export/rtz", json=payload_narrow)
+    assert res_narrow.status_code == 200
 
 
 def test_export_rejects_route_deviating_from_turn_arc_even_if_apex_coincides(client):
