@@ -10,6 +10,8 @@ from typing import List, Dict, Any, Tuple, Optional
 import math
 import numpy as np
 
+from backend.core.kinematics import calculate_distance_m
+
 
 DEG_TO_RAD = math.pi / 180.0
 RAD_TO_DEG = 180.0 / math.pi
@@ -28,14 +30,86 @@ def calculate_bearing_deg(lat1: float, lon1: float, lat2: float, lon2: float) ->
     return (theta + 360.0) % 360.0
 
 
+def compute_route_segment_xtds(
+    route_coords: List[List[float]],
+    waypoints: List[Dict[str, Any]],
+    default_port_xtd_m: float = 185.2,
+    default_stbd_xtd_m: float = 185.2,
+) -> List[Tuple[float, float]]:
+    """
+    Computes per-segment Cross-Track Distance (port_xtd_m, stbd_xtd_m) along route_coords
+    by mapping each route segment to its corresponding passage plan leg.
+    Ensures that every leg's unique XTD specified in waypoints (e.g. narrow in harbor,
+    wide in open sea) is verified against bathymetry and obstacles.
+    """
+    n_segs = max(1, len(route_coords) - 1)
+    if not waypoints or len(waypoints) < 2 or len(route_coords) < 2:
+        return [(default_port_xtd_m, default_stbd_xtd_m)] * n_segs
+
+    # Extract per-leg XTDs from waypoints (wp[i] defines leg from wp[i] to wp[i+1])
+    n_legs = len(waypoints) - 1
+    leg_xtds: List[Tuple[float, float]] = []
+    for i in range(n_legs):
+        wp = waypoints[i]
+        p_raw = wp.get("port_xtd_nm")
+        s_raw = wp.get("stbd_xtd_nm")
+        p_m = float(p_raw) * 1852.0 if (p_raw is not None and float(p_raw) > 0.0) else default_port_xtd_m
+        s_m = float(s_raw) * 1852.0 if (s_raw is not None and float(s_raw) > 0.0) else default_stbd_xtd_m
+        leg_xtds.append((p_m, s_m))
+
+    # If route_coords directly match waypoints
+    if len(route_coords) == len(waypoints):
+        return leg_xtds
+
+    # Project each waypoint along route_coords to find bounding indices
+    wp_indices: List[int] = [0]
+    for m in range(1, len(waypoints) - 1):
+        wp = waypoints[m]
+        w_lat = float(wp.get("lat") if wp.get("lat") is not None else wp.get("latitude", 0.0))
+        w_lon = float(wp.get("lon") if wp.get("lon") is not None else (wp.get("lng") if wp.get("lng") is not None else wp.get("longitude", 0.0)))
+        prev_idx = wp_indices[-1]
+        best_k = prev_idx
+        best_dist = math.inf
+        for k in range(prev_idx, len(route_coords)):
+            d = calculate_distance_m(w_lat, w_lon, route_coords[k][1], route_coords[k][0])
+            if d < best_dist:
+                best_dist = d
+                best_k = k
+        wp_indices.append(best_k)
+    wp_indices.append(len(route_coords) - 1)
+
+    # Assign XTDs to each segment of route_coords
+    result: List[Tuple[float, float]] = []
+    for j in range(n_segs):
+        leg_idx = 0
+        for m in range(n_legs):
+            if wp_indices[m] <= j < wp_indices[m + 1]:
+                leg_idx = m
+                break
+            elif j >= wp_indices[n_legs]:
+                leg_idx = n_legs - 1
+
+        # Check if segment is at turn junction transition between leg_idx - 1 and leg_idx
+        if leg_idx > 0 and abs(j - wp_indices[leg_idx]) <= 2:
+            prev_p, prev_s = leg_xtds[leg_idx - 1]
+            cur_p, cur_s = leg_xtds[leg_idx]
+            result.append((max(prev_p, cur_p), max(prev_s, cur_s)))
+        else:
+            result.append(leg_xtds[leg_idx])
+
+    return result
+
+
 def generate_safety_corridor_polygon(
     route_coords: List[List[float]],
     port_xtd_m: float = 185.2,
     stbd_xtd_m: float = 185.2,
+    seg_xtds: Optional[List[Tuple[float, float]]] = None,
 ) -> Dict[str, Any]:
     """
     Constructs a 2D polygonal safety corridor (swept channel) around a route LineString.
     Computes normal offsets on port and starboard sides with circular endcaps at bow and stern.
+    Supports per-segment XTD widths when seg_xtds is provided.
     Returns a GeoJSON Feature representing the corridor polygon.
     """
     if len(route_coords) < 2:
@@ -69,14 +143,26 @@ def generate_safety_corridor_polygon(
         port_brg = (brg - 90.0) * DEG_TO_RAD
         stbd_brg = (brg + 90.0) * DEG_TO_RAD
 
+        if seg_xtds and len(seg_xtds) > 0:
+            if i == 0:
+                cur_p, cur_s = seg_xtds[0]
+            elif i == n - 1:
+                cur_p, cur_s = seg_xtds[-1]
+            else:
+                p1, s1 = seg_xtds[min(i - 1, len(seg_xtds) - 1)]
+                p2, s2 = seg_xtds[min(i, len(seg_xtds) - 1)]
+                cur_p, cur_s = max(p1, p2), max(s1, s2)
+        else:
+            cur_p, cur_s = port_xtd_m, stbd_xtd_m
+
         # Left (Port) offset
-        lat_left = lat_i + (port_xtd_m * math.cos(port_brg)) / METERS_PER_DEG_LAT
-        lon_left = lon_i + (port_xtd_m * math.sin(port_brg)) / m_per_deg_lon
+        lat_left = lat_i + (cur_p * math.cos(port_brg)) / METERS_PER_DEG_LAT
+        lon_left = lon_i + (cur_p * math.sin(port_brg)) / m_per_deg_lon
         left_points.append([round(lon_left, 6), round(lat_left, 6)])
 
         # Right (Starboard) offset
-        lat_right = lat_i + (stbd_xtd_m * math.cos(stbd_brg)) / METERS_PER_DEG_LAT
-        lon_right = lon_i + (stbd_xtd_m * math.sin(stbd_brg)) / m_per_deg_lon
+        lat_right = lat_i + (cur_s * math.cos(stbd_brg)) / METERS_PER_DEG_LAT
+        lon_right = lon_i + (cur_s * math.sin(stbd_brg)) / m_per_deg_lon
         right_points.append([round(lon_right, 6), round(lat_right, 6)])
 
     # Rounded endcap at terminal waypoint (n - 1) sweeping clockwise from port to starboard
@@ -88,13 +174,16 @@ def generate_safety_corridor_polygon(
     ux_last, uy_last = math.sin(hdg_rad_last), math.cos(hdg_rad_last)
     nx_last, ny_last = uy_last, -ux_last  # Starboard normal
 
+    bow_p = seg_xtds[-1][0] if (seg_xtds and len(seg_xtds) > 0) else port_xtd_m
+    bow_s = seg_xtds[-1][1] if (seg_xtds and len(seg_xtds) > 0) else stbd_xtd_m
+
     for step in range(1, 8):
         frac = step / 8.0
         rel_ang_rad = (-0.5 + frac) * math.pi
         # Longitudinal forward displacement along track
-        fwd_dist = 0.5 * (port_xtd_m + stbd_xtd_m) * math.cos(rel_ang_rad)
+        fwd_dist = 0.5 * (bow_p + bow_s) * math.cos(rel_ang_rad)
         # Lateral displacement: port if rel_ang_rad < 0, else stbd
-        lat_dist = port_xtd_m * math.sin(rel_ang_rad) if rel_ang_rad < 0 else stbd_xtd_m * math.sin(rel_ang_rad)
+        lat_dist = bow_p * math.sin(rel_ang_rad) if rel_ang_rad < 0 else bow_s * math.sin(rel_ang_rad)
 
         dx_m = fwd_dist * ux_last + lat_dist * nx_last
         dy_m = fwd_dist * uy_last + lat_dist * ny_last
@@ -112,11 +201,14 @@ def generate_safety_corridor_polygon(
     ux_first, uy_first = math.sin(hdg_rad_first), math.cos(hdg_rad_first)
     nx_first, ny_first = uy_first, -ux_first
 
+    stern_p = seg_xtds[0][0] if (seg_xtds and len(seg_xtds) > 0) else port_xtd_m
+    stern_s = seg_xtds[0][1] if (seg_xtds and len(seg_xtds) > 0) else stbd_xtd_m
+
     for step in range(1, 8):
         frac = step / 8.0
         rel_ang_rad = (0.5 - frac) * math.pi
-        aft_dist = -0.5 * (port_xtd_m + stbd_xtd_m) * math.cos(rel_ang_rad)
-        lat_dist = stbd_xtd_m * math.sin(rel_ang_rad) if rel_ang_rad > 0 else port_xtd_m * math.sin(rel_ang_rad)
+        aft_dist = -0.5 * (stern_p + stern_s) * math.cos(rel_ang_rad)
+        lat_dist = stern_s * math.sin(rel_ang_rad) if rel_ang_rad > 0 else stern_p * math.sin(rel_ang_rad)
 
         dx_m = aft_dist * ux_first + lat_dist * nx_first
         dy_m = aft_dist * uy_first + lat_dist * ny_first
@@ -149,10 +241,12 @@ def scan_corridor_raster_swath(
     stbd_xtd_m: float,
     grid: Any,
     safety_depth: float,
+    seg_xtds: Optional[List[Tuple[float, float]]] = None,
 ) -> List[Dict[str, Any]]:
     """
     Exhaustively scans the entire 2D area (raster swath) of the Cross-Track Safety Corridor (XTD).
     Checks 100% of grid cells within [port_xtd, stbd_xtd] bounds along each leg without premature exit.
+    Supports per-segment/per-leg XTD dimensions when seg_xtds is provided.
     Classifies hazards by type: SHALLOW_WATER, LAND, RESTRICTED_ZONE, NODATA_UNVERIFIED.
     """
     if len(route_coords) < 2 or not hasattr(grid, "lonlat_to_cell") or not hasattr(grid, "get_cell_coords"):
@@ -198,8 +292,13 @@ def scan_corridor_raster_swath(
         nx = uy   # Unit normal pointing starboard
         ny = -ux
 
-        r_endcap = 0.5 * (port_xtd_m + stbd_xtd_m)
-        max_xtd = max(port_xtd_m, stbd_xtd_m)
+        if seg_xtds and seg < len(seg_xtds):
+            cur_port_xtd_m, cur_stbd_xtd_m = seg_xtds[seg]
+        else:
+            cur_port_xtd_m, cur_stbd_xtd_m = port_xtd_m, stbd_xtd_m
+
+        r_endcap = 0.5 * (cur_port_xtd_m + cur_stbd_xtd_m)
+        max_xtd = max(cur_port_xtd_m, cur_stbd_xtd_m)
         max_reach = max(max_xtd, r_endcap) + cell_radius_m + 50.0
         d_lat_deg = max_reach / m_per_deg_lat
         d_lon_deg = max_reach / m_per_deg_lon
@@ -219,6 +318,8 @@ def scan_corridor_raster_swath(
                     "lat": round(lat0, 6),
                     "depth": 0.0,
                     "xtd_offset_m": round(max_xtd, 1),
+                    "port_xtd_m": round(cur_port_xtd_m, 1),
+                    "stbd_xtd_m": round(cur_stbd_xtd_m, 1),
                     "is_restricted": False,
                 })
 
@@ -243,14 +344,13 @@ def scan_corridor_raster_swath(
                 s = wx * ux + wy * uy
                 d_xtd = wx * nx + wy * ny  # > 0 starboard, < 0 port
 
-                r_endcap = 0.5 * (port_xtd_m + stbd_xtd_m)
-                lat_xtd = stbd_xtd_m if d_xtd >= 0.0 else port_xtd_m
+                lat_xtd = cur_stbd_xtd_m if d_xtd >= 0.0 else cur_port_xtd_m
 
                 # Physical intersection of cell footprint with corridor swath & endcaps
                 is_inside = False
                 if 0.0 <= s <= seg_len:
                     # Directly along leg
-                    if -port_xtd_m - cell_radius_m <= d_xtd <= stbd_xtd_m + cell_radius_m:
+                    if -cur_port_xtd_m - cell_radius_m <= d_xtd <= cur_stbd_xtd_m + cell_radius_m:
                         is_inside = True
                 elif s < 0.0:
                     if seg == 0:
@@ -261,7 +361,7 @@ def scan_corridor_raster_swath(
                             is_inside = True
                     else:
                         # Intermediate vertex junction tolerance
-                        if s >= -cell_radius_m and (-port_xtd_m - cell_radius_m <= d_xtd <= stbd_xtd_m + cell_radius_m):
+                        if s >= -cell_radius_m and (-cur_port_xtd_m - cell_radius_m <= d_xtd <= cur_stbd_xtd_m + cell_radius_m):
                             is_inside = True
                 elif s > seg_len:
                     if seg == n - 2:
@@ -272,7 +372,7 @@ def scan_corridor_raster_swath(
                             is_inside = True
                     else:
                         # Intermediate vertex junction tolerance
-                        if s <= seg_len + cell_radius_m and (-port_xtd_m - cell_radius_m <= d_xtd <= stbd_xtd_m + cell_radius_m):
+                        if s <= seg_len + cell_radius_m and (-cur_port_xtd_m - cell_radius_m <= d_xtd <= cur_stbd_xtd_m + cell_radius_m):
                             is_inside = True
 
                 if is_inside:
@@ -303,6 +403,8 @@ def scan_corridor_raster_swath(
                             "lat": round(lat_c, 6),
                             "depth": round(depth_val, 2),
                             "xtd_offset_m": round(d_xtd, 1),
+                            "port_xtd_m": round(cur_port_xtd_m, 1),
+                            "stbd_xtd_m": round(cur_stbd_xtd_m, 1),
                             "is_restricted": is_restricted,
                             "is_unverified_coverage": is_unverified,
                             "hazard_type": h_type,
@@ -491,23 +593,32 @@ def verify_ecdis_route_safety(
         else [[wp["lon"], wp["lat"]] for wp in waypoints]
     )
     if grid and hasattr(grid, "lonlat_to_cell") and len(active_route_coords) >= 2:
+        seg_xtds = compute_route_segment_xtds(
+            active_route_coords,
+            waypoints=waypoints,
+            default_port_xtd_m=port_xtd_m,
+            default_stbd_xtd_m=stbd_xtd_m,
+        )
         corridor_hazards = scan_corridor_raster_swath(
             route_coords=active_route_coords,
             port_xtd_m=port_xtd_m,
             stbd_xtd_m=stbd_xtd_m,
             grid=grid,
             safety_depth=safety_depth,
+            seg_xtds=seg_xtds,
         )
 
         # Alarm 1: Unverified coverage / NoData (XTD extends into uncharted waters)
         unverified_h = next((h for h in corridor_hazards if h.get("is_unverified_coverage") or h.get("hazard_type") == "NODATA_UNVERIFIED"), None)
         if unverified_h:
+            h_p_xtd = unverified_h.get("port_xtd_m", port_xtd_m)
+            h_s_xtd = unverified_h.get("stbd_xtd_m", stbd_xtd_m)
             alarms.append({
                 "severity": "CRITICAL",
                 "code": "ALM-06-UNVERIFIED-DATA-COVERAGE",
                 "title": "Uncharted Waters Inside XTD Safety Corridor",
                 "detail": (
-                    f"XTD safety corridor ({port_xtd_m:.0f}m port / {stbd_xtd_m:.0f}m stbd) extends outside verified bathymetry "
+                    f"XTD safety corridor ({h_p_xtd:.0f}m port / {h_s_xtd:.0f}m stbd) extends outside verified bathymetry "
                     f"or into unsurveyed NoData area near ({unverified_h['lon']:.4f}, {unverified_h['lat']:.4f}). "
                     f"Navigating within corridor risks uncharted hazards."
                 ),
@@ -518,13 +629,15 @@ def verify_ecdis_route_safety(
         shallow_hazards = [h for h in corridor_hazards if h.get("hazard_type") == "SHALLOW_WATER"]
         if shallow_hazards:
             worst_shallow = min(shallow_hazards, key=lambda h: h["depth"])
+            w_p_xtd = worst_shallow.get("port_xtd_m", port_xtd_m)
+            w_s_xtd = worst_shallow.get("stbd_xtd_m", stbd_xtd_m)
             alarms.append({
                 "severity": "CRITICAL",
                 "code": "ALM-04-XTD-CORRIDOR-HAZARD",
                 "title": "Safety Corridor Shoal / Grounding Danger Inside XTD",
                 "detail": (
                     f"Submerged shoal ({worst_shallow['depth']:.1f}m <= {safety_depth:.1f}m) detected inside full 2D "
-                    f"XTD safety corridor at ({worst_shallow['lon']:.4f}, {worst_shallow['lat']:.4f}), offset {abs(worst_shallow['xtd_offset_m']):.0f}m "
+                    f"XTD safety corridor ({w_p_xtd:.0f}m port / {w_s_xtd:.0f}m stbd) at ({worst_shallow['lon']:.4f}, {worst_shallow['lat']:.4f}), offset {abs(worst_shallow['xtd_offset_m']):.0f}m "
                     f"to {'Starboard' if worst_shallow['xtd_offset_m'] > 0 else 'Port'}. Vessel drifting within allowed XTD will ground."
                 ),
                 "hazard_depth_m": worst_shallow["depth"],
@@ -535,12 +648,14 @@ def verify_ecdis_route_safety(
         restr_hazards = [h for h in corridor_hazards if h.get("hazard_type") == "RESTRICTED_ZONE"]
         if restr_hazards:
             worst_restr = restr_hazards[0]
+            r_p_xtd = worst_restr.get("port_xtd_m", port_xtd_m)
+            r_s_xtd = worst_restr.get("stbd_xtd_m", stbd_xtd_m)
             alarms.append({
                 "severity": "CRITICAL",
                 "code": "ALM-08-RESTRICTED-ZONE-VIOLATION",
                 "title": "Prohibited / Restricted Area (RESARE) Inside XTD Corridor",
                 "detail": (
-                    f"XTD safety corridor intersects prohibited or restricted navigational zone at "
+                    f"XTD safety corridor ({r_p_xtd:.0f}m port / {r_s_xtd:.0f}m stbd) intersects prohibited or restricted navigational zone at "
                     f"({worst_restr['lon']:.4f}, {worst_restr['lat']:.4f}), offset {abs(worst_restr['xtd_offset_m']):.0f}m "
                     f"to {'Starboard' if worst_restr['xtd_offset_m'] > 0 else 'Port'}."
                 ),
@@ -551,12 +666,14 @@ def verify_ecdis_route_safety(
         land_hazards = [h for h in corridor_hazards if h.get("hazard_type") == "LAND"]
         if land_hazards:
             worst_land = land_hazards[0]
+            l_p_xtd = worst_land.get("port_xtd_m", port_xtd_m)
+            l_s_xtd = worst_land.get("stbd_xtd_m", stbd_xtd_m)
             alarms.append({
                 "severity": "CRITICAL",
                 "code": "ALM-09-LAND-TERRESTRIAL-HAZARD",
                 "title": "Terrestrial Landmass / Shoreline Penetration Inside XTD",
                 "detail": (
-                    f"XTD safety corridor penetrates dry land at ({worst_land['lon']:.4f}, {worst_land['lat']:.4f}), "
+                    f"XTD safety corridor ({l_p_xtd:.0f}m port / {l_s_xtd:.0f}m stbd) penetrates dry land at ({worst_land['lon']:.4f}, {worst_land['lat']:.4f}), "
                     f"offset {abs(worst_land['xtd_offset_m']):.0f}m to {'Starboard' if worst_land['xtd_offset_m'] > 0 else 'Port'}."
                 ),
                 "hazard_location": [worst_land["lon"], worst_land["lat"]],

@@ -1198,6 +1198,171 @@ print('SUCCESS_CACHE_FALLBACK')
     assert "SUCCESS_CACHE_FALLBACK" in proc.stdout
 
 
+def test_export_safety_verifies_per_leg_xtd_preventing_shoal_bypass(client):
+    """
+    P1 verification: Each route segment must be audited against its leg's specific XTD.
+    If Leg 1 has a narrow corridor (0.05 NM = ~92m) and Leg 2 expands to wide corridor
+    (0.50 NM = ~926m), a shallow shoal located at lateral offset ~330m along Leg 2 must be
+    detected and cause export rejection (HTTP 400 ALM-04-XTD-CORRIDOR-HAZARD).
+    Conversely, if Leg 2 is configured with narrow XTD (0.05 NM), the shoal is outside the
+    evaluated corridor and the route passes safety verification with HTTP 200.
+    """
+    import backend.main as main_mod
+
+    g = main_mod.full_grid
+    # Cell along Leg 2 (lon 34.45, lat 43.503 is ~333m north of centerline lat 43.5)
+    r, c = g.lonlat_to_cell(34.45, 43.503)
+    orig_depth = float(g.depths[r, c])
+    try:
+        # Place shallow obstruction (1.0m depth vs 2.5m minimum required depth)
+        g.depths[r, c] = 1.0
+
+        # Case 1: Leg 2 expands to wide corridor (0.50 NM = 926m) -> must detect shoal & return 400
+        payload_wide = {
+            "waypoints": [
+                {"lon": 34.0, "lat": 43.5, "port_xtd_nm": 0.05, "stbd_xtd_nm": 0.05},
+                {"lon": 34.3, "lat": 43.5, "port_xtd_nm": 0.50, "stbd_xtd_nm": 0.50},
+                {"lon": 34.6, "lat": 43.5, "port_xtd_nm": 0.50, "stbd_xtd_nm": 0.50},
+            ],
+            "draft": 2.0,
+            "speed_knots": 10.0,
+            "ukc": 0.5,
+        }
+        res_wide = client.post("/api/export/rtz", json=payload_wide)
+        assert res_wide.status_code == 400
+        assert "ALM-04-XTD-CORRIDOR-HAZARD" in res_wide.json()["detail"]
+
+        # Case 2: Leg 2 has narrow corridor (0.05 NM = 92m) -> shoal is outside corridor -> must succeed
+        payload_narrow = {
+            "waypoints": [
+                {"lon": 34.0, "lat": 43.5, "port_xtd_nm": 0.05, "stbd_xtd_nm": 0.05},
+                {"lon": 34.3, "lat": 43.5, "port_xtd_nm": 0.05, "stbd_xtd_nm": 0.05},
+                {"lon": 34.6, "lat": 43.5, "port_xtd_nm": 0.05, "stbd_xtd_nm": 0.05},
+            ],
+            "draft": 2.0,
+            "speed_knots": 10.0,
+            "ukc": 0.5,
+        }
+        res_narrow = client.post("/api/export/rtz", json=payload_narrow)
+        assert res_narrow.status_code == 200
+    finally:
+        g.depths[r, c] = orig_depth
+
+
+def test_export_rejects_route_deviating_from_turn_arc_even_if_apex_coincides(client):
+    """
+    P1 verification: A client cannot bypass the turning radius check by providing a triangular
+    shortcut or polyline that merely touches the apex of the arc. The server enforces bidirectional
+    arc conformity (all arc points within max_dev of route track, and all turn zone route vertices
+    within max_dev of canonical filleted track).
+    """
+    from backend.core.kinematics import calculate_turn_arc_geometry, construct_filleted_path
+
+    wps = [
+        {"lon": 33.5, "lat": 43.5, "turn_radius_m": 2000.0},
+        {"lon": 33.5, "lat": 43.7, "turn_radius_m": 2000.0},
+        {"lon": 33.7, "lat": 43.7, "turn_radius_m": 2000.0},
+    ]
+
+    geom = calculate_turn_arc_geometry(33.5, 43.5, 33.5, 43.7, 33.7, 43.7, radius_m=2000.0, speed_knots=10.0)
+    arc = geom["arc_coordinates"]
+    apex = arc[len(arc) // 2]
+    t1 = arc[0]
+    t2 = arc[-1]
+
+    # Triangular shortcut passing through tangent points and arc apex:
+    # Mid-arc chords deviate by ~84m to ~152m from the true circular fillet arc.
+    triangular_route = [
+        [33.5, 43.5],
+        t1,
+        apex,
+        t2,
+        [33.7, 43.7],
+    ]
+
+    res_tri = client.post("/api/export/rtz", json={
+        "waypoints": wps,
+        "route": triangular_route,
+        "draft": 2.0,
+        "speed_knots": 10.0,
+        "ukc": 0.5,
+        "turning_radius_m": 2000.0,
+    })
+    assert res_tri.status_code == 400
+    detail = res_tri.json()["detail"]
+    assert "turning kinematics" in detail or "deviates" in detail or "filleted" in detail
+
+    # In contrast, the canonical filleted path generated with circular turn arcs must pass
+    canonical_route, _ = construct_filleted_path(wps, default_radius_m=2000.0, speed_knots=10.0)
+    res_canon = client.post("/api/export/rtz", json={
+        "waypoints": wps,
+        "route": canonical_route,
+        "draft": 2.0,
+        "speed_knots": 10.0,
+        "ukc": 0.5,
+        "turning_radius_m": 2000.0,
+    })
+    assert res_canon.status_code == 200
+
+
+def test_plan_cache_disk_pruning_ttl_and_max_limit(tmp_path, monkeypatch):
+    """
+    P2 verification: Server-side passage plan disk cache automatically prunes expired
+    JSON plan files based on TTL (SEAPATH_PLAN_CACHE_TTL_SECONDS) and evicts oldest files
+    when exceeding max capacity limit (SEAPATH_MAX_DISK_PLANS).
+    """
+    import os
+    import time
+    import backend.main as main_mod
+
+    cache_dir = tmp_path / "plan_cache"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+
+    monkeypatch.setattr(main_mod, "_PLANS_CACHE_DIR", cache_dir)
+    monkeypatch.setattr(main_mod, "SEAPATH_PLAN_CACHE_TTL_SECONDS", 1800.0)  # 30 minutes
+    monkeypatch.setattr(main_mod, "SEAPATH_MAX_DISK_PLANS", 3)
+
+    # 1. Create an expired plan file (mtime 3600 seconds ago)
+    exp_file = cache_dir / "plan_expired.json"
+    exp_file.write_text('{"plan_id": "plan_expired", "status": "ok"}', encoding="utf-8")
+    t_old = time.time() - 3600.0
+    os.utime(exp_file, (t_old, t_old))
+
+    # 2. Create 5 fresh plan files with sequential timestamps
+    for i in range(5):
+        f = cache_dir / f"plan_fresh_{i}.json"
+        f.write_text(f'{{"plan_id": "plan_fresh_{i}", "val": {i}}}', encoding="utf-8")
+        t_fresh = time.time() - (50.0 - i * 5)
+        os.utime(f, (t_fresh, t_fresh))
+
+    # 3. Create a stale temp file (.tmp)
+    tmp_stale = cache_dir / "stale_upload.tmp"
+    tmp_stale.write_text("in_progress", encoding="utf-8")
+    os.utime(tmp_stale, (t_old, t_old))
+
+    assert len(list(cache_dir.glob("*.json"))) == 6
+
+    # Run pruning
+    main_mod._prune_plan_cache(force=True)
+
+    remaining_json = sorted(p.name for p in cache_dir.glob("*.json"))
+    # Expired file must be pruned
+    assert "plan_expired.json" not in remaining_json
+    # Stale .tmp file must be pruned
+    assert not tmp_stale.exists()
+    # Enforces max limit: exactly 3 newest files remain
+    assert len(remaining_json) == 3
+    assert remaining_json == ["plan_fresh_2.json", "plan_fresh_3.json", "plan_fresh_4.json"]
+
+    # Accessing an expired plan directly via _get_passage_plan returns None and unlinks file
+    exp_file2 = cache_dir / "plan_expired_direct.json"
+    exp_file2.write_text('{"plan_id": "plan_expired_direct"}', encoding="utf-8")
+    os.utime(exp_file2, (t_old, t_old))
+    assert main_mod._get_passage_plan("plan_expired_direct") is None
+    assert not exp_file2.exists()
+
+
+
 
 
 

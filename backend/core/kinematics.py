@@ -39,6 +39,52 @@ def calculate_distance_m(lat1: float, lon1: float, lat2: float, lon2: float) -> 
     return math.sqrt(dx * dx + dy * dy)
 
 
+def point_to_segment_distance_m(
+    pt_lon: float,
+    pt_lat: float,
+    seg_lon0: float,
+    seg_lat0: float,
+    seg_lon1: float,
+    seg_lat1: float,
+) -> float:
+    """Computes minimum Euclidean distance in meters from point (lon, lat) to segment [(lon0, lat0), (lon1, lat1)]."""
+    mean_lat = (seg_lat0 + seg_lat1 + pt_lat) / 3.0
+    m_per_deg_lon = METERS_PER_DEG_LAT * math.cos(mean_lat * DEG_TO_RAD)
+    if abs(m_per_deg_lon) < 1.0:
+        m_per_deg_lon = 1.0
+
+    dx = (seg_lon1 - seg_lon0) * m_per_deg_lon
+    dy = (seg_lat1 - seg_lat0) * METERS_PER_DEG_LAT
+    seg_len_sq = dx * dx + dy * dy
+    if seg_len_sq < 1e-6:
+        d_px = (pt_lon - seg_lon0) * m_per_deg_lon
+        d_py = (pt_lat - seg_lat0) * METERS_PER_DEG_LAT
+        return math.hypot(d_px, d_py)
+
+    wx = (pt_lon - seg_lon0) * m_per_deg_lon
+    wy = (pt_lat - seg_lat0) * METERS_PER_DEG_LAT
+    t = max(0.0, min(1.0, (wx * dx + wy * dy) / seg_len_sq))
+    proj_x = t * dx
+    proj_y = t * dy
+    return math.hypot(wx - proj_x, wy - proj_y)
+
+
+def point_to_polyline_distance_m(pt_lon: float, pt_lat: float, polyline: List[List[float]]) -> float:
+    """Computes minimum Euclidean distance in meters from a point [lon, lat] to a polyline."""
+    if not polyline:
+        return 0.0
+    if len(polyline) == 1:
+        return calculate_distance_m(pt_lat, pt_lon, polyline[0][1], polyline[0][0])
+    return min(
+        point_to_segment_distance_m(
+            pt_lon, pt_lat,
+            polyline[i][0], polyline[i][1],
+            polyline[i + 1][0], polyline[i + 1][1]
+        )
+        for i in range(len(polyline) - 1)
+    )
+
+
 def point_along_bearing(lat: float, lon: float, bearing_deg: float, distance_m: float) -> Tuple[float, float]:
     """Compute new lat/lon from origin along given compass bearing by distance in meters."""
     brg_rad = bearing_deg * DEG_TO_RAD

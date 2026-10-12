@@ -5,6 +5,8 @@ FastAPI service providing bathymetric passage planning, fairway optimization,
 and real-time under-keel clearance (UKC) analysis.
 """
 
+import os
+import time
 from collections import deque, OrderedDict
 from pathlib import Path
 from typing import Optional, Tuple, List, Dict, Any
@@ -21,7 +23,7 @@ from backend.core.grid import BathymetricGrid
 from backend.core.router import Router
 from backend.core.fairways import rasterize_fairway_weights, load_fairways_geojson
 from backend.core.export import export_to_gpx, export_to_rtz
-from backend.core.safety import generate_safety_corridor_polygon, verify_ecdis_route_safety
+from backend.core.safety import generate_safety_corridor_polygon, verify_ecdis_route_safety, compute_route_segment_xtds
 from backend.core.dukc import compute_dukc_budget, calculate_tidal_window, compute_search_budget, calculate_turning_heel
 from backend.core.bottleneck import analyze_route_bottlenecks
 from backend.core.kinematics import (
@@ -31,6 +33,8 @@ from backend.core.kinematics import (
     calculate_turn_arc_geometry,
     construct_filleted_path,
     splice_turn_arcs_into_route,
+    point_to_polyline_distance_m,
+    point_to_segment_distance_m,
 )
 import math
 
@@ -630,10 +634,80 @@ except Exception:
     _PLANS_CACHE_DIR = Path(tempfile.gettempdir()) / "seapath_cache" / "plans"
     _PLANS_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
+_DEFAULT_CACHE_TTL_HOURS = 24.0
+_DEFAULT_MAX_DISK_PLANS = 500
+
+try:
+    SEAPATH_PLAN_CACHE_TTL_SECONDS = float(os.getenv("SEAPATH_PLAN_CACHE_TTL_HOURS", str(_DEFAULT_CACHE_TTL_HOURS))) * 3600.0
+except Exception:
+    SEAPATH_PLAN_CACHE_TTL_SECONDS = 86400.0
+
+try:
+    SEAPATH_MAX_DISK_PLANS = int(os.getenv("SEAPATH_MAX_DISK_PLANS", str(_DEFAULT_MAX_DISK_PLANS)))
+except Exception:
+    SEAPATH_MAX_DISK_PLANS = 500
+
+_last_cache_prune_time: float = 0.0
+
+
+def _prune_plan_cache(force: bool = False) -> None:
+    """
+    Safely prunes disk cache files in _PLANS_CACHE_DIR:
+    1. Removes expired JSON plan files older than SEAPATH_PLAN_CACHE_TTL_SECONDS.
+    2. Enforces SEAPATH_MAX_DISK_PLANS by deleting oldest files by mtime.
+    3. Cleans orphan .tmp files older than 300 seconds.
+    Throttled to run at most once every 30 seconds unless force=True.
+    Thread-safe and fail-safe: never raises exceptions to callers.
+    """
+    global _last_cache_prune_time
+    now = time.time()
+    if not force and (now - _last_cache_prune_time < 30.0):
+        return
+
+    _last_cache_prune_time = now
+    try:
+        if not _PLANS_CACHE_DIR.exists():
+            return
+
+        json_files: List[Tuple[Path, float]] = []
+        for p in _PLANS_CACHE_DIR.iterdir():
+            try:
+                if p.is_file():
+                    st = p.stat()
+                    if p.suffix == ".tmp":
+                        if now - st.st_mtime > 300.0:
+                            p.unlink(missing_ok=True)
+                    elif p.suffix == ".json":
+                        age = now - st.st_mtime
+                        if age > SEAPATH_PLAN_CACHE_TTL_SECONDS:
+                            p.unlink(missing_ok=True)
+                            plan_id = p.stem
+                            _SAVED_PLANS.pop(plan_id, None)
+                        else:
+                            json_files.append((p, st.st_mtime))
+            except Exception:
+                continue
+
+        # If remaining files still exceed max capacity, delete oldest by mtime
+        if len(json_files) > SEAPATH_MAX_DISK_PLANS:
+            json_files.sort(key=lambda item: item[1])  # oldest first
+            to_remove_count = len(json_files) - SEAPATH_MAX_DISK_PLANS
+            for p, _ in json_files[:to_remove_count]:
+                try:
+                    p.unlink(missing_ok=True)
+                    plan_id = p.stem
+                    _SAVED_PLANS.pop(plan_id, None)
+                except Exception:
+                    continue
+    except Exception:
+        pass
+
+
 _SAVED_PLANS: "OrderedDict[str, Dict[str, Any]]" = OrderedDict()
 
+
 def _store_passage_plan(plan_id: str, plan_data: Dict[str, Any]) -> None:
-    """Stores verified passage plan in memory LRU and cross-process disk cache."""
+    """Stores verified passage plan in memory LRU and cross-process disk cache with automatic pruning."""
     # 1. Update in-memory LRU
     if plan_id in _SAVED_PLANS:
         _SAVED_PLANS.move_to_end(plan_id)
@@ -648,12 +722,13 @@ def _store_passage_plan(plan_id: str, plan_data: Dict[str, Any]) -> None:
         with open(tmp_file, "w", encoding="utf-8") as f:
             json.dump(plan_data, f)
         tmp_file.replace(plan_file)
+        _prune_plan_cache()
     except Exception:
         pass
 
 
 def _get_passage_plan(plan_id: str) -> Optional[Dict[str, Any]]:
-    """Retrieves verified passage plan from memory LRU or cross-process disk cache."""
+    """Retrieves verified passage plan from memory LRU or cross-process disk cache enforcing TTL."""
     # 1. Check in-memory LRU
     if plan_id in _SAVED_PLANS:
         _SAVED_PLANS.move_to_end(plan_id)
@@ -663,6 +738,11 @@ def _get_passage_plan(plan_id: str) -> Optional[Dict[str, Any]]:
     plan_file = _PLANS_CACHE_DIR / f"{plan_id}.json"
     if plan_file.exists():
         try:
+            st = plan_file.stat()
+            if time.time() - st.st_mtime > SEAPATH_PLAN_CACHE_TTL_SECONDS:
+                plan_file.unlink(missing_ok=True)
+                _SAVED_PLANS.pop(plan_id, None)
+                return None
             with open(plan_file, "r", encoding="utf-8") as f:
                 data = json.load(f)
             _SAVED_PLANS[plan_id] = data
@@ -997,10 +1077,17 @@ def calculate_route(req: RouteRequest):
     min_clearance = min((p["clearance"] for p in combined_profile), default=0.0)
 
     # 1. Safety Corridor (XTD)
+    corridor_seg_xtds = compute_route_segment_xtds(
+        combined_route,
+        combined_waypoints,
+        default_port_xtd_m=req.port_xtd_m,
+        default_stbd_xtd_m=req.stbd_xtd_m,
+    )
     corridor_feature = generate_safety_corridor_polygon(
         combined_route,
         port_xtd_m=req.port_xtd_m,
         stbd_xtd_m=req.stbd_xtd_m,
+        seg_xtds=corridor_seg_xtds,
     )
 
     # 2. Circular Turn Arcs & Wheel Over Point (WOP) FeatureCollection
@@ -1287,9 +1374,9 @@ def _validate_route_waypoints_coupling(
             # Angle is strictly calculated on the server from the actual waypoint vectors
             t_angle = abs((b_out - b_in + 180.0) % 360.0 - 180.0)
 
-            # Turning radius is bounded within physical navigation limits [50m, 500m]
+            # Turning radius is bounded within physical navigation limits [50m, 2000m]
             raw_r = wp.turn_radius_m
-            turn_r = min(max(float(raw_r if raw_r is not None and raw_r > 0 else 150.0), 50.0), 500.0)
+            turn_r = min(max(float(raw_r if raw_r is not None and raw_r > 0 else 150.0), 50.0), 2000.0)
 
             # Cap angle for circular fillet offset calculation at 120°
             if 1.0 <= t_angle <= 120.0:
@@ -1297,8 +1384,8 @@ def _validate_route_waypoints_coupling(
                 cos_val = math.cos(half_ang_rad)
                 if cos_val > 0.1:
                     kinematic_offset = turn_r * (1.0 / cos_val - 1.0)
-                    # Absolute physical ceiling of 250m for vertex lateral tolerance
-                    allowed_dev = min(250.0, max(allowed_dev, kinematic_offset + 35.0))
+                    # Kinematic tolerance matches circular fillet offset + buffer (bounded at 2500m)
+                    allowed_dev = min(2500.0, max(allowed_dev, kinematic_offset + 50.0))
 
 
         if min_dev > allowed_dev:
@@ -1393,8 +1480,8 @@ def _verify_export_safety(
             })
         cum_d += seg_d
 
-    port_xtd_m = float(waypoints[0].get("port_xtd_nm", 0.10) or 0.10) * 1852.0 if waypoints else 185.2
-    stbd_xtd_m = float(waypoints[0].get("stbd_xtd_nm", 0.10) or 0.10) * 1852.0 if waypoints else 185.2
+    port_xtd_m = max((float(wp.get("port_xtd_nm", 0.10) or 0.10) for wp in waypoints), default=0.10) * 1852.0
+    stbd_xtd_m = max((float(wp.get("stbd_xtd_nm", 0.10) or 0.10) for wp in waypoints), default=0.10) * 1852.0
 
     safety_audit = verify_ecdis_route_safety(
         waypoints=waypoints,
@@ -1473,12 +1560,26 @@ def _prepare_export_data(req: ExportRouteRequest) -> Tuple[List[Dict[str, Any]],
             wps_dicts.append(d)
         is_safe_claim = req.is_safe
         safety_status_claim = req.safety_status
+        # Construct real physical navigation track with circular fillet turn arcs as Single Source of Truth
+        canonical_route, turn_geoms = construct_filleted_path(
+            wps_dicts,
+            default_radius_m=req.turning_radius_m or 150.0,
+            speed_knots=req.speed_knots,
+            step_m=50.0,
+        )
+        for tg in turn_geoms:
+            wp_idx = tg.get("wp_index", 0) - 1
+            if 0 <= wp_idx < len(wps_dicts):
+                wps_dicts[wp_idx]["turn_radius_m"] = tg.get("effective_radius_m", req.turning_radius_m)
+                if not tg.get("is_feasible", True):
+                    wps_dicts[wp_idx]["maneuver_feasible"] = False
+                    is_safe_claim = False
+                    safety_status_claim = "CRITICAL_HAZARD"
+
         if req.route and len(req.route) >= 2:
-            route_coords = req.route
             # Verify turn arc kinematics coupling:
-            # If any intermediate waypoint has a turning radius that causes an arc departure,
-            # ensure that req.route actually conforms to the circular turn arc rather than
-            # cutting through the corner in a straight line to bypass safety checks.
+            # Check the ENTIRE circular turn arc (both arc coverage and turn zone conformity)
+            # to prevent bypass attempts via jagged corner shortcuts or detours.
             for i in range(1, len(wps_dicts) - 1):
                 wp_cur = wps_dicts[i]
                 wp_prev = wps_dicts[i - 1]
@@ -1497,47 +1598,52 @@ def _prepare_export_data(req: ExportRouteRequest) -> Tuple[List[Dict[str, Any]],
                     radius_m=act_r,
                     speed_knots=req.speed_knots,
                 )
-                if geom and geom.get("arc_coordinates"):
+                if geom and geom.get("arc_coordinates") and len(geom["arc_coordinates"]) >= 2:
                     arc_pts = geom["arc_coordinates"]
                     apex = arc_pts[len(arc_pts) // 2]
                     delta_apex = calculate_distance_m(wp_cur["lat"], wp_cur["lon"], apex[1], apex[0])
-                    if delta_apex >= 30.0:
-                        d_apex_to_route = min(
-                            calculate_distance_m(p[1], p[0], apex[1], apex[0])
-                            for p in req.route
-                        )
-                        max_allowed_dev = max(50.0, 0.35 * delta_apex)
-                        if d_apex_to_route > max_allowed_dev:
-                            raise HTTPException(
-                                status_code=400,
-                                detail=(
-                                    f"Client route geometry does not conform to waypoint {i + 1} turning kinematics "
-                                    f"(radius {act_r:.0f}m, angle {geom['turn_angle_deg']}°): route deviates by "
-                                    f"{d_apex_to_route:.1f}m from required turn arc (allowed: <= {max_allowed_dev:.1f}m). "
-                                    "Omit 'route' to auto-generate certified filleted trajectory, or supply a route conforming to turn arcs."
+                    if delta_apex >= 25.0:
+                        max_allowed_dev = 50.0
+
+                        # Check 1 (Arc Coverage): Every point on the canonical arc must be covered by client route
+                        for arc_pt in arc_pts:
+                            d_arc_to_route = point_to_polyline_distance_m(arc_pt[0], arc_pt[1], req.route)
+                            if d_arc_to_route > max_allowed_dev:
+                                raise HTTPException(
+                                    status_code=400,
+                                    detail=(
+                                        f"Client route geometry does not conform to waypoint {i + 1} turning kinematics "
+                                        f"(radius {act_r:.0f}m, angle {geom['turn_angle_deg']}°): required turn arc departs by "
+                                        f"{d_arc_to_route:.1f}m from route track (allowed: <= {max_allowed_dev:.1f}m). "
+                                        "Omit 'route' to auto-generate certified filleted trajectory, or supply a route conforming to turn arcs."
+                                    )
                                 )
-                            )
+
+                        # Check 2 (Turn Zone Containment): Vertices of client route within turn zone must stay within canonical filleted corridor
+                        wop_dist = float(geom.get("wop_distance_m", 0.0) or act_r)
+                        turn_zone_radius = max(act_r + 50.0, wop_dist + 50.0)
+                        for p in req.route:
+                            d_to_wp = calculate_distance_m(wp_cur["lat"], wp_cur["lon"], p[1], p[0])
+                            if d_to_wp <= turn_zone_radius:
+                                d_pt_to_ref = point_to_polyline_distance_m(p[0], p[1], canonical_route)
+                                if d_pt_to_ref > max_allowed_dev:
+                                    raise HTTPException(
+                                        status_code=400,
+                                        detail=(
+                                            f"Client route geometry contains vertex departing by {d_pt_to_ref:.1f}m from waypoint {i + 1} "
+                                            f"filleted track (radius {act_r:.0f}m, allowed: <= {max_allowed_dev:.1f}m). "
+                                            "Omit 'route' to auto-generate certified filleted trajectory, or supply a route conforming to turn arcs."
+                                        )
+                                    )
+
                     wp_cur["effective_turn_radius_m"] = geom["effective_radius_m"]
                     if not geom.get("is_feasible", True):
                         wp_cur["maneuver_feasible"] = False
                         is_safe_claim = False
                         safety_status_claim = "CRITICAL_HAZARD"
-        else:
-            # Construct real physical navigation track with circular fillet turn arcs
-            route_coords, turn_geoms = construct_filleted_path(
-                wps_dicts,
-                default_radius_m=req.turning_radius_m or 150.0,
-                speed_knots=req.speed_knots,
-                step_m=50.0,
-            )
-            for tg in turn_geoms:
-                wp_idx = tg.get("wp_index", 0) - 1
-                if 0 <= wp_idx < len(wps_dicts):
-                    wps_dicts[wp_idx]["turn_radius_m"] = tg.get("effective_radius_m", req.turning_radius_m)
-                    if not tg.get("is_feasible", True):
-                        wps_dicts[wp_idx]["maneuver_feasible"] = False
-                        is_safe_claim = False
-                        safety_status_claim = "CRITICAL_HAZARD"
+
+        # Canonical filleted track is the Single Source of Truth verified by ECDIS safety engine
+        route_coords = canonical_route
         draft = req.draft
         speed_knots = req.speed_knots
         ukc = req.ukc
