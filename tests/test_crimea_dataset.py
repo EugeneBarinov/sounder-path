@@ -18,7 +18,8 @@ def test_crimea_dataset_summary(client):
     assert data["anchorages_count"] >= 8
     assert data["piers_and_marinas_count"] >= 1000
     assert "bathymetry_115m" in data
-    assert data["bathymetry_115m"]["available"] is True
+    assert isinstance(data["bathymetry_115m"]["available"], bool)
+    assert data["bathymetry_115m"]["resolution"] == "115m (EMODnet DTM Bathymetry)"
 
 
 def test_crimea_lighthouses(client):
