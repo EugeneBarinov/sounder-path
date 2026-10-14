@@ -24,7 +24,7 @@
             </select>
 
             <button id="btn-build-voyage" class="btn-primary-route" title="Проложить безопасный маршрут между выбранными портами">
-                🧭 ПРОЛОЖИТЬ ПЕРЕХОД
+                ПРОЛОЖИТЬ ПЕРЕХОД
             </button>
 
             <div class="route-toolbar" style="margin-top: 8px;">
@@ -48,15 +48,15 @@
         <div class="control-group">
             <label for="vessel-profile">Тип судна (Пресет)</label>
             <select id="vessel-profile" class="vessel-select">
-                <option value="yacht" selected>🚤 Малое судно / Яхта (12м, 10 уз)</option>
-                <option value="ferry">🚢 Паром / Ро-ро (80м, 18 уз)</option>
-                <option value="cargo">🏗️ Сухогруз / Танкер (150м, 12 уз)</option>
-                <option value="custom">⚙️ Пользовательская модель</option>
+                <option value="yacht" selected>Малое судно / Яхта (12м, 10 уз)</option>
+                <option value="ferry">Паром / Ро-ро (80м, 18 уз)</option>
+                <option value="cargo">Сухогруз / Танкер (150м, 12 уз)</option>
+                <option value="custom">Пользовательская модель</option>
             </select>
 
             <!-- Laconic Collapsible Hydrodynamics & Safety Details -->
             <details id="vessel-advanced-details" class="advanced-details">
-                <summary class="advanced-summary">⚙️ Точные параметры и гидродинамика (DUKC)</summary>
+                <summary class="advanced-summary">Параметры судна и гидродинамика (DUKC)</summary>
                 <div class="advanced-content">
                     <label for="draft-slider">Статическая осадка (Draft) <span class="val" id="draft-val">1.2м</span></label>
                     <input type="range" id="draft-slider" min="0.5" max="18.0" step="0.1" value="1.2">
@@ -116,10 +116,10 @@
         <div class="control-group">
             <label for="chart-theme-select">Тема и подложка ЭКНИС</label>
             <select id="chart-theme-select" class="vessel-select">
-                <option value="ecdis-night" selected>🌙 ECDIS Ночь (IHO S-52 Night)</option>
-                <option value="ecdis-day">☀️ ECDIS День (IHO S-52 Day)</option>
-                <option value="ocean">🌊 Морской океан (Esri Ocean)</option>
-                <option value="satellite">🛰️ Спутниковый гибрид</option>
+                <option value="ecdis-night" selected>ECDIS Ночь (IHO S-52 Night)</option>
+                <option value="ecdis-day">ECDIS День (IHO S-52 Day)</option>
+                <option value="ocean">Морской океан (Esri Ocean)</option>
+                <option value="satellite">Спутниковый гибрид</option>
             </select>
 
             <label class="checkbox-label" for="toggle-ports">
@@ -156,12 +156,12 @@
         </div>
         <div class="topbar-section topbar-actions">
             <button id="topbar-add-wp" class="topbar-tool-btn" title="Добавить промежуточную путевую точку">+ Путевая точка</button>
-            <button id="tool-ebl-vrm" class="topbar-tool-btn" title="Электронный визир направления и дальности (EBL / VRM)">📏 Линейка / Пеленг</button>
-            <button id="tool-recenter-btn" class="topbar-tool-btn" title="Центрировать карту на районе плавания">🎯 Район плавания</button>
+            <button id="tool-ebl-vrm" class="topbar-tool-btn" title="Электронный визир направления и дальности (EBL / VRM)">Линейка / Пеленг (EBL)</button>
+            <button id="tool-recenter-btn" class="topbar-tool-btn" title="Центрировать карту на районе плавания">Район плавания</button>
         </div>
         <div class="topbar-section topbar-telemetry">
             <div id="topbar-alarm-pill" class="hud-pill hud-alarm-pill" style="display: none; cursor: pointer;" title="Нажмите для перехода к аудиту безопасности">
-                <span id="topbar-alarm-text">⚠️ ALM-05 КРИТИЧЕСКИЙ АЛАРМ</span>
+                <span id="topbar-alarm-text">ALM-05 КРИТИЧЕСКИЙ АЛАРМ</span>
             </div>
             <div class="hud-pill">
                 <span class="hud-pill-label">КУРСОР:</span>
@@ -196,7 +196,6 @@
     <div id="voyage-card" class="voyage-summary-card" style="display: none;">
         <div class="voyage-card-header">
             <div class="voyage-title">
-                <span>🚢</span>
                 <span id="voyage-card-title">Маршрут</span>
                 <span id="voyage-status-badge" class="badge-safe">НОРМА</span>
             </div>
@@ -225,26 +224,26 @@
             </div>
         </div>
         <div class="voyage-actions-row">
-            <button id="voyage-btn-profile" class="voyage-tool-btn">📊 Профиль глубин</button>
-            <button id="voyage-btn-waypoints" class="voyage-tool-btn">📋 План перехода</button>
-            <button id="voyage-btn-safety" class="voyage-tool-btn">🛡️ Аудит ECDIS</button>
-            <button id="voyage-btn-sim" class="voyage-tool-btn">🧭 Симулятор мостика</button>
-            <button id="voyage-btn-gpx" class="voyage-tool-btn">⬇ GPX</button>
-            <button id="voyage-btn-rtz" class="voyage-tool-btn">⬇ RTZ (ECDIS)</button>
+            <button id="voyage-btn-profile" class="voyage-tool-btn">Профиль глубин</button>
+            <button id="voyage-btn-waypoints" class="voyage-tool-btn">План перехода</button>
+            <button id="voyage-btn-safety" class="voyage-tool-btn">Аудит ECDIS</button>
+            <button id="voyage-btn-sim" class="voyage-tool-btn">Симулятор мостика</button>
+            <button id="voyage-btn-gpx" class="voyage-tool-btn">GPX</button>
+            <button id="voyage-btn-rtz" class="voyage-tool-btn">RTZ (ECDIS)</button>
         </div>
     </div>
 
     <div id="bottom-drawer">
         <div class="drawer-header">
             <div class="drawer-tabs">
-                <button class="drawer-tab active" id="tab-profile-btn">📊 Профиль глубин</button>
-                <button class="drawer-tab" id="tab-waypoints-btn">📋 План перехода (<span id="wp-badge">0 РТ</span>)</button>
-                <button class="drawer-tab" id="tab-safety-btn">🛡️ Проверка безопасности ECDIS (<span id="safety-badge" class="badge-safe">НОРМА</span>)</button>
-                <button class="drawer-tab" id="tab-simulator-btn">🧭 Симулятор мостика</button>
+                <button class="drawer-tab active" id="tab-profile-btn">Профиль глубин</button>
+                <button class="drawer-tab" id="tab-waypoints-btn">План перехода (<span id="wp-badge">0 РТ</span>)</button>
+                <button class="drawer-tab" id="tab-safety-btn">Проверка безопасности ECDIS (<span id="safety-badge" class="badge-safe">НОРМА</span>)</button>
+                <button class="drawer-tab" id="tab-simulator-btn">Симулятор мостика</button>
             </div>
             <div class="drawer-actions" id="export-actions" style="display: none;">
-                <button class="export-btn" id="export-gpx-btn" title="Экспорт стандартного маршрута GPX">⬇ GPX</button>
-                <button class="export-btn" id="export-rtz-btn" title="Экспорт маршрута IEC 61174 RTZ для ЭКНИС/ECDIS">⬇ RTZ (ECDIS)</button>
+                <button class="export-btn" id="export-gpx-btn" title="Экспорт стандартного маршрута GPX">GPX</button>
+                <button class="export-btn" id="export-rtz-btn" title="Экспорт маршрута IEC 61174 RTZ для ЭКНИС/ECDIS">RTZ (ECDIS)</button>
                 <button class="drawer-toggle-btn" id="drawer-close-btn" title="Закрыть панель">✕</button>
             </div>
         </div>

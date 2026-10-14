@@ -1075,12 +1075,12 @@ map.on('load', () => {
                     .setLngLat(coords)
                     .setHTML(`
                         <div class="port-popup">
-                            <div class="port-popup-title">⚓ ${props.name}</div>
+                            <div class="port-popup-title">${props.name}</div>
                             <div class="port-popup-info">Глубина: ${props.depth_m} м &nbsp;|&nbsp; ${props.vhf_channel}</div>
                             <div class="port-popup-desc">${props.description}</div>
                             <div class="port-popup-buttons">
-                                <button class="port-popup-btn btn-depart" onclick="window.selectPortAsDepart('${props.id}')">🛫 Отход отсюда</button>
-                                <button class="port-popup-btn btn-arrive" onclick="window.selectPortAsArrive('${props.id}')">🛬 Приход сюда</button>
+                                <button class="port-popup-btn btn-depart" onclick="window.selectPortAsDepart('${props.id}')">Отход отсюда</button>
+                                <button class="port-popup-btn btn-arrive" onclick="window.selectPortAsArrive('${props.id}')">Приход сюда</button>
                             </div>
                         </div>
                     `)
@@ -1416,15 +1416,14 @@ function initPortsUI(ports) {
     portArriveSelect.innerHTML = '<option value="">-- Выберите порт прибытия --</option>';
 
     ports.forEach(p => {
-        const typeIcon = p.type === 'marina' ? '⛵ ' : (p.type === 'passenger' ? '🚢 ' : '⚓ ');
         const optA = document.createElement('option');
         optA.value = p.id;
-        optA.innerText = `${typeIcon}${p.name}`;
+        optA.innerText = p.name;
         portDepartSelect.appendChild(optA);
 
         const optB = document.createElement('option');
         optB.value = p.id;
-        optB.innerText = `${typeIcon}${p.name}`;
+        optB.innerText = p.name;
         portArriveSelect.appendChild(optB);
     });
 
@@ -1459,7 +1458,7 @@ window.selectPortAsArrive = function(portId) {
     if (!p) return;
     const coords = p.approach_coords || p.port_coords;
     if (plannedWaypoints.length === 0) {
-        statusMsg.innerText = 'ℹ️ Сначала укажите порт или точку отхода (A).';
+        statusMsg.innerText = 'Сначала укажите порт или точку отхода (A).';
         statusMsg.style.color = '#38bdf8';
         return;
     }
@@ -1479,12 +1478,12 @@ function executePortToPortVoyage() {
     const depId = portDepartSelect ? portDepartSelect.value : '';
     const arrId = portArriveSelect ? portArriveSelect.value : '';
     if (!depId || !arrId) {
-        statusMsg.innerText = '⚠️ Пожалуйста, выберите порт отхода и порт прибытия.';
+        statusMsg.innerText = 'Пожалуйста, выберите порт отхода и порт прибытия.';
         statusMsg.style.color = '#f59e0b';
         return;
     }
     if (depId === arrId) {
-        statusMsg.innerText = '⚠️ Порт прибытия должен отличаться от порта отхода.';
+        statusMsg.innerText = 'Порт прибытия должен отличаться от порта отхода.';
         statusMsg.style.color = '#f59e0b';
         return;
     }
@@ -1958,14 +1957,14 @@ window.calculateRoute = async function () {
                         topbarAlarmPill.style.background = 'rgba(239, 68, 68, 0.25)';
                         topbarAlarmPill.style.borderColor = '#ef4444';
                         if (topbarAlarmText) {
-                            topbarAlarmText.innerText = '⚠️ ДЕМО-РЕЖИМ (СИНТЕТИКА — НЕ ДЛЯ НАВИГАЦИИ)';
+                            topbarAlarmText.innerText = 'ДЕМО-РЕЖИМ (СИНТЕТИКА — НЕ ДЛЯ НАВИГАЦИИ)';
                         }
                     } else {
                         topbarAlarmPill.style.background = 'rgba(239, 68, 68, 0.2)';
                         topbarAlarmPill.style.borderColor = '#ef4444';
                         const critAlm = (sc.alarms || []).find(a => a.severity === 'CRITICAL');
                         if (topbarAlarmText) {
-                            topbarAlarmText.innerText = `⚠️ ${critAlm ? critAlm.code : 'КРИТИЧЕСКИЙ АЛАРМ'}`;
+                            topbarAlarmText.innerText = critAlm ? critAlm.code : 'КРИТИЧЕСКИЙ АЛАРМ';
                         }
                     }
                 } else if (sc.status === 'WARNING_ADVISORY') {
@@ -1973,7 +1972,7 @@ window.calculateRoute = async function () {
                     topbarAlarmPill.style.background = 'rgba(245, 158, 11, 0.2)';
                     topbarAlarmPill.style.borderColor = '#f59e0b';
                     if (topbarAlarmText) {
-                        topbarAlarmText.innerText = `⚠️ ПРЕДУПРЕЖДЕНИЯ (${sc.alarms_count || 1})`;
+                        topbarAlarmText.innerText = `ПРЕДУПРЕЖДЕНИЯ (${sc.alarms_count || 1})`;
                     }
                 } else {
                     topbarAlarmPill.style.display = 'none';
@@ -2020,7 +2019,7 @@ window.calculateRoute = async function () {
             }
 
             statusMsg.innerHTML =
-                `${isUnsafe ? '⚠️' : '✓'} <b>${distNm}</b> &nbsp;|&nbsp; Время перехода: <b>${eta}</b>` +
+                `<b>${distNm}</b> &nbsp;|&nbsp; Время перехода: <b>${eta}</b>` +
                 ` &nbsp;|&nbsp; Мин. UKC: <b>${clearance}</b>` +
                 ` &nbsp;|&nbsp; ${waypointsCount} РТ${isDemo ? ' &nbsp;|&nbsp; <span style="color:#ef4444;font-weight:600;">[СИНТЕТИКА]</span>' : ''}`;
             statusMsg.style.color = isUnsafe ? 'var(--status-danger)' : (sc.status === 'WARNING_ADVISORY' ? '#f59e0b' : 'var(--status-success)');
@@ -2071,7 +2070,7 @@ window.calculateRoute = async function () {
             initSimulator(data);
         } else {
             const err = await res.json().catch(() => ({}));
-            statusMsg.innerText = '❌ ' + (err.detail || 'Безопасный проход не найден при текущих параметрах осадки.');
+            statusMsg.innerText = (err.detail || 'Безопасный проход не найден при текущих параметрах осадки.');
             statusMsg.style.color = 'var(--status-danger)';
             if (voyageCard) voyageCard.style.display = 'none';
             map.getSource('route').setData({ type: 'FeatureCollection', features: [] });
@@ -2189,7 +2188,7 @@ function renderSafetyDashboard(safetyData, bottleneckData, dukcData) {
         html += `
             <div class="bottleneck-card ${isHazard ? '' : 'bottleneck-safe'}">
                 <div class="bottleneck-header">
-                    <span>${isHazard ? '⚠️ КРИТИЧЕСКИЙ ЛИМИТИРУЮЩИЙ СТВОР (ОТМЕЛЬ)' : '✓ КОНТРОЛЬНЫЙ ЛИМИТИРУЮЩИЙ СТВОР МАРШРУТА'}</span>
+                    <span>${isHazard ? 'КРИТИЧЕСКИЙ ЛИМИТИРУЮЩИЙ СТВОР (ОТМЕЛЬ)' : 'КОНТРОЛЬНЫЙ ЛИМИТИРУЮЩИЙ СТВОР МАРШРУТА'}</span>
                     <span>Дистанция: ${b.distance_nm} ММ</span>
                 </div>
                 <div style="font-size: 11.5px; color: var(--text-secondary); line-height: 1.4;">
@@ -2203,7 +2202,7 @@ function renderSafetyDashboard(safetyData, bottleneckData, dukcData) {
             const sa = bottleneckData.speed_adaptation;
             html += `
                 <div class="advisory-box">
-                    <b>💡 Рекомендация по адаптации скорости:</b>
+                    <b>Рекомендация по адаптации скорости:</b>
                     Снизьте скорость с ${sa.current_speed_knots} уз до ${sa.recommended_speed_knots} уз на лимитирующем участке (${b.distance_nm} ММ от старта), чтобы уменьшить гидродинамическое проседание (Squat) на ${sa.squat_reduction_m}м и восстановить безопасный запас UKC.
                     <button id="apply-safe-speed-btn" style="margin-left: 8px; padding: 2px 8px; font-size: 11px; background: #38bdf8; color: #0f172a; border: none; border-radius: 2px; font-weight: 600; cursor: pointer;">
                         Применить ${sa.recommended_speed_knots} уз
@@ -2216,7 +2215,7 @@ function renderSafetyDashboard(safetyData, bottleneckData, dukcData) {
             const tw = bottleneckData.tidal_window;
             html += `
                 <div class="tidal-box">
-                    <b>🌊 Расчет приливного окна M2:</b> ${tw.notes}
+                    <b>Расчет приливного окна M2:</b> ${tw.notes}
                 </div>
             `;
         }
@@ -2228,7 +2227,7 @@ function renderSafetyDashboard(safetyData, bottleneckData, dukcData) {
     if (dukcData) {
         html += `
             <div style="background: rgba(15, 23, 42, 0.6); border: 1px solid var(--border-color); border-radius: 4px; padding: 10px 12px; margin-bottom: 10px; font-size: 11.5px;">
-                <div style="font-weight: 600; color: #38bdf8; margin-bottom: 6px;">📐 ГИДРОДИНАМИЧЕСКИЙ БАЛАНС ДВИЖЕНИЯ PIANC DUKC</div>
+                <div style="font-weight: 600; color: #38bdf8; margin-bottom: 6px;">ГИДРОДИНАМИЧЕСКИЙ БАЛАНС ДВИЖЕНИЯ PIANC DUKC</div>
                 <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; color: var(--text-secondary);">
                     <div>Статическая осадка: <b>${dukcData.static_draft_m}м</b></div>
                     <div>Проседание Squat: <b>${dukcData.dynamic_squat_m}м</b></div>
@@ -2265,10 +2264,10 @@ function renderSafetyDashboard(safetyData, bottleneckData, dukcData) {
 
             let flyBtn = '';
             if (a.hazard_location && a.hazard_location.length === 2) {
-                flyBtn = `<button class="alarm-btn-fly" onclick="map.flyTo({center: [${a.hazard_location[0]}, ${a.hazard_location[1]}], zoom: 12, speed: 1.2})">🔍 На карте (${a.hazard_depth_m ? a.hazard_depth_m.toFixed(1) + 'м' : ''})</button>`;
+                flyBtn = `<button class="alarm-btn-fly" onclick="map.flyTo({center: [${a.hazard_location[0]}, ${a.hazard_location[1]}], zoom: 12, speed: 1.2})">На карте (${a.hazard_depth_m ? a.hazard_depth_m.toFixed(1) + 'м' : ''})</button>`;
             } else if (a.waypoint_index && currentRouteData && currentRouteData.waypoints && currentRouteData.waypoints[a.waypoint_index - 1]) {
                 const wpTarget = currentRouteData.waypoints[a.waypoint_index - 1];
-                flyBtn = `<button class="alarm-btn-fly" onclick="map.flyTo({center: [${wpTarget.lon}, ${wpTarget.lat}], zoom: 12, speed: 1.2})">🔍 К РТ${a.waypoint_index}</button>`;
+                flyBtn = `<button class="alarm-btn-fly" onclick="map.flyTo({center: [${wpTarget.lon}, ${wpTarget.lat}], zoom: 12, speed: 1.2})">К РТ${a.waypoint_index}</button>`;
             }
 
             html += `
@@ -2285,7 +2284,7 @@ function renderSafetyDashboard(safetyData, bottleneckData, dukcData) {
     } else {
         html += `
             <div style="background: rgba(16, 185, 129, 0.08); border: 1px solid rgba(16, 185, 129, 0.2); padding: 14px; border-radius: 4px; color: #a7f3d0; line-height: 1.5;">
-                ✓ <b>Аудит безопасности пройден:</b> Линия перехода и полоса безопасности (XTD) сохраняют требуемый запас под килем (UKC) на всех батиметрических промерах. Запретные зоны не нарушены. Угловые скорости поворотов соответствуют мостиковым нормам.
+                <b>Аудит безопасности пройден:</b> Линия перехода и полоса безопасности (XTD) сохраняют требуемый запас под килем (UKC) на всех батиметрических промерах. Запретные зоны не нарушены. Угловые скорости поворотов соответствуют мостиковым нормам.
             </div>
         `;
     }
@@ -2475,7 +2474,7 @@ function updateSimulatorHUD(distM) {
         if (isApproachingWop && simAlarmBanner && Math.abs(nextWp.turn_angle_deg || 0) >= 4.0) {
             simAlarmBanner.style.display = 'block';
             simAlarmBanner.innerHTML = `
-                ⚠️ <b>ПЕРЕКЛАДКА РУЛЯ (WOP):</b> Подход к РТ${nextWp.index}!
+                <b>ПЕРЕКЛАДКА РУЛЯ (WOP):</b> Подход к РТ${nextWp.index}!
                 Поворот на ${nextWp.rot_deg_min > 0 ? 'Правый' : 'Левый'} борт (${nextWp.leg_bearing_deg}°T) —
                 Угловая скорость ROT: <b>${Math.abs(nextWp.rot_deg_min)}°/мин</b> (Радиус: ${nextWp.turn_radius_m}м)
             `;
@@ -2519,7 +2518,7 @@ function simAnimationFrame(timestamp) {
             simAlarmBanner.style.background = 'rgba(16, 185, 129, 0.2)';
             simAlarmBanner.style.borderColor = 'var(--status-success)';
             simAlarmBanner.style.color = '#6ee7b7';
-            simAlarmBanner.innerHTML = '🏁 <b>ПЕРЕХОД ЗАВЕРШЕН:</b> Судно благополучно прибыло в порт назначения.';
+            simAlarmBanner.innerHTML = '<b>ПЕРЕХОД ЗАВЕРШЕН:</b> Судно благополучно прибыло в порт назначения.';
         }
         return;
     }
