@@ -14,22 +14,22 @@
 // -----------------------------------------------------------------------------
 const MAP_THEMES = {
     'ecdis-night': {
-        tiles: ['https://basemaps.cartocdn.com/rastertiles/dark_all/{z}/{x}/{y}.png'],
+        tiles: ['https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}'],
         contourColor: '#38bdf8',
         contourIndexColor: '#7dd3fc',
         contourHalo: 'rgba(15, 23, 42, 0.9)',
         labelColor: '#bae6fd',
         soundingColor: '#94a3b8',
-        maxzoom: 19
+        maxzoom: 16
     },
     'ecdis-day': {
-        tiles: ['https://basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png'],
+        tiles: ['https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Light_Gray_Base/MapServer/tile/{z}/{y}/{x}'],
         contourColor: '#0284c7',
         contourIndexColor: '#0369a1',
         contourHalo: 'rgba(255, 255, 255, 0.95)',
         labelColor: '#0c4a6e',
         soundingColor: '#1e293b',
-        maxzoom: 19
+        maxzoom: 16
     },
     'ocean': {
         tiles: ['https://server.arcgisonline.com/ArcGIS/rest/services/Ocean/World_Ocean_Base/MapServer/tile/{z}/{y}/{x}'],
@@ -59,8 +59,8 @@ const map = new maplibregl.Map({
         version: 8,
         glyphs: 'https://demotiles.maplibre.org/font/{fontstack}/{range}.pbf',
         sources: {
-            'base-night': { type: 'raster', tiles: MAP_THEMES['ecdis-night'].tiles, tileSize: 256, maxzoom: 19 },
-            'base-day': { type: 'raster', tiles: MAP_THEMES['ecdis-day'].tiles, tileSize: 256, maxzoom: 19 },
+            'base-night': { type: 'raster', tiles: MAP_THEMES['ecdis-night'].tiles, tileSize: 256, maxzoom: 16 },
+            'base-day': { type: 'raster', tiles: MAP_THEMES['ecdis-day'].tiles, tileSize: 256, maxzoom: 16 },
             'base-ocean': { type: 'raster', tiles: MAP_THEMES['ocean'].tiles, tileSize: 256, maxzoom: 13 },
             'base-satellite': { type: 'raster', tiles: MAP_THEMES['satellite'].tiles, tileSize: 256, maxzoom: 18 }
         },
@@ -497,6 +497,15 @@ if (vesselSelect) {
 // 7. Слои навигационной карты (Батиметрия, Фарватеры, Коридор XTD, Дуги циркуляции)
 // -----------------------------------------------------------------------------
 map.on('load', () => {
+    // Гарантируем масштабирование холста и центрирование на акватории плавания
+    setTimeout(() => {
+        map.resize();
+        map.fitBounds([
+            [32.8, 44.1],
+            [36.6, 45.6]
+        ], { padding: 40, duration: 0 });
+    }, 50);
+
     fetch('/api/health')
         .then(res => res.json())
         .then(h => {
@@ -929,6 +938,16 @@ map.on('load', () => {
             if (map.getLayer('seamarks-layer')) {
                 map.setLayoutProperty('seamarks-layer', 'visibility', e.target.checked ? 'visible' : 'none');
             }
+        });
+    }
+
+    const recenterBtn = document.getElementById('tool-recenter-btn');
+    if (recenterBtn) {
+        recenterBtn.addEventListener('click', () => {
+            map.fitBounds([
+                [32.8, 44.1],
+                [36.6, 45.6]
+            ], { padding: 40, duration: 600 });
         });
     }
 
