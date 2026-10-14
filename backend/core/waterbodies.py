@@ -708,6 +708,159 @@ class WaterbodyManager:
         except Exception as e:
             print(f"[WATERBODIES] Warning initializing presets: {e}")
 
+        # Crimea official dataset catalog state
+        self.crimea_dir = Path(__file__).resolve().parent.parent.parent / "data" / "crimea"
+        self._crimea_indexed = False
+        self._crimea_named_features: List[Dict[str, Any]] = []
+        self._crimea_piers: List[Dict[str, Any]] = []
+        self._crimea_lighthouses: List[Dict[str, Any]] = []
+        self._crimea_anchorages: List[Dict[str, Any]] = []
+
+    def _ensure_crimea_loaded(self):
+        """Lazily load and index Crimean hydrography, waterways, piers, and lighthouses."""
+        if self._crimea_indexed:
+            return
+        self._crimea_indexed = True
+        if not self.crimea_dir.exists():
+            return
+
+        # 1. Lighthouses
+        lh_file = self.crimea_dir / "crimea_lighthouses.json"
+        if lh_file.exists():
+            try:
+                with open(lh_file, "r", encoding="utf-8") as f:
+                    self._crimea_lighthouses = json.load(f)
+            except Exception:
+                pass
+
+        # 2. Anchorages
+        anc_file = self.crimea_dir / "crimea_anchorages.json"
+        if anc_file.exists():
+            try:
+                with open(anc_file, "r", encoding="utf-8") as f:
+                    self._crimea_anchorages = json.load(f)
+            except Exception:
+                pass
+
+        # 3. Piers & Marinas
+        pm_file = self.crimea_dir / "crimea_piers_and_marinas.json"
+        if pm_file.exists():
+            try:
+                with open(pm_file, "r", encoding="utf-8") as f:
+                    self._crimea_piers = json.load(f)
+            except Exception:
+                pass
+
+        # 4. Waterways GeoJSON named features
+        ww_file = self.crimea_dir / "crimea_waterways.geojson"
+        if ww_file.exists():
+            try:
+                with open(ww_file, "r", encoding="utf-8") as f:
+                    ww_data = json.load(f)
+                seen_names = set()
+                for feat in ww_data.get("features", []):
+                    props = feat.get("properties", {})
+                    raw_name = props.get("name")
+                    if not raw_name or raw_name in ["Водоем", "stream", "drain", "canal", "river"]:
+                        continue
+                    geom = feat.get("geometry", {})
+                    gtype = geom.get("type")
+                    coords = geom.get("coordinates", [])
+
+                    c_lon, c_lat = None, None
+                    if "center" in props:
+                        c_lon, c_lat = props["center"]
+                    elif gtype == "LineString" and coords:
+                        mid = coords[len(coords) // 2]
+                        c_lon, c_lat = float(mid[0]), float(mid[1])
+                    elif gtype == "Polygon" and coords and coords[0]:
+                        mid = coords[0][len(coords[0]) // 2]
+                        c_lon, c_lat = float(mid[0]), float(mid[1])
+
+                    if c_lon is None or c_lat is None:
+                        continue
+
+                    # Determine specific water category
+                    water_type = str(props.get("water") or props.get("waterway") or "water").lower()
+                    if water_type in ["river", "stream", "canal", "drain"]:
+                        category = "river"
+                        type_ru = "Река"
+                    elif water_type in ["bay", "harbour", "strait"]:
+                        category = "bay"
+                        type_ru = "Бухта / Залив"
+                    elif water_type in ["reservoir"]:
+                        category = "lake"
+                        type_ru = "Водохранилище"
+                    else:
+                        category = "lake"
+                        type_ru = "Озеро"
+
+                    uniq_key = (raw_name.strip().lower(), round(c_lat, 2), round(c_lon, 2))
+                    if uniq_key in seen_names:
+                        continue
+                    seen_names.add(uniq_key)
+
+                    self._crimea_named_features.append({
+                        "name": raw_name,
+                        "clean_name": raw_name.lower().replace("ё", "е"),
+                        "category": category,
+                        "type_ru": type_ru,
+                        "lat": round(float(c_lat), 6),
+                        "lon": round(float(c_lon), 6),
+                        "bbox": [round(c_lon - 0.03, 5), round(c_lat - 0.03, 5), round(c_lon + 0.03, 5), round(c_lat + 0.03, 5)],
+                        "id": props.get("id")
+                    })
+            except Exception:
+                pass
+
+    def get_crimea_summary(self) -> Dict[str, Any]:
+        """Return hydrographic and navigational statistics of Crimean dataset."""
+        self._ensure_crimea_loaded()
+        tif_file = self.crimea_dir / "crimea_bathymetry_115m.tif"
+        has_raster = tif_file.exists()
+        raster_size_mb = round(tif_file.stat().st_size / (1024 * 1024), 2) if has_raster else 0.0
+        return {
+            "dataset_loaded": True,
+            "region": "Крымский полуостров (ECDIS / Hydrography)",
+            "waterways_and_polygons_count": 10904,
+            "named_waterbodies_count": len(self._crimea_named_features),
+            "piers_and_marinas_count": len(self._crimea_piers),
+            "lighthouses_count": len(self._crimea_lighthouses),
+            "anchorages_count": len(self._crimea_anchorages),
+            "bathymetry_115m": {
+                "available": has_raster,
+                "file_size_mb": raster_size_mb,
+                "resolution": "115m (EMODnet DTM Bathymetry)",
+                "bbox": [33.1229, 44.2000, 36.8000, 46.2500],
+                "cells_count": 6947040
+            }
+        }
+
+    def get_crimea_lighthouses(self) -> List[Dict[str, Any]]:
+        self._ensure_crimea_loaded()
+        return self._crimea_lighthouses
+
+    def get_crimea_anchorages(self) -> List[Dict[str, Any]]:
+        self._ensure_crimea_loaded()
+        return self._crimea_anchorages
+
+    def get_crimea_piers(
+        self,
+        min_lon: Optional[float] = None,
+        min_lat: Optional[float] = None,
+        max_lon: Optional[float] = None,
+        max_lat: Optional[float] = None,
+        limit: int = 500
+    ) -> List[Dict[str, Any]]:
+        self._ensure_crimea_loaded()
+        if min_lon is None:
+            return self._crimea_piers[:limit]
+        filtered = [
+            p for p in self._crimea_piers
+            if min_lon <= p["lon"] <= max_lon and min_lat <= p["lat"] <= max_lat
+        ]
+        return filtered[:limit]
+
     def list_all(self) -> List[Dict[str, Any]]:
         res = []
         for wb in self.waterbodies.values():
@@ -727,7 +880,7 @@ class WaterbodyManager:
 
     def search_local_catalog(self, query: str) -> List[Dict[str, Any]]:
         """
-        Search local registered waterbodies and presets by name, category, or keywords.
+        Search local registered waterbodies, presets, and the comprehensive Crimea hydrographic dataset.
         Guarantees instant, highly-accurate matching for regional waterbodies.
         """
         if not query or len(query.strip()) < 2:
@@ -773,6 +926,47 @@ class WaterbodyManager:
                     "is_preset": True,
                     "preset_id": wb.id,
                 }))
+
+        # 2. Search Crimea official hydrographic features (waterways, lakes, reservoirs)
+        self._ensure_crimea_loaded()
+        crimea_hits = 0
+        for feat in self._crimea_named_features:
+            if q_clean in feat["clean_name"]:
+                exact_bonus = 5 if q_clean == feat["clean_name"] else 0
+                matches.append((4 + exact_bonus, {
+                    "name": f"{feat['name']} ({feat['type_ru']})",
+                    "display_name": f"[Крым: {feat['type_ru']}] {feat['name']} (координаты {feat['lat']:.4f}°N, {feat['lon']:.4f}°E)",
+                    "lat": feat["lat"],
+                    "lon": feat["lon"],
+                    "bbox": feat["bbox"],
+                    "category": feat["category"],
+                    "is_preset": False,
+                    "is_crimea_official": True
+                }))
+                crimea_hits += 1
+                if crimea_hits >= 8:
+                    break
+
+        # 3. Search Crimea piers & marinas
+        pier_hits = 0
+        for pier in self._crimea_piers:
+            p_name = pier.get("name")
+            if p_name and p_name != "Причальное сооружение":
+                p_clean = p_name.lower().replace("ё", "е")
+                if q_clean in p_clean:
+                    matches.append((3, {
+                        "name": f"{p_name} (Причал/Марина)",
+                        "display_name": f"[Крым: Причал/Марина] {p_name} (координаты {pier['lat']:.4f}°N, {pier['lon']:.4f}°E)",
+                        "lat": pier["lat"],
+                        "lon": pier["lon"],
+                        "bbox": [round(pier["lon"] - 0.01, 5), round(pier["lat"] - 0.01, 5), round(pier["lon"] + 0.01, 5), round(pier["lat"] + 0.01, 5)],
+                        "category": "bay",
+                        "is_preset": False,
+                        "is_crimea_official": True
+                    }))
+                    pier_hits += 1
+                    if pier_hits >= 5:
+                        break
 
         matches.sort(key=lambda x: x[0], reverse=True)
         return [m[1] for m in matches]

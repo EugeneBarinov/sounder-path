@@ -1,0 +1,164 @@
+[
+  {
+    "id": "anc_sev_outer",
+    "name": "Внешний рейд Севастополя (Район № 384)",
+    "coords": [
+      33.48,
+      44.64
+    ],
+    "depth_min_m": 22.0,
+    "depth_max_m": 45.0,
+    "max_draft_m": 18.0,
+    "bottom_nature": "Ил, песок, ракушка",
+    "sheltered_from_winds": [
+      "S",
+      "SE",
+      "E"
+    ],
+    "vhf_channel": "VHF Ch 16 / 14 (Севастополь-Трафик)",
+    "notes": "Основной внешний рейд ожидания захода в Севастопольскую бухту."
+  },
+  {
+    "id": "anc_sev_karantin",
+    "name": "Якорное место Карантинная бухта (Севастополь)",
+    "coords": [
+      33.504,
+      44.618
+    ],
+    "depth_min_m": 8.0,
+    "depth_max_m": 15.0,
+    "max_draft_m": 6.5,
+    "bottom_nature": "Ил, песок",
+    "sheltered_from_winds": [
+      "S",
+      "SW",
+      "SE",
+      "W"
+    ],
+    "vhf_channel": "VHF Ch 16",
+    "notes": "Защищенная стоянка для малых судов и яхт."
+  },
+  {
+    "id": "anc_inkerman_estuary",
+    "name": "Инкерманский закрытый рейд устья реки Чёрная",
+    "coords": [
+      33.595,
+      44.615
+    ],
+    "depth_min_m": 6.5,
+    "depth_max_m": 9.0,
+    "max_draft_m": 5.5,
+    "bottom_nature": "Ил, глина",
+    "sheltered_from_winds": [
+      "N",
+      "NE",
+      "E",
+      "SE",
+      "S",
+      "SW",
+      "W",
+      "NW"
+    ],
+    "vhf_channel": "VHF Ch 14",
+    "notes": "Абсолютное убежище от любых ветров и штормов в глубине бухты."
+  },
+  {
+    "id": "anc_balaklava_roadstead",
+    "name": "Внешний рейд Балаклавы (мыс Георгия)",
+    "coords": [
+      33.595,
+      44.487
+    ],
+    "depth_min_m": 18.0,
+    "depth_max_m": 28.0,
+    "max_draft_m": 12.0,
+    "bottom_nature": "Песок, мелкая галька",
+    "sheltered_from_winds": [
+      "N",
+      "NE",
+      "NW"
+    ],
+    "vhf_channel": "VHF Ch 16 / 67",
+    "notes": "Стоянка перед входом в узкий створ Балаклавской бухты."
+  },
+  {
+    "id": "anc_yalta_roadstead",
+    "name": "Ялтинский пассажирский рейд",
+    "coords": [
+      34.185,
+      44.492
+    ],
+    "depth_min_m": 20.0,
+    "depth_max_m": 35.0,
+    "max_draft_m": 12.0,
+    "bottom_nature": "Песок, галька",
+    "sheltered_from_winds": [
+      "N",
+      "NW",
+      "W"
+    ],
+    "vhf_channel": "VHF Ch 16 (Ялта-Порт-Контроль)",
+    "notes": "Открытый рейд, защищен от северных ветров Крымскими горами."
+  },
+  {
+    "id": "anc_feodosia_bay",
+    "name": "Якорный район Феодосийского залива (Район № 453)",
+    "coords": [
+      35.43,
+      45.045
+    ],
+    "depth_min_m": 12.0,
+    "depth_max_m": 22.0,
+    "max_draft_m": 14.0,
+    "bottom_nature": "Песок, ракушечник",
+    "sheltered_from_winds": [
+      "S",
+      "SW",
+      "W"
+    ],
+    "vhf_channel": "VHF Ch 16 / 11",
+    "notes": "Широкий песчаный залив с отличным держанием якоря."
+  },
+  {
+    "id": "anc_kerch_waiting",
+    "name": "Южный район ожидания Керченского пролива (Район № 471)",
+    "coords": [
+      36.52,
+      45.18
+    ],
+    "depth_min_m": 10.0,
+    "depth_max_m": 16.0,
+    "max_draft_m": 8.0,
+    "bottom_nature": "Ил с ракушкой",
+    "sheltered_from_winds": [
+      "W",
+      "NW"
+    ],
+    "vhf_channel": "VHF Ch 16 / 14 (Керчь-Трафик)",
+    "notes": "Официальный рейд караванов судов перед прохождением Керчь-Еникальского канала."
+  },
+  {
+    "id": "anc_donuzlav_lake",
+    "name": "Внутренний рейд озера Донузлав (бухта Новоозерная)",
+    "coords": [
+      33.15,
+      45.38
+    ],
+    "depth_min_m": 9.0,
+    "depth_max_m": 18.0,
+    "max_draft_m": 7.5,
+    "bottom_nature": "Ил, песок",
+    "sheltered_from_winds": [
+      "N",
+      "NE",
+      "E",
+      "SE",
+      "S",
+      "SW",
+      "W",
+      "NW"
+    ],
+    "vhf_channel": "VHF Ch 16",
+    "notes": "Глубоководный закрытый лиман, идеальное укрытие от шторма любой силы."
+  }
+]

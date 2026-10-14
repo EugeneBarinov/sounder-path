@@ -10,3 +10,6 @@ pytest>=8.0.0
 httpx>=0.27.0
 xmlschema>=3.4.0
 contourpy>=1.2.0
+shapely>=2.0.0
+osmium>=4.0.0
+certifi>=2024.0.0

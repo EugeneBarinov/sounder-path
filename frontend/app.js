@@ -199,6 +199,8 @@ const btnSwapPorts = document.getElementById('btn-swap-ports');
 const portDepthAdvisory = document.getElementById('port-depth-advisory');
 const btnBuildVoyage = document.getElementById('btn-build-voyage');
 const togglePortsCheckbox = document.getElementById('toggle-ports');
+const toggleCrimeaLighthousesCheckbox = document.getElementById('toggle-crimea-lighthouses');
+const toggleCrimeaPiersCheckbox = document.getElementById('toggle-crimea-piers');
 
 // Элементы онлайн-погоды
 const btnFetchLiveWeather = document.getElementById('btn-fetch-live-weather');
@@ -1307,6 +1309,197 @@ map.on('load', () => {
             if (map.getLayer('anchorages-label-layer')) map.setLayoutProperty('anchorages-label-layer', 'visibility', vis);
         });
     }
+
+    // 6.3.1. Официальные морские маяки Крыма (Crimean Lighthouses & Major Lights)
+    map.addSource('crimea-lighthouses-data', {
+        type: 'geojson',
+        data: { type: 'FeatureCollection', features: [] }
+    });
+
+    map.addLayer({
+        id: 'crimea-lighthouses-halo',
+        type: 'circle',
+        source: 'crimea-lighthouses-data',
+        paint: {
+            'circle-radius': [
+                'interpolate', ['linear'], ['zoom'],
+                6, 6.0,
+                10, 14.0,
+                14, 22.0
+            ],
+            'circle-color': '#fbbf24',
+            'circle-opacity': 0.25,
+            'circle-stroke-width': 1,
+            'circle-stroke-color': '#f59e0b',
+            'circle-stroke-opacity': 0.6
+        }
+    }, 'route-corridor-fill');
+
+    map.addLayer({
+        id: 'crimea-lighthouses-circle',
+        type: 'circle',
+        source: 'crimea-lighthouses-data',
+        paint: {
+            'circle-radius': [
+                'interpolate', ['linear'], ['zoom'],
+                6, 3.5,
+                10, 6.5,
+                14, 9.0
+            ],
+            'circle-color': '#eab308',
+            'circle-stroke-width': 2,
+            'circle-stroke-color': '#ffffff'
+        }
+    }, 'route-corridor-fill');
+
+    map.addLayer({
+        id: 'crimea-lighthouses-label',
+        type: 'symbol',
+        source: 'crimea-lighthouses-data',
+        minzoom: 8.0,
+        layout: {
+            'text-field': ['concat', '[МАЯК] ', ['get', 'name'], ' ', ['coalesce', ['get', 'character'], '']],
+            'text-font': ['literal', ['Open Sans Regular', 'Arial Unicode MS Regular']],
+            'text-size': 10.5,
+            'text-offset': [0, 1.3],
+            'text-anchor': 'top',
+            'text-allow-overlap': false
+        },
+        paint: {
+            'text-color': '#fef08a',
+            'text-halo-color': '#713f12',
+            'text-halo-width': 1.5
+        }
+    }, 'route-corridor-fill');
+
+    let activeLighthousePopup = null;
+    map.on('mouseenter', 'crimea-lighthouses-circle', () => {
+        if (!isEblVrmActive && !isAddingViaMode) map.getCanvas().style.cursor = 'pointer';
+    });
+    map.on('mouseleave', 'crimea-lighthouses-circle', () => {
+        if (!isEblVrmActive && !isAddingViaMode) map.getCanvas().style.cursor = '';
+    });
+
+    map.on('click', 'crimea-lighthouses-circle', (e) => {
+        if (isEblVrmActive || isAddingViaMode) return;
+        const props = e.features[0].properties;
+        const coords = e.features[0].geometry.coordinates.slice();
+
+        if (activeLighthousePopup) activeLighthousePopup.remove();
+
+        const lightDesc = props.character ? `Огонь: ${props.character} (${props.color || 'white'})` : 'Навигационный огонь СНО';
+        const heightDesc = props.height_m ? `Высота: ${props.height_m} м` : '';
+
+        activeLighthousePopup = new maplibregl.Popup({ offset: 12, closeButton: true })
+            .setLngLat(coords)
+            .setHTML(`
+                <div class="port-popup">
+                    <div class="port-popup-title" style="color: #fbbf24;">Маяк: ${props.name}</div>
+                    <div class="port-popup-info">${lightDesc} &nbsp;|&nbsp; ${heightDesc}</div>
+                    <div class="port-popup-desc">Координаты: ${coords[1].toFixed(4)}°N, ${coords[0].toFixed(4)}°E</div>
+                    <div class="port-popup-buttons">
+                        <button class="port-popup-btn btn-arrive" onclick="window.addLighthouseAsWaypoint(${coords[0]}, ${coords[1]}, '${props.name}')">Курс к маяку (РТ)</button>
+                    </div>
+                </div>
+            `)
+            .addTo(map);
+    });
+
+    if (toggleCrimeaLighthousesCheckbox) {
+        toggleCrimeaLighthousesCheckbox.addEventListener('change', (e) => {
+            const vis = e.target.checked ? 'visible' : 'none';
+            if (map.getLayer('crimea-lighthouses-halo')) map.setLayoutProperty('crimea-lighthouses-halo', 'visibility', vis);
+            if (map.getLayer('crimea-lighthouses-circle')) map.setLayoutProperty('crimea-lighthouses-circle', 'visibility', vis);
+            if (map.getLayer('crimea-lighthouses-label')) map.setLayoutProperty('crimea-lighthouses-label', 'visibility', vis);
+        });
+    }
+
+    // 6.3.2. Причальные сооружения, пирсы и марины Крыма (1,296 объектов)
+    map.addSource('crimea-piers-data', {
+        type: 'geojson',
+        data: { type: 'FeatureCollection', features: [] }
+    });
+
+    map.addLayer({
+        id: 'crimea-piers-circle',
+        type: 'circle',
+        source: 'crimea-piers-data',
+        minzoom: 10.5,
+        paint: {
+            'circle-radius': [
+                'interpolate', ['linear'], ['zoom'],
+                10.5, 3.0,
+                13, 5.5,
+                16, 8.0
+            ],
+            'circle-color': '#38bdf8',
+            'circle-stroke-width': 1.5,
+            'circle-stroke-color': '#ffffff'
+        }
+    }, 'route-corridor-fill');
+
+    map.addLayer({
+        id: 'crimea-piers-label',
+        type: 'symbol',
+        source: 'crimea-piers-data',
+        minzoom: 12.5,
+        layout: {
+            'text-field': ['get', 'name'],
+            'text-font': ['literal', ['Open Sans Regular', 'Arial Unicode MS Regular']],
+            'text-size': 9.5,
+            'text-offset': [0, 1.2],
+            'text-anchor': 'top',
+            'text-allow-overlap': false
+        },
+        paint: {
+            'text-color': '#bae6fd',
+            'text-halo-color': '#0c4a6e',
+            'text-halo-width': 1.2
+        }
+    }, 'route-corridor-fill');
+
+    let activePierPopup = null;
+    map.on('mouseenter', 'crimea-piers-circle', () => {
+        if (!isEblVrmActive && !isAddingViaMode) map.getCanvas().style.cursor = 'pointer';
+    });
+    map.on('mouseleave', 'crimea-piers-circle', () => {
+        if (!isEblVrmActive && !isAddingViaMode) map.getCanvas().style.cursor = '';
+    });
+
+    map.on('click', 'crimea-piers-circle', (e) => {
+        if (isEblVrmActive || isAddingViaMode) return;
+        const props = e.features[0].properties;
+        const coords = e.features[0].geometry.coordinates.slice();
+
+        if (activePierPopup) activePierPopup.remove();
+
+        const lenText = props.length_m ? `Длина: ${props.length_m} м` : '';
+        const typeText = props.type === 'marina' ? 'Яхтенная марина' : (props.type === 'breakwater' ? 'Волнолом / Мол' : 'Причал / Пирс');
+
+        activePierPopup = new maplibregl.Popup({ offset: 12, closeButton: true })
+            .setLngLat(coords)
+            .setHTML(`
+                <div class="port-popup">
+                    <div class="port-popup-title" style="color: #38bdf8;">${props.name}</div>
+                    <div class="port-popup-info">${typeText} &nbsp;|&nbsp; ${lenText}</div>
+                    <div class="port-popup-desc">Координаты: ${coords[1].toFixed(4)}°N, ${coords[0].toFixed(4)}°E</div>
+                    <div class="port-popup-buttons">
+                        <button class="port-popup-btn btn-arrive" onclick="window.addPierAsWaypoint(${coords[0]}, ${coords[1]}, '${props.name}')">Швартовка (РТ)</button>
+                    </div>
+                </div>
+            `)
+            .addTo(map);
+    });
+
+    if (toggleCrimeaPiersCheckbox) {
+        toggleCrimeaPiersCheckbox.addEventListener('change', (e) => {
+            const vis = e.target.checked ? 'visible' : 'none';
+            if (map.getLayer('crimea-piers-circle')) map.setLayoutProperty('crimea-piers-circle', 'visibility', vis);
+            if (map.getLayer('crimea-piers-label')) map.setLayoutProperty('crimea-piers-label', 'visibility', vis);
+        });
+    }
+
+    loadCrimeaHydrographicLayers();
 
     // 6.4. Пользовательская батиметрия съемки эхолота (Sonar Survey)
     map.addSource('custom-bathymetry', {
@@ -4019,6 +4212,20 @@ function renderGeoSearchResults(results) {
                 geoSearchResults.style.display = 'none';
                 switchWaterbody(res.preset_id, true);
             });
+        } else if (res.is_crimea_official) {
+            const cat = res.category || 'river';
+            item.innerHTML = `
+                <div class="geo-search-item-title">${res.name} <span class="wb-badge" style="background: #0284c7; color: #ffffff; margin-left: 4px; font-weight: 600;">КРЫМ ECDIS</span> <span class="wb-badge wb-badge-${cat}" style="margin-left: 4px;">${cat.toUpperCase()}</span></div>
+                <div class="geo-search-item-sub" style="color: #7dd3fc;">${res.display_name}</div>
+            `;
+            item.addEventListener('click', () => {
+                geoSearchResults.style.display = 'none';
+                if (res.bbox && res.bbox.length === 4) {
+                    map.fitBounds([[res.bbox[0], res.bbox[1]], [res.bbox[2], res.bbox[3]]], { padding: 40, duration: 800 });
+                } else if (res.lat && res.lon) {
+                    map.flyTo({ center: [res.lon, res.lat], zoom: 13.5, duration: 800 });
+                }
+            });
         } else {
             const cat = res.category || 'river';
             item.innerHTML = `
@@ -4269,3 +4476,85 @@ if (btnSimulateSounderPing) {
         queryAndRecordLivePoint(lat, lon, 6.0, 90.0);
     });
 }
+
+// -----------------------------------------------------------------------------
+// 20. Загрузка слоев официального гидрографического датасета Крыма
+// -----------------------------------------------------------------------------
+function loadCrimeaHydrographicLayers() {
+    fetch('/api/crimea/lighthouses')
+        .then(r => r.json())
+        .then(lights => {
+            if (!Array.isArray(lights) || !map.getSource('crimea-lighthouses-data')) return;
+            const features = lights.map(l => ({
+                type: 'Feature',
+                properties: {
+                    id: l.id,
+                    name: l.name,
+                    character: l.character,
+                    color: l.color,
+                    height_m: l.height_m,
+                    seamark_type: l.seamark_type
+                },
+                geometry: {
+                    type: 'Point',
+                    coordinates: [l.lon, l.lat]
+                }
+            }));
+            map.getSource('crimea-lighthouses-data').setData({
+                type: 'FeatureCollection',
+                features: features
+            });
+        })
+        .catch(err => console.warn('Не удалось загрузить маяки Крыма:', err));
+
+    fetch('/api/crimea/piers?limit=1500')
+        .then(r => r.json())
+        .then(piers => {
+            if (!Array.isArray(piers) || !map.getSource('crimea-piers-data')) return;
+            const features = piers.map(p => ({
+                type: 'Feature',
+                properties: {
+                    id: p.id,
+                    name: p.name,
+                    type: p.type,
+                    length_m: p.length_m
+                },
+                geometry: {
+                    type: 'Point',
+                    coordinates: [p.lon, p.lat]
+                }
+            }));
+            map.getSource('crimea-piers-data').setData({
+                type: 'FeatureCollection',
+                features: features
+            });
+        })
+        .catch(err => console.warn('Не удалось загрузить причалы Крыма:', err));
+}
+
+window.addLighthouseAsWaypoint = function(lon, lat, name) {
+    if (plannedWaypoints.length >= 2) {
+        plannedWaypoints[plannedWaypoints.length - 1].coords = [lon, lat];
+        if (waypointMarkers[waypointMarkers.length - 1]) {
+            waypointMarkers[waypointMarkers.length - 1].setLngLat([lon, lat]);
+        }
+    } else {
+        addWaypoint([lon, lat], 'goal');
+    }
+    renderWaypointsListUI();
+    triggerRouteRecalculation(true);
+};
+
+window.addPierAsWaypoint = function(lon, lat, name) {
+    if (plannedWaypoints.length >= 2) {
+        plannedWaypoints[plannedWaypoints.length - 1].coords = [lon, lat];
+        if (waypointMarkers[waypointMarkers.length - 1]) {
+            waypointMarkers[waypointMarkers.length - 1].setLngLat([lon, lat]);
+        }
+    } else {
+        addWaypoint([lon, lat], 'goal');
+    }
+    renderWaypointsListUI();
+    triggerRouteRecalculation(true);
+};
+

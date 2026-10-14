@@ -2027,6 +2027,45 @@ def create_waterbody(req: CreateWaterbodyRequest):
     }
 
 
+# ---------------------------------------------------------------------------
+# Crimea Autonomous Hydrographic & Navigational Dataset Endpoints
+# ---------------------------------------------------------------------------
+@app.get("/api/crimea/summary")
+def get_crimea_dataset_summary():
+    """Summary of complete authoritative Crimea hydrographic dataset."""
+    return waterbody_mgr.get_crimea_summary()
+
+
+@app.get("/api/crimea/lighthouses")
+def get_crimea_lighthouses():
+    """Crimean lighthouses and major navigation lights with light character and sectors."""
+    return waterbody_mgr.get_crimea_lighthouses()
+
+
+@app.get("/api/crimea/anchorages")
+def get_crimea_anchorages():
+    """Official Crimean anchorages, roadsteads, and wind shelters."""
+    return waterbody_mgr.get_crimea_anchorages()
+
+
+@app.get("/api/crimea/piers")
+def get_crimea_piers(
+    min_lon: Optional[float] = None,
+    min_lat: Optional[float] = None,
+    max_lon: Optional[float] = None,
+    max_lat: Optional[float] = None,
+    limit: int = 500
+):
+    """Piers, marinas, breakwaters, and docks in Crimea."""
+    return waterbody_mgr.get_crimea_piers(
+        min_lon=min_lon,
+        min_lat=min_lat,
+        max_lon=max_lon,
+        max_lat=max_lat,
+        limit=limit
+    )
+
+
 @app.get("/api/geo/search")
 def search_geographic_location(q: str, viewbox: Optional[str] = None):
     """

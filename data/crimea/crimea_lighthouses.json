@@ -1,0 +1,252 @@
+[
+  {
+    "id": "node_1218227248",
+    "name": "Херсонес",
+    "lat": 44.583323,
+    "lon": 33.378866,
+    "seamark_type": "landmark",
+    "height_m": null,
+    "character": "Mo",
+    "color": "white"
+  },
+  {
+    "id": "node_1234013522",
+    "name": "Меганомский маяк",
+    "lat": 44.793823,
+    "lon": 35.079953,
+    "seamark_type": "light_major",
+    "height_m": null,
+    "character": null,
+    "color": null
+  },
+  {
+    "id": "node_1271855036",
+    "name": "Рыбачий маяк",
+    "lat": 44.761772,
+    "lon": 34.584014,
+    "seamark_type": "light_major",
+    "height_m": null,
+    "character": "Fl",
+    "color": "white"
+  },
+  {
+    "id": "node_1279094700",
+    "name": "Еникальский маяк",
+    "lat": 45.385459,
+    "lon": 36.638897,
+    "seamark_type": "light_major",
+    "height_m": null,
+    "character": null,
+    "color": null
+  },
+  {
+    "id": "node_1349696111",
+    "name": "Маяк",
+    "lat": 45.585572,
+    "lon": 32.822181,
+    "seamark_type": "lighthouse",
+    "height_m": null,
+    "character": null,
+    "color": null
+  },
+  {
+    "id": "node_1385069548",
+    "name": "Восточный",
+    "lat": 44.607983,
+    "lon": 33.448924,
+    "seamark_type": "light_minor",
+    "height_m": null,
+    "character": null,
+    "color": "white"
+  },
+  {
+    "id": "node_1409425837",
+    "name": "Евпаторийский маяк",
+    "lat": 45.151103,
+    "lon": 33.269179,
+    "seamark_type": "lighthouse",
+    "height_m": 52.0,
+    "character": null,
+    "color": null
+  },
+  {
+    "id": "node_1578637909",
+    "name": "Ильинский",
+    "lat": 45.012501,
+    "lon": 35.422553,
+    "seamark_type": "light_major",
+    "height_m": null,
+    "character": null,
+    "color": null
+  },
+  {
+    "id": "node_1578645122",
+    "name": "Artek light",
+    "lat": 44.557778,
+    "lon": 34.303611,
+    "seamark_type": "light_minor",
+    "height_m": null,
+    "character": "Fl",
+    "color": "white"
+  },
+  {
+    "id": "node_1578652110",
+    "name": "Ай-Тодорский маяк",
+    "lat": 44.428394,
+    "lon": 34.12238,
+    "seamark_type": "light_major",
+    "height_m": null,
+    "character": null,
+    "color": null
+  },
+  {
+    "id": "node_1578652477",
+    "name": "Сарыч",
+    "lat": 44.387971,
+    "lon": 33.739164,
+    "seamark_type": "light_major",
+    "height_m": 12.0,
+    "character": null,
+    "color": null
+  },
+  {
+    "id": "node_1578663292",
+    "name": "Sevastopol, N. Range, front",
+    "lat": 44.624513,
+    "lon": 33.509816,
+    "seamark_type": "light_minor",
+    "height_m": null,
+    "character": null,
+    "color": null
+  },
+  {
+    "id": "node_1611201311",
+    "name": "Тарханкутский маяк",
+    "lat": 45.346923,
+    "lon": 32.494247,
+    "seamark_type": "light_major",
+    "height_m": null,
+    "character": null,
+    "color": null
+  },
+  {
+    "id": "node_2461240470",
+    "name": "Створный маяк",
+    "lat": 44.574243,
+    "lon": 33.38957,
+    "seamark_type": "lighthouse",
+    "height_m": null,
+    "character": null,
+    "color": null
+  },
+  {
+    "id": "node_2485606515",
+    "name": "Чаудинский маяк",
+    "lat": 45.004401,
+    "lon": 35.836828,
+    "seamark_type": "light_major",
+    "height_m": null,
+    "character": "LFl",
+    "color": "white"
+  },
+  {
+    "id": "node_2515111796",
+    "name": "Маяк Бурунский створный передний",
+    "lat": 45.23785,
+    "lon": 36.414676,
+    "seamark_type": "lighthouse",
+    "height_m": null,
+    "character": null,
+    "color": null
+  },
+  {
+    "id": "node_4042294677",
+    "name": "Маяк Такиль",
+    "lat": 45.104481,
+    "lon": 36.444254,
+    "seamark_type": "lighthouse",
+    "height_m": null,
+    "character": null,
+    "color": null
+  },
+  {
+    "id": "node_5061831422",
+    "name": "маяк Черноморское",
+    "lat": 45.514141,
+    "lon": 32.700581,
+    "seamark_type": "lighthouse",
+    "height_m": null,
+    "character": null,
+    "color": null
+  },
+  {
+    "id": "node_5166942750",
+    "name": "Churubashskiy, rear",
+    "lat": 45.245849,
+    "lon": 36.299985,
+    "seamark_type": "lighthouse",
+    "height_m": null,
+    "character": null,
+    "color": null
+  },
+  {
+    "id": "node_5167137393",
+    "name": "Маяк Бурунский створный задний",
+    "lat": 45.227681,
+    "lon": 36.403654,
+    "seamark_type": "light_minor",
+    "height_m": null,
+    "character": "F",
+    "color": "green"
+  },
+  {
+    "id": "node_5179731552",
+    "name": "Маяк",
+    "lat": 45.504349,
+    "lon": 32.644781,
+    "seamark_type": "lighthouse",
+    "height_m": null,
+    "character": null,
+    "color": null
+  },
+  {
+    "id": "node_8893126475",
+    "name": "Маяк Константиновский входной передний",
+    "lat": 44.628768,
+    "lon": 33.513295,
+    "seamark_type": "light_minor",
+    "height_m": null,
+    "character": "Oc",
+    "color": "red"
+  },
+  {
+    "id": "node_8894146556",
+    "name": "Маяк Солодунова",
+    "lat": 45.126944,
+    "lon": 33.521389,
+    "seamark_type": "lighthouse",
+    "height_m": null,
+    "character": null,
+    "color": null
+  },
+  {
+    "id": "node_10068641618",
+    "name": "маяк Стрелецкой бухты створный передний",
+    "lat": 44.593634,
+    "lon": 33.467831,
+    "seamark_type": "light_major",
+    "height_m": null,
+    "character": null,
+    "color": null
+  },
+  {
+    "id": "node_10068641918",
+    "name": "маяк Стрелецкой бухты створный задний",
+    "lat": 44.585357,
+    "lon": 33.468058,
+    "seamark_type": "light_major",
+    "height_m": null,
+    "character": null,
+    "color": null
+  }
+]

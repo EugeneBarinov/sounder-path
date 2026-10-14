@@ -61,3 +61,8 @@ data/raw/*.tiff
 *.tif
 *.tiff
 !data/raw/operational_sample.tif
+
+# Raw OSM PBF archives
+*.osm.pbf
+*.pbf
+
