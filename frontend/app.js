@@ -92,6 +92,8 @@ const tideSlider = document.getElementById('tide-slider');
 const tideVal = document.getElementById('tide-val');
 const waveSlider = document.getElementById('wave-slider');
 const waveVal = document.getElementById('wave-val');
+const fuelSlider = document.getElementById('fuel-slider');
+const fuelVal = document.getElementById('fuel-val');
 
 const toggleFairwaysCheckbox = document.getElementById('toggle-fairways');
 const prioritizeFairwaysCheckbox = document.getElementById('prioritize-fairways');
@@ -104,6 +106,7 @@ const toggleContoursCheckbox = document.getElementById('toggle-contours');
 const toggleSafetyContourCheckbox = document.getElementById('toggle-safety-contour');
 const toggleSoundingsCheckbox = document.getElementById('toggle-soundings');
 const toggleSeamarksCheckbox = document.getElementById('toggle-seamarks');
+const toggleAnchoragesCheckbox = document.getElementById('toggle-anchorages');
 
 const dynDraftVal = document.getElementById('dynamic-draft-val');
 const dangerVal = document.getElementById('danger-val');
@@ -157,6 +160,8 @@ const simAlarmBanner = document.getElementById('sim-alarm-banner');
 // Элементы плавающей панели ECDIS Topbar
 const topbarAddWpBtn = document.getElementById('topbar-add-wp');
 const toolEblVrmBtn = document.getElementById('tool-ebl-vrm');
+const toolMuteAlarmBtn = document.getElementById('tool-mute-alarm-btn');
+const toolRecenterBtn = document.getElementById('tool-recenter-btn');
 const hudCursorCoords = document.getElementById('hud-cursor-coords');
 const hudCursorDepth = document.getElementById('hud-cursor-depth');
 const topbarAlarmPill = document.getElementById('topbar-alarm-pill');
@@ -209,22 +214,44 @@ const voyageEtaVal = document.getElementById('voyage-eta-val');
 const voyageDepthVal = document.getElementById('voyage-depth-val');
 const voyageUkcVal = document.getElementById('voyage-ukc-val');
 const voyageDraftVal = document.getElementById('voyage-draft-val');
+const voyageFuelVal = document.getElementById('voyage-fuel-val');
 
 const voyageBtnProfile = document.getElementById('voyage-btn-profile');
 const voyageBtnWaypoints = document.getElementById('voyage-btn-waypoints');
+const voyageBtnPassagePlan = document.getElementById('voyage-btn-passage-plan');
 const voyageBtnSafety = document.getElementById('voyage-btn-safety');
 const voyageBtnSim = document.getElementById('voyage-btn-sim');
 const voyageBtnGpx = document.getElementById('voyage-btn-gpx');
 const voyageBtnRtz = document.getElementById('voyage-btn-rtz');
 
+// Элементы съемки эхолотом (Sonar Survey)
+const sonarSurveyDetails = document.getElementById('sonar-survey-details');
+const sonarFileInput = document.getElementById('sonar-file-input');
+const btnTriggerSonarUpload = document.getElementById('btn-trigger-sonar-upload');
+const btnDemoSonarData = document.getElementById('btn-demo-sonar-data');
+const sonarSurveyStats = document.getElementById('sonar-survey-stats');
+const toggleCustomBathymetryCheckbox = document.getElementById('toggle-custom-bathymetry');
+const toggleCustomSoundingsCheckbox = document.getElementById('toggle-custom-soundings');
+
+// Элементы модального окна официального плана перехода (IMO Passage Plan)
+const exportPassagePlanBtn = document.getElementById('export-passage-plan-btn');
+const passagePlanModal = document.getElementById('passage-plan-modal');
+const passagePlanContent = document.getElementById('passage-plan-content');
+const btnPrintPassagePlan = document.getElementById('btn-print-passage-plan');
+const btnClosePassagePlan = document.getElementById('btn-close-passage-plan');
+
 let blackSeaPorts = [];
+let blackSeaAnchorages = [];
+let isAudioMuted = false;
+let audioAlarmCtx = null;
+let lastAudioBeepTime = 0;
 
 // -----------------------------------------------------------------------------
 // 3. Пресеты судов и состояние навигации
 const VESSEL_PROFILES = {
-    yacht: { draft: 1.2, speed: 10, ukc: 0.5, radius: 50, cb: 0.50 },
-    ferry: { draft: 4.5, speed: 18, ukc: 1.0, radius: 250, cb: 0.65 },
-    cargo: { draft: 10.0, speed: 12, ukc: 2.0, radius: 500, cb: 0.82 }
+    yacht: { draft: 1.2, speed: 10, ukc: 0.5, radius: 50, cb: 0.50, fuel: 18.0 },
+    ferry: { draft: 4.5, speed: 18, ukc: 1.0, radius: 250, cb: 0.65, fuel: 420.0 },
+    cargo: { draft: 10.0, speed: 12, ukc: 2.0, radius: 500, cb: 0.82, fuel: 1200.0 }
 };
 
 let draft = parseFloat(draftSlider.value);
@@ -233,6 +260,7 @@ let baseUkc = parseFloat(ukcSlider.value);
 let turningRadius = radiusSlider ? parseFloat(radiusSlider.value) : 50.0;
 let tideOffsetM = tideSlider ? parseFloat(tideSlider.value) : 0.0;
 let waveHeightM = waveSlider ? parseFloat(waveSlider.value) : 0.0;
+let fuelRateLh = fuelSlider ? parseFloat(fuelSlider.value) : 18.0;
 let portXtdM = xtdSlider ? parseFloat(xtdSlider.value) : 185.2;
 let fairwayPreference = prioritizeFairwaysCheckbox && prioritizeFairwaysCheckbox.checked ? 1.0 : 0.0;
 let currentCb = 0.50;
@@ -436,6 +464,11 @@ if (vesselSelect) {
             speedSlider.value = profile.speed;
             ukcSlider.value = profile.ukc;
             if (radiusSlider) radiusSlider.value = profile.radius;
+            if (profile.fuel && fuelSlider) {
+                fuelSlider.value = profile.fuel;
+                fuelRateLh = profile.fuel;
+                if (fuelVal) fuelVal.innerText = `${Math.round(fuelRateLh)} л/ч`;
+            }
             currentCb = profile.cb || 0.65;
 
             draft = profile.draft;
@@ -449,6 +482,7 @@ if (vesselSelect) {
             if (radiusVal) radiusVal.innerText = Math.round(turningRadius) + 'м';
 
             updateVesselPhysics();
+            updateVoyageFuelDisplay();
             triggerRouteRecalculation(true);
         }
     });
@@ -474,6 +508,7 @@ if (vesselSelect) {
         speedVal.innerText = speedKnots + ' уз';
         markCustomProfile();
         updateVesselPhysics();
+        updateVoyageFuelDisplay();
         triggerRouteRecalculation(false);
     });
     speedSlider.addEventListener('change', () => triggerRouteRecalculation(true));
@@ -517,6 +552,15 @@ if (vesselSelect) {
         waveSlider.addEventListener('change', () => triggerRouteRecalculation(true));
     }
 
+    if (fuelSlider) {
+        fuelSlider.addEventListener('input', (e) => {
+            fuelRateLh = parseFloat(e.target.value);
+            if (fuelVal) fuelVal.innerText = `${Math.round(fuelRateLh)} л/ч`;
+            markCustomProfile();
+            updateVoyageFuelDisplay();
+        });
+    }
+
     if (xtdSlider) {
         xtdSlider.addEventListener('input', (e) => {
             portXtdM = parseFloat(e.target.value);
@@ -525,6 +569,27 @@ if (vesselSelect) {
             triggerRouteRecalculation(false);
         });
         xtdSlider.addEventListener('change', () => triggerRouteRecalculation(true));
+    }
+}
+
+function updateVoyageFuelDisplay() {
+    if (!voyageFuelVal) return;
+    if (!currentRouteData || !currentRouteData.properties) {
+        voyageFuelVal.innerText = '—';
+        return;
+    }
+    const p = currentRouteData.properties;
+    const etaHours = (p.eta_hours !== null && p.eta_hours !== undefined) ? p.eta_hours : 0;
+    if (etaHours <= 0) {
+        voyageFuelVal.innerText = '—';
+        return;
+    }
+    const nominalFuel = etaHours * fuelRateLh;
+    const reserveFuel = nominalFuel * 1.20;
+    if (nominalFuel >= 1000) {
+        voyageFuelVal.innerText = `${(nominalFuel / 1000).toFixed(2)} т (+20%: ${(reserveFuel / 1000).toFixed(2)} т)`;
+    } else {
+        voyageFuelVal.innerText = `${Math.round(nominalFuel)} л (+20%: ${Math.round(reserveFuel)} л)`;
     }
 }
 
@@ -1131,6 +1196,192 @@ map.on('load', () => {
             const vis = e.target.checked ? 'visible' : 'none';
             if (map.getLayer('ports-circle-layer')) map.setLayoutProperty('ports-circle-layer', 'visibility', vis);
             if (map.getLayer('ports-label-layer')) map.setLayoutProperty('ports-label-layer', 'visibility', vis);
+        });
+    }
+
+    // 6.3. Рейдовые якорные стоянки Черного моря (Roadstead Anchorages)
+    fetch('/api/anchorages')
+        .then(res => res.json())
+        .then(anchorages => {
+            blackSeaAnchorages = anchorages || [];
+            const anchorageFeatures = blackSeaAnchorages.map(a => ({
+                type: 'Feature',
+                properties: {
+                    id: a.id,
+                    name: a.name,
+                    depth_range: `${a.depth_min_m}-${a.depth_max_m} м`,
+                    max_draft: `${a.max_draft_m} м`,
+                    holding_ground: a.bottom_nature,
+                    shelter_from: a.sheltered_from_winds ? a.sheltered_from_winds.join(', ') : 'Открытая',
+                    vhf_channel: a.vhf_channel,
+                    notes: a.notes
+                },
+                geometry: {
+                    type: 'Point',
+                    coordinates: a.coords
+                }
+            }));
+
+            map.addSource('anchorages-data', {
+                type: 'geojson',
+                data: {
+                    type: 'FeatureCollection',
+                    features: anchorageFeatures
+                }
+            });
+
+            map.addLayer({
+                id: 'anchorages-circle-layer',
+                type: 'circle',
+                source: 'anchorages-data',
+                paint: {
+                    'circle-radius': [
+                        'interpolate', ['linear'], ['zoom'],
+                        7, 4.0,
+                        10, 6.5,
+                        13, 8.5
+                    ],
+                    'circle-color': '#10b981',
+                    'circle-stroke-width': 2,
+                    'circle-stroke-color': '#064e3b'
+                }
+            }, 'route-corridor-fill');
+
+            map.addLayer({
+                id: 'anchorages-label-layer',
+                type: 'symbol',
+                source: 'anchorages-data',
+                minzoom: 8.5,
+                layout: {
+                    'text-field': ['concat', '[ЯКОРЬ] ', ['get', 'name']],
+                    'text-font': ['literal', ['Open Sans Regular', 'Arial Unicode MS Regular']],
+                    'text-size': 10,
+                    'text-offset': [0, 1.2],
+                    'text-anchor': 'top',
+                    'text-allow-overlap': false
+                },
+                paint: {
+                    'text-color': '#6ee7b7',
+                    'text-halo-color': '#064e3b',
+                    'text-halo-width': 1.5
+                }
+            }, 'route-corridor-fill');
+
+            let activeAnchoragePopup = null;
+            map.on('mouseenter', 'anchorages-circle-layer', () => {
+                if (!isEblVrmActive && !isAddingViaMode) map.getCanvas().style.cursor = 'pointer';
+            });
+            map.on('mouseleave', 'anchorages-circle-layer', () => {
+                if (!isEblVrmActive && !isAddingViaMode) map.getCanvas().style.cursor = '';
+            });
+
+            map.on('click', 'anchorages-circle-layer', (e) => {
+                if (isEblVrmActive || isAddingViaMode) return;
+                const props = e.features[0].properties;
+                const coords = e.features[0].geometry.coordinates.slice();
+
+                if (activeAnchoragePopup) activeAnchoragePopup.remove();
+
+                activeAnchoragePopup = new maplibregl.Popup({ offset: 12, closeButton: true })
+                    .setLngLat(coords)
+                    .setHTML(`
+                        <div class="port-popup">
+                            <div class="port-popup-title" style="color: #34d399;">Якорная стоянка: ${props.name}</div>
+                            <div class="port-popup-info">Глубины: ${props.depth_range} &nbsp;|&nbsp; Макс. осадка: ${props.max_draft}</div>
+                            <div class="port-popup-desc">Грунт: ${props.holding_ground} | Укрытие: ${props.shelter_from} | ${props.vhf_channel}</div>
+                            <div style="font-size: 11px; color: #94a3b8; margin-top: 4px;">${props.notes}</div>
+                            <div class="port-popup-buttons">
+                                <button class="port-popup-btn btn-arrive" onclick="window.addAnchorageAsWaypoint(${coords[0]}, ${coords[1]}, '${props.name}')">Встать на якорь (РТ)</button>
+                            </div>
+                        </div>
+                    `)
+                    .addTo(map);
+            });
+        })
+        .catch(err => console.warn('Не удалось загрузить базу якорных стоянок:', err));
+
+    if (toggleAnchoragesCheckbox) {
+        toggleAnchoragesCheckbox.addEventListener('change', (e) => {
+            const vis = e.target.checked ? 'visible' : 'none';
+            if (map.getLayer('anchorages-circle-layer')) map.setLayoutProperty('anchorages-circle-layer', 'visibility', vis);
+            if (map.getLayer('anchorages-label-layer')) map.setLayoutProperty('anchorages-label-layer', 'visibility', vis);
+        });
+    }
+
+    // 6.4. Пользовательская батиметрия съемки эхолота (Sonar Survey)
+    map.addSource('custom-bathymetry', {
+        type: 'geojson',
+        data: { type: 'FeatureCollection', features: [] }
+    });
+
+    map.addLayer({
+        id: 'custom-bathymetry-line',
+        type: 'line',
+        source: 'custom-bathymetry',
+        filter: ['==', ['get', 'role'], 'custom_isobath'],
+        layout: { 'line-join': 'round', 'line-cap': 'round' },
+        paint: {
+            'line-color': '#06b6d4',
+            'line-width': 2.2,
+            'line-dasharray': [3, 1.5],
+            'line-opacity': 0.95
+        }
+    }, 'route-corridor-fill');
+
+    map.addLayer({
+        id: 'custom-bathymetry-label',
+        type: 'symbol',
+        source: 'custom-bathymetry',
+        filter: ['==', ['get', 'role'], 'custom_isobath'],
+        layout: {
+            'symbol-placement': 'line',
+            'text-field': ['get', 'label'],
+            'text-size': 9.5,
+            'text-font': ['literal', ['Open Sans Regular', 'Arial Unicode MS Regular']],
+            'symbol-spacing': 400
+        },
+        paint: {
+            'text-color': '#22d3ee',
+            'text-halo-color': '#083344',
+            'text-halo-width': 1.5
+        }
+    }, 'route-corridor-fill');
+
+    map.addSource('custom-soundings', {
+        type: 'geojson',
+        data: { type: 'FeatureCollection', features: [] }
+    });
+
+    map.addLayer({
+        id: 'custom-soundings-layer',
+        type: 'symbol',
+        source: 'custom-soundings',
+        minzoom: 10.5,
+        layout: {
+            'text-field': ['get', 'label'],
+            'text-size': 9.0,
+            'text-font': ['literal', ['Open Sans Regular', 'Arial Unicode MS Regular']],
+            'text-allow-overlap': false
+        },
+        paint: {
+            'text-color': '#a5f3fc',
+            'text-halo-color': '#083344',
+            'text-halo-width': 1.2
+        }
+    }, 'route-corridor-fill');
+
+    if (toggleCustomBathymetryCheckbox) {
+        toggleCustomBathymetryCheckbox.addEventListener('change', (e) => {
+            const vis = e.target.checked ? 'visible' : 'none';
+            if (map.getLayer('custom-bathymetry-line')) map.setLayoutProperty('custom-bathymetry-line', 'visibility', vis);
+            if (map.getLayer('custom-bathymetry-label')) map.setLayoutProperty('custom-bathymetry-label', 'visibility', vis);
+        });
+    }
+
+    if (toggleCustomSoundingsCheckbox) {
+        toggleCustomSoundingsCheckbox.addEventListener('change', (e) => {
+            const vis = e.target.checked ? 'visible' : 'none';
+            if (map.getLayer('custom-soundings-layer')) map.setLayoutProperty('custom-soundings-layer', 'visibility', vis);
         });
     }
 
@@ -1922,6 +2173,9 @@ window.addEventListener('keydown', (e) => {
 });
 
 map.on('click', (e) => {
+    if (window.innerWidth <= 860 && sidebar && sidebar.classList.contains('open')) {
+        sidebar.classList.remove('open');
+    }
     const coords = [e.lngLat.lng, e.lngLat.lat];
 
     if (isEblVrmActive) {
@@ -2257,6 +2511,7 @@ window.calculateRoute = async function () {
                 if (voyageDepthVal) voyageDepthVal.innerText = (p && p.min_chart_depth_m !== undefined) ? `${p.min_chart_depth_m.toFixed(1)} м` : '—';
                 if (voyageUkcVal) voyageUkcVal.innerText = clearance;
                 if (voyageDraftVal) voyageDraftVal.innerText = `${draft.toFixed(1)} м`;
+                updateVoyageFuelDisplay();
 
                 if (voyageStatusBadge) {
                     if (isUnsafe) {
@@ -2573,7 +2828,7 @@ function stopSimulator() {
     }
 
     if (simPlayBtn) {
-        simPlayBtn.innerText = '▶ Старт';
+        simPlayBtn.innerText = 'СТАРТ';
         simPlayBtn.disabled = false;
     }
     if (simPauseBtn) simPauseBtn.disabled = true;
@@ -2751,7 +3006,8 @@ function updateSimulatorHUD(distM) {
     let guardLineColor = '#06b6d4';
 
     if (minClearanceAhead < 0.0) {
-        // КРИТИЧЕСКИЙ АЛАРМ: Опасность посадки на мель внутри сектора упреждения
+        // КРИТИЧЕСКИЙ АЛАРМ: Опасность посадки на мель внутри сектора упреждения (IEC 62288)
+        playBridgeAlarmTone();
         guardColor = 'rgba(239, 68, 68, 0.40)';
         guardLineColor = '#ef4444';
 
@@ -2836,7 +3092,7 @@ function simAnimationFrame(timestamp) {
         updateSimulatorHUD(simState.currentDistanceM);
         simState.isRunning = false;
         if (simPlayBtn) {
-            simPlayBtn.innerText = '▶ Повтор';
+            simPlayBtn.innerText = 'ПОВТОР';
             simPlayBtn.disabled = false;
         }
         if (simPauseBtn) simPauseBtn.disabled = true;
@@ -2866,7 +3122,7 @@ if (simPlayBtn) {
         simState.isRunning = true;
         simState.lastTimestamp = null;
         simPlayBtn.disabled = true;
-        simPlayBtn.innerText = '▶ В движении';
+        simPlayBtn.innerText = 'В ХОДУ';
         if (simPauseBtn) simPauseBtn.disabled = false;
         simState.animFrameId = requestAnimationFrame(simAnimationFrame);
     });
@@ -2877,7 +3133,7 @@ if (simPauseBtn) {
         simState.isRunning = false;
         if (simState.animFrameId) cancelAnimationFrame(simState.animFrameId);
         simPlayBtn.disabled = false;
-        simPlayBtn.innerText = '▶ Продолжить';
+        simPlayBtn.innerText = 'ПРОДОЛЖИТЬ';
         simPauseBtn.disabled = true;
     });
 }
@@ -2888,7 +3144,7 @@ if (simResetBtn) {
         simState.currentDistanceM = 0;
         if (simState.animFrameId) cancelAnimationFrame(simState.animFrameId);
         simPlayBtn.disabled = false;
-        simPlayBtn.innerText = '▶ Старт';
+        simPlayBtn.innerText = 'СТАРТ';
         if (simPauseBtn) simPauseBtn.disabled = true;
         updateSimulatorHUD(0);
         if (simAlarmBanner) simAlarmBanner.style.display = 'none';
@@ -2976,5 +3232,498 @@ if (exportRtzBtn) {
             route_name: 'SeaPath_Passage_Plan'
         };
         triggerDownload('/api/export/rtz', 'seapath_passage_plan.rtz', payload);
+    });
+}
+
+// -----------------------------------------------------------------------------
+// 15. Аудио-зуммер ходового мостика ЭКНИС (IEC 62288 Bridge Audio Alarm)
+// -----------------------------------------------------------------------------
+function playBridgeAlarmTone() {
+    if (isAudioMuted) return;
+    const now = Date.now();
+    if (now - lastAudioBeepTime < 2500) return;
+    lastAudioBeepTime = now;
+
+    try {
+        const AudioCtx = window.AudioContext || window.webkitAudioContext;
+        if (!AudioCtx) return;
+        if (!audioAlarmCtx) audioAlarmCtx = new AudioCtx();
+        if (audioAlarmCtx.state === 'suspended') {
+            audioAlarmCtx.resume();
+        }
+
+        const osc = audioAlarmCtx.createOscillator();
+        const gain = audioAlarmCtx.createGain();
+        osc.type = 'square';
+
+        // IEC 62288: чередующиеся импульсы повышенной бдительности (960 Гц / 770 Гц)
+        const t0 = audioAlarmCtx.currentTime;
+        osc.frequency.setValueAtTime(960, t0);
+        osc.frequency.setValueAtTime(770, t0 + 0.12);
+        osc.frequency.setValueAtTime(960, t0 + 0.24);
+        osc.frequency.setValueAtTime(770, t0 + 0.36);
+
+        gain.gain.setValueAtTime(0.08, t0);
+        gain.gain.exponentialRampToValueAtTime(0.001, t0 + 0.48);
+
+        osc.connect(gain);
+        gain.connect(audioAlarmCtx.destination);
+        osc.start(t0);
+        osc.stop(t0 + 0.48);
+    } catch (e) {
+        console.warn('Bridge Web Audio error:', e);
+    }
+}
+
+if (toolMuteAlarmBtn) {
+    toolMuteAlarmBtn.addEventListener('click', () => {
+        isAudioMuted = !isAudioMuted;
+        if (isAudioMuted) {
+            toolMuteAlarmBtn.innerText = 'ЗВУК: ВЫКЛ';
+            toolMuteAlarmBtn.style.color = '#ef4444';
+            toolMuteAlarmBtn.style.borderColor = '#ef4444';
+        } else {
+            toolMuteAlarmBtn.innerText = 'ЗУММЕР';
+            toolMuteAlarmBtn.style.color = '';
+            toolMuteAlarmBtn.style.borderColor = '';
+            playBridgeAlarmTone();
+        }
+    });
+}
+
+// -----------------------------------------------------------------------------
+// 16. Съемка эхолотом (Sonar Survey & IHO S-44 Shoal-Bias Fusion)
+// -----------------------------------------------------------------------------
+const DEMO_SEVASTOPOL_CSV = `lat,lon,depth_m
+44.6150,33.5250,18.5
+44.6155,33.5280,17.8
+44.6160,33.5310,16.9
+44.6165,33.5340,16.2
+44.6170,33.5370,15.5
+44.6175,33.5400,14.8
+44.6180,33.5430,14.1
+44.6185,33.5460,13.5
+44.6190,33.5490,12.8
+44.6195,33.5520,12.0
+44.6200,33.5550,11.2
+44.6205,33.5580,10.5
+44.6210,33.5610,9.8
+44.6215,33.5640,9.1
+44.6220,33.5670,8.4
+44.6225,33.5700,7.6
+44.6230,33.5730,6.8
+44.6120,33.5260,19.2
+44.6130,33.5300,17.5
+44.6140,33.5350,16.0
+44.6145,33.5400,14.2
+44.6150,33.5450,13.0
+44.6160,33.5500,11.5
+44.6170,33.5550,10.2
+44.6180,33.5600,8.8
+44.6190,33.5650,7.5
+44.6200,33.5700,6.2
+44.6210,33.5750,5.1
+44.6180,33.5250,17.0
+44.6190,33.5300,15.8
+44.6200,33.5350,14.5
+44.6210,33.5400,13.1
+44.6220,33.5450,11.9
+44.6230,33.5500,10.5
+44.6240,33.5550,9.0
+44.6250,33.5600,7.8
+44.6260,33.5650,6.5
+44.6270,33.5700,5.4
+44.6162,33.5385,4.2
+44.6164,33.5390,3.8
+44.6166,33.5395,4.0
+44.6202,33.5582,3.5
+44.6205,33.5588,3.2
+44.6208,33.5592,3.6`;
+
+function handleSonarSurveyResponse(data) {
+    if (!data || !data.success) {
+        alert(data && data.error ? data.error : 'Не удалось обработать батиметрическую съемку.');
+        return;
+    }
+
+    if (map.getSource('custom-bathymetry') && data.geojson) {
+        map.getSource('custom-bathymetry').setData(data.geojson);
+    }
+    if (map.getSource('custom-soundings') && data.geojson) {
+        const pts = {
+            type: 'FeatureCollection',
+            features: (data.geojson.features || []).filter(f => f.geometry && f.geometry.type === 'Point')
+        };
+        map.getSource('custom-soundings').setData(pts);
+    }
+
+    const s = data.statistics || {};
+    if (sonarSurveyStats) {
+        sonarSurveyStats.style.display = 'block';
+        sonarSurveyStats.innerHTML = `
+            <div style="font-weight: 600; color: #38bdf8; margin-bottom: 4px;">Съемка эхолотом интегрирована</div>
+            <div>Промеров: <b>${s.soundings_count || 0}</b> | Диапазон глубин: <b>${s.min_depth_m !== undefined ? s.min_depth_m.toFixed(1) : '—'} - ${s.max_depth_m !== undefined ? s.max_depth_m.toFixed(1) : '—'} м</b></div>
+            <div>Площадь: <b>${s.area_sq_km !== undefined ? s.area_sq_km.toFixed(3) : '—'} км²</b> | Обновлено ячеек: <b>${s.cells_fused_into_grid || 0}</b></div>
+            <div style="color: #10b981; font-size: 11px; margin-top: 4px;">Сетка глубин обновлена по правилу наименьшей глубины (IHO S-44 Shoal-bias)</div>
+        `;
+    }
+
+    if (s.bounds && s.bounds.length === 4) {
+        map.fitBounds([
+            [s.bounds[0], s.bounds[1]],
+            [s.bounds[2], s.bounds[3]]
+        ], { padding: 50, duration: 800 });
+    }
+
+    statusMsg.innerText = `Съемка эхолота (${s.soundings_count || 0} промеров) внедрена в батиметрическую сетку.`;
+    statusMsg.style.color = '#38bdf8';
+
+    if (plannedWaypoints.length >= 2) {
+        triggerRouteRecalculation(true);
+    }
+}
+
+if (btnTriggerSonarUpload && sonarFileInput) {
+    btnTriggerSonarUpload.addEventListener('click', () => {
+        sonarFileInput.click();
+    });
+
+    sonarFileInput.addEventListener('change', async (e) => {
+        const file = e.target.files && e.target.files[0];
+        if (!file) return;
+
+        btnTriggerSonarUpload.disabled = true;
+        btnTriggerSonarUpload.innerText = 'Обработка...';
+
+        try {
+            const rawContent = await file.text();
+            const res = await fetch('/api/bathymetry/upload-sonar', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    raw_content: rawContent,
+                    filename: file.name,
+                    is_dredged: false,
+                    grid_size: 70,
+                    power: 2.0,
+                    search_radius_m: 1200.0
+                })
+            });
+
+            if (!res.ok) {
+                const err = await res.json().catch(() => ({}));
+                throw new Error(err.detail || `Ошибка сервера (HTTP ${res.status})`);
+            }
+
+            const data = await res.json();
+            handleSonarSurveyResponse(data);
+        } catch (err) {
+            console.error('Ошибка загрузки лога эхолота:', err);
+            alert(`Ошибка импорта промеров эхолота: ${err.message}`);
+        } finally {
+            btnTriggerSonarUpload.disabled = false;
+            btnTriggerSonarUpload.innerText = 'Загрузить лог эхолота (CSV/NMEA/GPX)';
+            sonarFileInput.value = '';
+        }
+    });
+}
+
+if (btnDemoSonarData) {
+    btnDemoSonarData.addEventListener('click', async () => {
+        btnDemoSonarData.disabled = true;
+        btnDemoSonarData.innerText = 'Интеграция...';
+
+        try {
+            const res = await fetch('/api/bathymetry/upload-sonar', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    raw_content: DEMO_SEVASTOPOL_CSV,
+                    filename: 'sevastopol_survey.csv',
+                    is_dredged: false,
+                    grid_size: 70,
+                    power: 2.0,
+                    search_radius_m: 1200.0
+                })
+            });
+
+            if (!res.ok) {
+                const err = await res.json().catch(() => ({}));
+                throw new Error(err.detail || `Ошибка сервера (HTTP ${res.status})`);
+            }
+
+            const data = await res.json();
+            handleSonarSurveyResponse(data);
+        } catch (err) {
+            console.error('Ошибка загрузки демо-промеров:', err);
+            alert(`Ошибка импорта демо-промеров: ${err.message}`);
+        } finally {
+            btnDemoSonarData.disabled = false;
+            btnDemoSonarData.innerText = 'Демо: Промеры Севастопольской бухты';
+        }
+    });
+}
+
+// -----------------------------------------------------------------------------
+// 17. Официальный план перехода IMO Res. A.893(21) / SOLAS V-34
+// -----------------------------------------------------------------------------
+async function openPassagePlanModal() {
+    if (!currentRouteData || plannedWaypoints.length < 2) {
+        alert('Пожалуйста, сначала проложите маршрут на карте (минимум 2 точки).');
+        return;
+    }
+
+    if (passagePlanModal) {
+        passagePlanModal.style.display = 'flex';
+    }
+
+    if (passagePlanContent) {
+        passagePlanContent.innerHTML = '<div style="padding: 40px; text-align: center; color: #94a3b8;">Генерация официального плана перехода IMO Res. A.893(21)...</div>';
+    }
+
+    try {
+        const payload = {
+            route_data: currentRouteData,
+            vessel_profile: vesselSelect.value || 'yacht',
+            vessel_name: vesselSelect.value === 'cargo' ? 'M/V BLACK SEA TRADER' : (vesselSelect.value === 'ferry' ? 'M/F CRIMEAN STAR' : 'S/Y SEAPATH NAVIGATOR'),
+            draft: draft,
+            speed_knots: speedKnots,
+            ukc: baseUkc,
+            wave_height_m: waveHeightM,
+            tide_offset_m: tideOffsetM,
+            xtd_m: portXtdM,
+            fuel_burn_l_h: fuelRateLh
+        };
+
+        const res = await fetch('/api/passage-plan', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+
+        if (!res.ok) {
+            const err = await res.json().catch(() => ({}));
+            throw new Error(err.detail || `Ошибка сервера (HTTP ${res.status})`);
+        }
+
+        const plan = await res.json();
+        renderPassagePlanDocument(plan);
+    } catch (err) {
+        console.error('Ошибка создания плана перехода:', err);
+        if (passagePlanContent) {
+            passagePlanContent.innerHTML = `<div style="padding: 30px; color: #ef4444;">Не удалось сформировать план перехода: ${err.message}</div>`;
+        }
+    }
+}
+
+function renderPassagePlanDocument(plan) {
+    if (!passagePlanContent || !plan) return;
+
+    const v = plan.vessel || {};
+    const voy = plan.voyage_summary || {};
+    const d = plan.dukc_safety_budget || {};
+    const f = plan.bunkering_fuel_budget || {};
+    const wps = plan.waypoints || [];
+    const bot = plan.critical_bottleneck;
+    const ref = plan.ports_of_refuge || [];
+
+    const isSafe = d.safety_status === 'SAFE';
+
+    let html = `
+        <div class="passage-report-header">
+            <div>
+                <h2 class="passage-report-title">OFFICIAL PASSAGE PLAN / ПЛАН МОРСКОГО ПЕРЕХОДА</h2>
+                <div class="passage-report-sub">Standard: IMO Res. A.893(21) / SOLAS V Reg. 34 / PIANC MarCom WG 121</div>
+            </div>
+            <div class="passage-report-meta">
+                <div>План №: <b>${plan.passage_plan_id}</b></div>
+                <div>Дата/время: <b>${plan.timestamp_utc}</b></div>
+                <div>Статус: <b style="color: ${isSafe ? '#10b981' : '#ef4444'};">${isSafe ? 'ОДОБРЕНО К ПЕРЕХОДУ' : 'ТРЕБУЕТ ВНИМАНИЯ'}</b></div>
+            </div>
+        </div>
+
+        <div class="passage-grid-4">
+            <div class="passage-card">
+                <div class="passage-card-title">1. Сведения о судне</div>
+                <div class="passage-row"><span>Название:</span> <b>${v.name}</b></div>
+                <div class="passage-row"><span>Тип судна:</span> <b>${v.type_profile ? v.type_profile.toUpperCase() : 'YACHT'}</b></div>
+                <div class="passage-row"><span>Статическая осадка:</span> <b>${v.static_draft_m ? v.static_draft_m.toFixed(2) + ' м' : '—'}</b></div>
+                <div class="passage-row"><span>Скорость хода:</span> <b>${v.speed_knots ? v.speed_knots.toFixed(1) + ' уз' : '—'}</b></div>
+                <div class="passage-row"><span>Коэфф. полноты Cb:</span> <b>${v.block_coefficient ? v.block_coefficient.toFixed(2) : '—'}</b></div>
+            </div>
+
+            <div class="passage-card">
+                <div class="passage-card-title">2. Параметры рейса</div>
+                <div class="passage-row"><span>Порт отхода:</span> <b>${voy.departure} (${voy.departure_vhf})</b></div>
+                <div class="passage-row"><span>Порт прихода:</span> <b>${voy.destination} (${voy.destination_vhf})</b></div>
+                <div class="passage-row"><span>Дистанция пути:</span> <b>${voy.total_distance_nm ? voy.total_distance_nm.toFixed(2) + ' ММ' : '—'}</b></div>
+                <div class="passage-row"><span>Ходовое время (ETE):</span> <b>${voy.estimated_time_enroute || '—'}</b></div>
+                <div class="passage-row"><span>Ширина полосы XTD:</span> <b>±${Math.round(voy.corridor_xtd_m || 185)} м</b></div>
+            </div>
+
+            <div class="passage-card">
+                <div class="passage-card-title">3. Гидродинамический бюджет DUKC</div>
+                <div class="passage-row"><span>Статическая осадка:</span> <b>${d.static_draft_m ? d.static_draft_m.toFixed(2) + ' м' : '—'}</b></div>
+                <div class="passage-row"><span>Squat (Баррасс):</span> <b>+${d.barrass_squat_m ? d.barrass_squat_m.toFixed(2) + ' м' : '0.00 м'}</b></div>
+                <div class="passage-row"><span>Волновой запас (0.35Hs):</span> <b>+${d.wave_allowance_m ? d.wave_allowance_m.toFixed(2) + ' м' : '0.00 м'}</b></div>
+                <div class="passage-row"><span>Динамическая осадка:</span> <b>${d.dynamic_draft_m ? d.dynamic_draft_m.toFixed(2) + ' м' : '—'}</b></div>
+                <div class="passage-row"><span>Требуемый UKC:</span> <b>${d.base_ukc_required_m ? d.base_ukc_required_m.toFixed(2) + ' м' : '—'}</b></div>
+                <div class="passage-row" style="border-top: 1px solid rgba(255,255,255,0.1); margin-top: 4px; padding-top: 4px;">
+                    <span style="color: #38bdf8;">Изобата безопасности:</span> <b style="color: #38bdf8;">${d.minimum_safety_chart_depth_m ? d.minimum_safety_chart_depth_m.toFixed(2) + ' м' : '—'}</b>
+                </div>
+            </div>
+
+            <div class="passage-card">
+                <div class="passage-card-title">4. Бункеровка и расход топлива</div>
+                <div class="passage-row"><span>Норма расхода:</span> <b>${Math.round(v.fuel_burn_rate_l_h || 18)} л/ч</b></div>
+                <div class="passage-row"><span>Номинальный расход:</span> <b>${f.nominal_consumption_liters ? Math.round(f.nominal_consumption_liters) + ' л' : '—'}</b></div>
+                <div class="passage-row"><span>Резерв IMO (+20%):</span> <b>${f.reserve_contingency_liters ? Math.round(f.reserve_contingency_liters) + ' л' : '—'}</b></div>
+                <div class="passage-row" style="border-top: 1px solid rgba(255,255,255,0.1); margin-top: 4px; padding-top: 4px;">
+                    <span style="color: #10b981;">Всего к бункеровке:</span> <b style="color: #10b981;">${f.total_fuel_required_liters ? Math.round(f.total_fuel_required_liters) + ' л' : '—'}</b>
+                </div>
+                ${(f.total_fuel_required_liters && f.total_fuel_required_liters >= 1000) ? `<div style="font-size: 11px; color: #94a3b8; text-align: right;">(${(f.total_fuel_required_liters / 1000).toFixed(2)} метрич. тонн)</div>` : ''}
+            </div>
+        </div>
+    `;
+
+    if (bot && bot.depth_m) {
+        html += `
+            <div style="background: rgba(239, 68, 68, 0.12); border: 1px solid rgba(239, 68, 68, 0.4); padding: 12px 16px; border-radius: 6px; margin-bottom: 18px;">
+                <div style="font-weight: 700; color: #fca5a5; font-size: 13px; margin-bottom: 4px;">
+                    ЛИМИТИРУЮЩИЙ УЧАСТОК ПЕРЕХОДА (SHALLOW BOTTLENECK)
+                </div>
+                <div style="color: #cbd5e1; font-size: 12px; line-height: 1.5;">
+                    Координаты: <b>${bot.coords_dmm || '—'}</b> &nbsp;|&nbsp;
+                    Глубина по карте: <b>${bot.depth_m.toFixed(2)} м</b> &nbsp;|&nbsp;
+                    Остаточный UKC: <b>${bot.clearance_m.toFixed(2)} м</b> &nbsp;|&nbsp;
+                    Дистанция от отхода: <b>${bot.distance_from_start_nm ? bot.distance_from_start_nm.toFixed(1) + ' ММ' : '—'}</b>
+                    ${bot.recommended_speed_knots ? `<br><span style="color: #fbbf24;">Рекомендация: снизить скорость до <b>${bot.recommended_speed_knots.toFixed(1)} уз</b> для уменьшения проседания корпуса (Squat).</span>` : ''}
+                </div>
+            </div>
+        `;
+    }
+
+    html += `
+        <div style="margin-bottom: 18px;">
+            <div class="passage-section-title">ТАБЛИЦА ПУТЕВЫХ ТОЧЕК И ПЛЕЧ ПЕРЕХОДА (WAYPOINTS SCHEDULE)</div>
+            <table class="passage-table">
+                <thead>
+                    <tr>
+                        <th>№</th>
+                        <th>Роль</th>
+                        <th>Широта (DMM)</th>
+                        <th>Долгота (DMM)</th>
+                        <th>Курс (°T)</th>
+                        <th>Дист (ММ)</th>
+                        <th>Сумм (ММ)</th>
+                        <th>Скорость</th>
+                        <th>ETE</th>
+                        <th>Радиус</th>
+                        <th>WOP</th>
+                    </tr>
+                </thead>
+                <tbody>
+    `;
+
+    wps.forEach(wp => {
+        const brg = wp.bearing_true !== null && wp.bearing_true !== undefined ? `${wp.bearing_true.toFixed(1)}°` : '—';
+        const dist = wp.leg_dist_nm !== null && wp.leg_dist_nm !== undefined ? wp.leg_dist_nm.toFixed(2) : '—';
+        const cum = wp.cum_dist_nm !== null && wp.cum_dist_nm !== undefined ? wp.cum_dist_nm.toFixed(2) : '—';
+        const ete = wp.leg_ete_min !== undefined ? `${wp.leg_ete_min} мин` : '—';
+        const rad = wp.turn_radius_m ? `${Math.round(wp.turn_radius_m)}м` : '—';
+        const wop = wp.wop_dist_m ? `${Math.round(wp.wop_dist_m)}м` : '—';
+
+        html += `
+            <tr>
+                <td><b>${wp.index}</b></td>
+                <td>${wp.role}</td>
+                <td><code>${wp.lat_dmm}</code></td>
+                <td><code>${wp.lon_dmm}</code></td>
+                <td><b>${brg}</b></td>
+                <td>${dist}</td>
+                <td>${cum}</td>
+                <td>${wp.speed_knots ? wp.speed_knots.toFixed(1) + ' уз' : '—'}</td>
+                <td>${ete}</td>
+                <td>${rad}</td>
+                <td>${wop}</td>
+            </tr>
+        `;
+    });
+
+    html += `
+                </tbody>
+            </table>
+        </div>
+    `;
+
+    if (ref && ref.length) {
+        html += `
+            <div style="margin-bottom: 18px;">
+                <div class="passage-section-title">МЕСТА УБЕЖИЩА И РЕЙДОВЫЕ СТОЯНКИ (PORTS OF REFUGE / ROADSTEADS)</div>
+                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 10px;">
+        `;
+        ref.forEach(r => {
+            html += `
+                <div style="background: rgba(15, 23, 42, 0.6); border: 1px solid rgba(255,255,255,0.08); padding: 10px; border-radius: 4px; font-size: 12px;">
+                    <div style="font-weight: 600; color: #34d399; margin-bottom: 2px;">${r.name}</div>
+                    <div>Глубины: <b>${r.depth_range_m}</b> | ${r.vhf_channel || 'VHF 16'}</div>
+                    <div style="color: #94a3b8; font-size: 11px;">Грунт: ${r.holding_ground || 'Ил/песок'} | Укрытие: ${r.shelter || 'Все ветры'}</div>
+                </div>
+            `;
+        });
+        html += `
+                </div>
+            </div>
+        `;
+    }
+
+    html += `
+        <div class="passage-signoff-box">
+            <div class="passage-signoff-col">
+                <div style="font-weight: 600; color: #cbd5e1; margin-bottom: 24px;">СОСТАВИЛ (Prepared by OOW):</div>
+                <div style="border-bottom: 1px dashed #64748b; margin-bottom: 6px;"></div>
+                <div style="font-size: 11px; color: #94a3b8;">Вахтенный помощник капитана / Подпись / Дата</div>
+            </div>
+            <div class="passage-signoff-col">
+                <div style="font-weight: 600; color: #cbd5e1; margin-bottom: 24px;">УТВЕРДИЛ (Approved by Master):</div>
+                <div style="border-bottom: 1px dashed #64748b; margin-bottom: 6px;"></div>
+                <div style="font-size: 11px; color: #94a3b8;">Капитан судна / Личная подпись / Дата</div>
+            </div>
+            <div class="passage-signoff-col" style="text-align: center;">
+                <div style="display: inline-block; width: 110px; height: 110px; border: 2px dashed rgba(255,255,255,0.2); border-radius: 50%; padding-top: 38px; box-sizing: border-box; font-size: 11px; color: #64748b;">
+                    М.П. / SEAL
+                </div>
+            </div>
+        </div>
+    `;
+
+    passagePlanContent.innerHTML = html;
+}
+
+if (voyageBtnPassagePlan) {
+    voyageBtnPassagePlan.addEventListener('click', openPassagePlanModal);
+}
+
+if (exportPassagePlanBtn) {
+    exportPassagePlanBtn.addEventListener('click', openPassagePlanModal);
+}
+
+if (btnPrintPassagePlan) {
+    btnPrintPassagePlan.addEventListener('click', () => {
+        window.print();
+    });
+}
+
+if (btnClosePassagePlan) {
+    btnClosePassagePlan.addEventListener('click', () => {
+        if (passagePlanModal) passagePlanModal.style.display = 'none';
+    });
+}
+
+if (passagePlanModal) {
+    passagePlanModal.addEventListener('click', (e) => {
+        if (e.target === passagePlanModal) {
+            passagePlanModal.style.display = 'none';
+        }
     });
 }

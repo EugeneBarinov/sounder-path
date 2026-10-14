@@ -36,6 +36,12 @@ from backend.core.kinematics import (
     point_to_polyline_distance_m,
     point_to_segment_distance_m,
 )
+from backend.core.sonar import (
+    parse_sonar_payload,
+    interpolate_sonar_bathymetry,
+    fuse_soundings_into_grid,
+)
+from backend.core.passage_plan import generate_passage_plan
 import math
 
 app = FastAPI(
@@ -238,6 +244,30 @@ except Exception as _err:
 # ---------------------------------------------------------------------------
 # Models
 # ---------------------------------------------------------------------------
+class SonarUploadRequest(BaseModel):
+    model_config = ConfigDict(allow_inf_nan=False, extra="ignore")
+    raw_content: Optional[str] = Field(default=None, description="Raw text content of sounder file (CSV, NMEA, or GPX)")
+    filename: Optional[str] = Field(default="sounder_log.csv", description="Original filename for parser format detection")
+    is_dredged: Optional[bool] = Field(default=False, description="Flag if soundings represent a dredged channel across land")
+    grid_size: Optional[int] = Field(default=70, ge=20, le=200, description="Interpolated mesh dimensions (NxN)")
+    power: Optional[float] = Field(default=2.0, ge=1.0, le=4.0, description="IDW distance weighting exponent")
+    search_radius_m: Optional[float] = Field(default=1200.0, ge=50.0, le=10000.0, description="Spatial neighborhood radius in meters")
+
+
+class PassagePlanRequest(BaseModel):
+    model_config = ConfigDict(allow_inf_nan=False, extra="ignore")
+    route_data: Dict[str, Any] = Field(description="Complete calculated route payload from /api/route")
+    vessel_profile: Optional[str] = Field(default="yacht", description="Vessel class profile (yacht, ferry, cargo, custom)")
+    vessel_name: Optional[str] = Field(default="M/V SeaPath", description="Vessel ship name")
+    draft: Optional[float] = Field(default=1.2, ge=0.1, le=25.0)
+    speed_knots: Optional[float] = Field(default=10.0, ge=0.0, le=50.0)
+    ukc: Optional[float] = Field(default=0.5, ge=0.0, le=10.0)
+    wave_height_m: Optional[float] = Field(default=0.0, ge=0.0, le=15.0)
+    tide_offset_m: Optional[float] = Field(default=0.0, ge=-5.0, le=5.0)
+    xtd_m: Optional[float] = Field(default=185.2, ge=20.0, le=2000.0)
+    fuel_burn_l_h: Optional[float] = Field(default=None, ge=0.0, le=50000.0)
+
+
 class RouteRequest(BaseModel):
     model_config = ConfigDict(allow_inf_nan=False, extra="ignore")
     start_lon: Optional[float] = Field(default=None, description="Departure longitude in decimal degrees")
@@ -616,6 +646,16 @@ def get_ports():
     ports_path = _BASE_DIR / "data" / "ports.json"
     if ports_path.exists():
         with open(ports_path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    return []
+
+
+@app.get("/api/anchorages")
+def get_anchorages():
+    """Returns database of official maritime anchorages, holding grounds, and sheltered roadsteads."""
+    anc_path = _BASE_DIR / "data" / "anchorages.json"
+    if anc_path.exists():
+        with open(anc_path, "r", encoding="utf-8") as f:
             return json.load(f)
     return []
 
@@ -1789,6 +1829,82 @@ def export_rtz(req: ExportRouteRequest, response: Response):
         media_type="application/xml",
         headers=headers,
     )
+
+
+@app.post("/api/bathymetry/upload-sonar")
+def upload_sonar_data(req: SonarUploadRequest):
+    """
+    Ingest, parse, and interpolate custom echo sounder data (CSV, NMEA, GPX).
+    Extracts high-resolution isobaths and fuses soundings into the active navigation grid.
+    """
+    if not req.raw_content or not req.raw_content.strip():
+        raise HTTPException(status_code=400, detail="Отсутствует содержимое файла промеров эхолота.")
+
+    soundings = parse_sonar_payload(req.raw_content, req.filename or "sounder_log.csv")
+    if not soundings:
+        raise HTTPException(
+            status_code=422,
+            detail="Не удалось извлечь валидные координаты и глубины. Проверьте формат CSV, NMEA или GPX."
+        )
+
+    # 1. 2D IDW surface interpolation & vector isobath contouring
+    interp_result = interpolate_sonar_bathymetry(
+        soundings=soundings,
+        grid_size=req.grid_size or 70,
+        power=req.power or 2.0,
+        search_radius_m=req.search_radius_m or 1200.0,
+    )
+
+    # 2. Fuse into active navigation grids (IHO S-44 Shoal-bias rule)
+    updated_full = fuse_soundings_into_grid(full_grid, soundings, is_dredged=bool(req.is_dredged))
+    updated_routing = 0
+    if routing_grid:
+        updated_routing = fuse_soundings_into_grid(routing_grid, soundings, is_dredged=bool(req.is_dredged))
+
+    interp_result["statistics"]["cells_fused_into_grid"] = updated_full
+    interp_result["statistics"]["routing_cells_updated"] = updated_routing
+
+    return interp_result
+
+
+@app.post("/api/passage-plan")
+def create_passage_plan(req: PassagePlanRequest):
+    """
+    Constructs an official IMO Resolution A.893(21) Passage Plan document
+    with complete waypoints log, DUKC hydrodynamics, and fuel budget.
+    """
+    ports_path = _BASE_DIR / "data" / "ports.json"
+    ports_db = []
+    if ports_path.exists():
+        with open(ports_path, "r", encoding="utf-8") as f:
+            ports_db = json.load(f)
+
+    anc_path = _BASE_DIR / "data" / "anchorages.json"
+    anc_db = []
+    if anc_path.exists():
+        with open(anc_path, "r", encoding="utf-8") as f:
+            anc_db = json.load(f)
+
+    custom_params = {
+        "draft": req.draft,
+        "speed_knots": req.speed_knots,
+        "ukc": req.ukc,
+        "wave_height_m": req.wave_height_m,
+        "tide_offset_m": req.tide_offset_m,
+        "xtd_m": req.xtd_m,
+    }
+    if req.fuel_burn_l_h is not None:
+        custom_params["fuel_burn_l_h"] = req.fuel_burn_l_h
+
+    plan = generate_passage_plan(
+        route_data=req.route_data,
+        vessel_profile=req.vessel_profile or "yacht",
+        vessel_name=req.vessel_name or "M/V SeaPath",
+        custom_params=custom_params,
+        ports_db=ports_db,
+        anchorages_db=anc_db,
+    )
+    return plan
 
 
 # ---------------------------------------------------------------------------

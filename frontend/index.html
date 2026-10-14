@@ -90,6 +90,9 @@
                     <input type="range" id="wave-slider" min="0.0" max="3.5" step="0.1" value="0.0">
                     <div id="live-weather-info" class="live-weather-info" style="display: none;"></div>
 
+                    <label for="fuel-slider" style="margin-top: 6px;">Расход топлива (Cruising) <span class="val" id="fuel-val">18 л/ч</span></label>
+                    <input type="range" id="fuel-slider" min="2" max="1500" step="1" value="18">
+
                     <label for="xtd-slider" style="margin-top: 6px;">Полоса безопасности (XTD) <span class="val" id="xtd-val">185м (0.10 ММ)</span></label>
                     <input type="range" id="xtd-slider" min="50" max="1000" step="25" value="185">
 
@@ -140,6 +143,10 @@
                 <span>Порты и марины</span>
                 <input type="checkbox" id="toggle-ports" checked>
             </label>
+            <label class="checkbox-label" for="toggle-anchorages">
+                <span>Якорные стоянки на рейде</span>
+                <input type="checkbox" id="toggle-anchorages" checked>
+            </label>
             <label class="checkbox-label" for="toggle-hillshade">
                 <span>3D Рельеф дна (Hillshade)</span>
                 <input type="checkbox" id="toggle-hillshade" checked>
@@ -161,16 +168,48 @@
                 <input type="checkbox" id="toggle-seamarks" checked>
             </label>
         </div>
+
+        <div class="panel-header">Съемка эхолотом (Sonar Mapping)</div>
+        <div class="control-group">
+            <details id="sonar-survey-details" class="advanced-details" open>
+                <summary class="advanced-summary">Построение карты дна по промерам</summary>
+                <div class="advanced-content" style="padding-top: 8px;">
+                    <div class="sonar-upload-card">
+                        <input type="file" id="sonar-file-input" accept=".csv,.txt,.tsv,.nmea,.log,.gpx" style="display: none;">
+                        <button type="button" id="btn-trigger-sonar-upload" class="btn-sonar-upload" title="Загрузить файл промеров эхолота (CSV, NMEA 0183, GPX)">
+                            Загрузить лог эхолота (CSV/NMEA/GPX)
+                        </button>
+                        <button type="button" id="btn-demo-sonar-data" class="btn-sonar-demo" title="Загрузить детальные тестовые промеры бухты">
+                            Демо: Промеры Севастопольской бухты
+                        </button>
+                    </div>
+
+                    <div id="sonar-survey-stats" class="sonar-survey-stats" style="display: none;"></div>
+
+                    <div style="margin-top: 8px;">
+                        <label class="checkbox-label" for="toggle-custom-bathymetry">
+                            <span>Собственные изобаты съемки</span>
+                            <input type="checkbox" id="toggle-custom-bathymetry" checked>
+                        </label>
+                        <label class="checkbox-label" for="toggle-custom-soundings">
+                            <span>Точки промеров эхолота</span>
+                            <input type="checkbox" id="toggle-custom-soundings" checked>
+                        </label>
+                    </div>
+                </div>
+            </details>
+        </div>
     </div>
 
     <!-- Floating Map ECDIS Top Bar & Telemetry HUD -->
     <div id="map-topbar">
         <div class="topbar-section topbar-brand">
-            <button id="sidebar-toggle-btn" class="mobile-toggle-btn" title="Переключить панель управления">☰</button>
+            <button id="sidebar-toggle-btn" class="mobile-toggle-btn" title="Переключить панель управления">МЕНЮ</button>
         </div>
         <div class="topbar-section topbar-actions">
             <button id="topbar-add-wp" class="topbar-tool-btn" title="Добавить промежуточную путевую точку">+ Путевая точка</button>
             <button id="tool-ebl-vrm" class="topbar-tool-btn" title="Электронный визир направления и дальности (EBL / VRM)">Линейка / Пеленг (EBL)</button>
+            <button id="tool-mute-alarm-btn" class="topbar-tool-btn" title="Включить / отключить звуковую сигнализацию мостика (IEC 62288)">Зуммер: Вкл</button>
             <button id="tool-recenter-btn" class="topbar-tool-btn" title="Центрировать карту на районе плавания">Район плавания</button>
         </div>
         <div class="topbar-section topbar-telemetry">
@@ -236,10 +275,15 @@
                 <span class="m-label">Осадка судна</span>
                 <span id="voyage-draft-val" class="m-val">—</span>
             </div>
+            <div class="voyage-metric">
+                <span class="m-label">Топливо (+20%)</span>
+                <span id="voyage-fuel-val" class="m-val" style="color: #38bdf8;">—</span>
+            </div>
         </div>
         <div class="voyage-actions-row">
             <button id="voyage-btn-profile" class="voyage-tool-btn">Профиль глубин</button>
             <button id="voyage-btn-waypoints" class="voyage-tool-btn">План перехода</button>
+            <button id="voyage-btn-passage-plan" class="voyage-tool-btn" style="border-color: #38bdf8; color: #7dd3fc; font-weight: 600;">Passage Plan (IMO)</button>
             <button id="voyage-btn-safety" class="voyage-tool-btn">Аудит ECDIS</button>
             <button id="voyage-btn-sim" class="voyage-tool-btn">Симулятор мостика</button>
             <button id="voyage-btn-gpx" class="voyage-tool-btn">GPX</button>
@@ -256,6 +300,7 @@
                 <button class="drawer-tab" id="tab-simulator-btn">Симулятор мостика</button>
             </div>
             <div class="drawer-actions" id="export-actions" style="display: none;">
+                <button class="export-btn" id="export-passage-plan-btn" title="Официальный план перехода IMO Res. A.893(21)">Passage Plan (IMO)</button>
                 <button class="export-btn" id="export-gpx-btn" title="Экспорт стандартного маршрута GPX">GPX</button>
                 <button class="export-btn" id="export-rtz-btn" title="Экспорт маршрута IEC 61174 RTZ для ЭКНИС/ECDIS">RTZ (ECDIS)</button>
                 <button class="drawer-toggle-btn" id="drawer-close-btn" title="Закрыть панель">✕</button>
@@ -299,9 +344,9 @@
             <div class="tab-pane" id="pane-simulator">
                 <div class="simulator-container">
                     <div class="sim-controls-bar">
-                        <button class="sim-btn sim-btn-play" id="sim-play-btn">▶ Старт</button>
-                        <button class="sim-btn" id="sim-pause-btn" disabled>⏸ Пауза</button>
-                        <button class="sim-btn" id="sim-reset-btn">⏹ Сброс</button>
+                        <button class="sim-btn sim-btn-play" id="sim-play-btn">СТАРТ</button>
+                        <button class="sim-btn" id="sim-pause-btn" disabled>ПАУЗА</button>
+                        <button class="sim-btn" id="sim-reset-btn">СБРОС</button>
                         <div class="sim-speed-select">
                             <span style="font-size: 11px; color: var(--text-muted);">Ускорение:</span>
                             <button class="sim-speed-btn active" data-speed="1">1x</button>
@@ -339,6 +384,25 @@
                     </div>
                     <div id="sim-alarm-banner" class="sim-alarm-banner" style="display: none;"></div>
                 </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal: IMO Resolution A.893(21) Passage Plan -->
+    <div id="passage-plan-modal" class="passage-modal-backdrop" style="display: none;">
+        <div class="passage-modal-window">
+            <div class="passage-modal-header">
+                <div class="passage-modal-title">
+                    <span class="passage-doc-code">IMO RES. A.893(21) / SOLAS V-34 / PIANC WG 121</span>
+                    <h3 style="margin: 3px 0 0 0; font-size: 15px; color: #f8fafc; letter-spacing: 0.5px;">НАВИГАЦИОННЫЙ ПЛАН ПЕРЕХОДА (PASSAGE PLAN)</h3>
+                </div>
+                <div class="passage-modal-actions">
+                    <button type="button" id="btn-print-passage-plan" class="passage-btn-print">Печать / Сохранить в PDF</button>
+                    <button type="button" id="btn-close-passage-plan" class="passage-btn-close">✕</button>
+                </div>
+            </div>
+            <div id="passage-plan-content" class="passage-modal-body">
+                <!-- Dynamically populated -->
             </div>
         </div>
     </div>
