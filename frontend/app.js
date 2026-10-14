@@ -190,8 +190,14 @@ const eblPromptText = document.getElementById('ebl-prompt-text');
 // Элементы быстрого планирования перехода между портами
 const portDepartSelect = document.getElementById('port-depart-select');
 const portArriveSelect = document.getElementById('port-arrive-select');
+const btnSwapPorts = document.getElementById('btn-swap-ports');
+const portDepthAdvisory = document.getElementById('port-depth-advisory');
 const btnBuildVoyage = document.getElementById('btn-build-voyage');
 const togglePortsCheckbox = document.getElementById('toggle-ports');
+
+// Элементы онлайн-погоды
+const btnFetchLiveWeather = document.getElementById('btn-fetch-live-weather');
+const liveWeatherInfo = document.getElementById('live-weather-info');
 
 // Элементы плавающей карточки перехода (Voyage Summary Card)
 const voyageCard = document.getElementById('voyage-card');
@@ -388,6 +394,9 @@ function updateVesselPhysics() {
     if (dangerVal) dangerVal.innerText = requiredChartDepth.toFixed(2) + 'м';
 
     updateSafetyContour(requiredChartDepth);
+    if (typeof checkPortDepthsAgainstDraft === 'function') {
+        checkPortDepthsAgainstDraft();
+    }
 }
 
 let recalcDebounceTimer = null;
@@ -540,6 +549,34 @@ map.on('load', () => {
             }
         })
         .catch(() => {});
+
+    // 0. Сектор предупреждения посадки на мель (Look-Ahead Anti-Grounding Guard Zone)
+    map.addSource('lookahead-guard', {
+        type: 'geojson',
+        data: { type: 'FeatureCollection', features: [] }
+    });
+
+    map.addLayer({
+        id: 'lookahead-guard-fill',
+        type: 'fill',
+        source: 'lookahead-guard',
+        paint: {
+            'fill-color': ['coalesce', ['get', 'color'], 'rgba(6, 182, 212, 0.15)'],
+            'fill-opacity': 0.85
+        }
+    });
+
+    map.addLayer({
+        id: 'lookahead-guard-line',
+        type: 'line',
+        source: 'lookahead-guard',
+        paint: {
+            'line-color': ['coalesce', ['get', 'lineColor'], '#06b6d4'],
+            'line-width': 1.8,
+            'line-dasharray': [3, 2],
+            'line-opacity': 0.95
+        }
+    });
 
     // 1. Слой полосы безопасности (XTD)
     map.addSource('route-corridor', {
@@ -1434,10 +1471,176 @@ function initPortsUI(ports) {
     if (ports.some(p => p.id === 'yalta_port')) {
         portArriveSelect.value = 'yalta_port';
     }
+
+    portDepartSelect.addEventListener('change', () => {
+        checkPortDepthsAgainstDraft();
+    });
+
+    portArriveSelect.addEventListener('change', () => {
+        checkPortDepthsAgainstDraft();
+    });
+
+    checkPortDepthsAgainstDraft();
+}
+
+function checkPortDepthsAgainstDraft() {
+    if (!portDepthAdvisory) return;
+
+    const waveAllowance = 0.35 * waveHeightM;
+    const dynamicDraft = draft + dynamicSquat + waveAllowance;
+    const requiredDepth = Math.max(0.5, dynamicDraft + baseUkc - tideOffsetM);
+
+    const depId = portDepartSelect ? portDepartSelect.value : '';
+    const arrId = portArriveSelect ? portArriveSelect.value : '';
+
+    const portA = blackSeaPorts.find(p => p.id === depId);
+    const portB = blackSeaPorts.find(p => p.id === arrId);
+
+    const warnings = [];
+
+    if (portA && typeof portA.depth_m === 'number') {
+        if (portA.depth_m < requiredDepth) {
+            const deficit = (requiredDepth - portA.depth_m).toFixed(1);
+            warnings.push(`Порт отхода <b>${portA.short_name || portA.name}</b>: глубина акватории <b>${portA.depth_m.toFixed(1)} м</b> &lt; требуемой <b>${requiredDepth.toFixed(1)} м</b> (дефицит: <b>${deficit} м</b>)`);
+        }
+    }
+
+    if (portB && typeof portB.depth_m === 'number') {
+        if (portB.depth_m < requiredDepth) {
+            const deficit = (requiredDepth - portB.depth_m).toFixed(1);
+            warnings.push(`Порт прибытия <b>${portB.short_name || portB.name}</b>: глубина акватории <b>${portB.depth_m.toFixed(1)} м</b> &lt; требуемой <b>${requiredDepth.toFixed(1)} м</b> (дефицит: <b>${deficit} м</b>)`);
+        }
+    }
+
+    if (warnings.length > 0) {
+        portDepthAdvisory.style.display = 'block';
+        portDepthAdvisory.innerHTML = `
+            <div class="advisory-title" style="font-weight: 600; margin-bottom: 3px; color: #f87171;">ВНИМАНИЕ: ОСАДКА СУДНА ПРЕВЫШАЕТ ГЛУБИНУ ПОРТА!</div>
+            <div class="advisory-body">${warnings.join('<br>')}</div>
+            <div class="advisory-hint" style="font-size: 10px; margin-top: 4px; opacity: 0.85;">Опасность посадки на мель при швартовке. Снизьте осадку/скорость или дождитесь прилива.</div>
+        `;
+    } else {
+        portDepthAdvisory.style.display = 'none';
+        portDepthAdvisory.innerHTML = '';
+    }
+}
+
+function swapPortsAndReverseRoute() {
+    if (!portDepartSelect || !portArriveSelect) return;
+
+    // 1. Поменять местами выбранные порты в выпадающих списках
+    const oldDep = portDepartSelect.value;
+    const oldArr = portArriveSelect.value;
+    portDepartSelect.value = oldArr;
+    portArriveSelect.value = oldDep;
+
+    checkPortDepthsAgainstDraft();
+
+    // 2. Если на карте уже проложен маршрут из путевых точек — инвертировать их
+    if (plannedWaypoints.length >= 2) {
+        plannedWaypoints.forEach(w => w.marker && w.marker.remove());
+        plannedWaypoints.reverse();
+        plannedWaypoints.forEach((wp, idx) => {
+            if (idx === 0) {
+                wp.role = 'start';
+            } else if (idx === plannedWaypoints.length - 1) {
+                wp.role = 'goal';
+            } else {
+                wp.role = 'via';
+            }
+            wp.marker = createWaypointMarker(wp);
+        });
+        renderWaypointsListUI();
+        calculateRoute();
+    } else if (portDepartSelect.value && portArriveSelect.value) {
+        // Если точек на карте еще нет, но порты выбраны — построить обратный переход
+        executePortToPortVoyage();
+    }
+}
+
+if (btnSwapPorts) {
+    btnSwapPorts.addEventListener('click', swapPortsAndReverseRoute);
+}
+
+async function fetchLiveMarineWeather() {
+    if (!btnFetchLiveWeather) return;
+
+    let targetLon = 34.5;
+    let targetLat = 44.5;
+
+    if (plannedWaypoints.length >= 2) {
+        const start = plannedWaypoints[0].coords;
+        const goal = plannedWaypoints[plannedWaypoints.length - 1].coords;
+        targetLon = (start[0] + goal[0]) / 2.0;
+        targetLat = (start[1] + goal[1]) / 2.0;
+    } else if (currentRouteData && currentRouteData.geometry && currentRouteData.geometry.coordinates.length > 0) {
+        const coords = currentRouteData.geometry.coordinates;
+        const mid = coords[Math.floor(coords.length / 2)];
+        targetLon = mid[0];
+        targetLat = mid[1];
+    } else {
+        const depId = portDepartSelect ? portDepartSelect.value : '';
+        const portA = blackSeaPorts.find(p => p.id === depId);
+        if (portA) {
+            const c = portA.approach_coords || portA.port_coords;
+            targetLon = c[0];
+            targetLat = c[1];
+        }
+    }
+
+    const origBtnText = btnFetchLiveWeather.innerText;
+    btnFetchLiveWeather.disabled = true;
+    btnFetchLiveWeather.innerText = 'Запрос...';
+
+    const url = `https://marine-api.open-meteo.com/v1/marine?latitude=${targetLat.toFixed(4)}&longitude=${targetLon.toFixed(4)}&current=wave_height,wave_direction,wave_period`;
+
+    try {
+        const res = await fetch(url);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        const cur = data.current || {};
+
+        const waveHeight = typeof cur.wave_height === 'number' ? cur.wave_height : 0.0;
+        const wavePeriod = typeof cur.wave_period === 'number' ? cur.wave_period : null;
+        const waveDir = typeof cur.wave_direction === 'number' ? Math.round(cur.wave_direction) : null;
+
+        const clampedHs = Math.min(3.5, Math.max(0.0, waveHeight));
+        waveSlider.value = clampedHs.toFixed(1);
+        waveHeightM = parseFloat(waveSlider.value);
+        if (waveVal) waveVal.innerText = waveHeightM.toFixed(1) + 'м';
+
+        if (liveWeatherInfo) {
+            liveWeatherInfo.style.display = 'block';
+            const dirStr = waveDir !== null ? `${waveDir}°` : '—';
+            const periodStr = wavePeriod !== null ? `${wavePeriod.toFixed(1)} с` : '—';
+            liveWeatherInfo.innerHTML = `
+                <div><b>Open-Meteo Marine (${targetLat.toFixed(2)}°N, ${targetLon.toFixed(2)}°E):</b></div>
+                <div>Высота волны Hs: <b>${waveHeight.toFixed(2)} м</b> | Период: <b>${periodStr}</b> | Ветер/волна: <b>${dirStr}</b></div>
+            `;
+        }
+
+        updateVesselPhysics();
+        checkPortDepthsAgainstDraft();
+        triggerRouteRecalculation(true);
+    } catch (err) {
+        console.warn('Live marine weather error:', err);
+        if (liveWeatherInfo) {
+            liveWeatherInfo.style.display = 'block';
+            liveWeatherInfo.innerHTML = `<span style="color: var(--status-warn);">Сбой получения онлайн-метео: ${err.message || 'сеть недоступна'}</span>`;
+        }
+    } finally {
+        btnFetchLiveWeather.disabled = false;
+        btnFetchLiveWeather.innerText = origBtnText;
+    }
+}
+
+if (btnFetchLiveWeather) {
+    btnFetchLiveWeather.addEventListener('click', fetchLiveMarineWeather);
 }
 
 window.selectPortAsDepart = function(portId) {
     if (portDepartSelect) portDepartSelect.value = portId;
+    checkPortDepthsAgainstDraft();
     const p = blackSeaPorts.find(x => x.id === portId);
     if (!p) return;
     const coords = p.approach_coords || p.port_coords;
@@ -1454,6 +1657,7 @@ window.selectPortAsDepart = function(portId) {
 
 window.selectPortAsArrive = function(portId) {
     if (portArriveSelect) portArriveSelect.value = portId;
+    checkPortDepthsAgainstDraft();
     const p = blackSeaPorts.find(x => x.id === portId);
     if (!p) return;
     const coords = p.approach_coords || p.port_coords;
@@ -1491,6 +1695,7 @@ function executePortToPortVoyage() {
     const portB = blackSeaPorts.find(p => p.id === arrId);
     if (!portA || !portB) return;
 
+    checkPortDepthsAgainstDraft();
     clearRouteData();
 
     // Прокладываем маршрут между безопасными фарватерными подходами портов
@@ -2363,12 +2568,54 @@ function stopSimulator() {
     if (simState.vesselMarker) simState.vesselMarker.remove();
     simState.vesselMarker = null;
 
+    if (map.getSource('lookahead-guard')) {
+        map.getSource('lookahead-guard').setData({ type: 'FeatureCollection', features: [] });
+    }
+
     if (simPlayBtn) {
         simPlayBtn.innerText = '▶ Старт';
         simPlayBtn.disabled = false;
     }
     if (simPauseBtn) simPauseBtn.disabled = true;
     if (simAlarmBanner) simAlarmBanner.style.display = 'none';
+}
+
+function calculateLookaheadSectorPolygon(centerLon, centerLat, headingDeg, distanceM, halfAngleDeg = 15) {
+    const R = 6371000.0;
+    const d = distanceM / R;
+    const lat1 = (centerLat * Math.PI) / 180.0;
+    const lon1 = (centerLon * Math.PI) / 180.0;
+
+    const ring = [[centerLon, centerLat]];
+    const startAngle = headingDeg - halfAngleDeg;
+    const endAngle = headingDeg + halfAngleDeg;
+    const steps = 14;
+
+    for (let i = 0; i <= steps; i++) {
+        const brgDeg = startAngle + (i / steps) * (endAngle - startAngle);
+        const brgRad = (brgDeg * Math.PI) / 180.0;
+
+        const lat2 = Math.asin(
+            Math.sin(lat1) * Math.cos(d) +
+            Math.cos(lat1) * Math.sin(d) * Math.cos(brgRad)
+        );
+        const lon2 = lon1 + Math.atan2(
+            Math.sin(brgRad) * Math.sin(d) * Math.cos(lat1),
+            Math.cos(d) - Math.sin(lat1) * Math.sin(lat2)
+        );
+
+        ring.push([(lon2 * 180.0) / Math.PI, (lat2 * 180.0) / Math.PI]);
+    }
+    ring.push([centerLon, centerLat]);
+
+    return {
+        type: 'Feature',
+        geometry: {
+            type: 'Polygon',
+            coordinates: [ring]
+        },
+        properties: {}
+    };
 }
 
 function calculateBearing(p1, p2) {
@@ -2446,6 +2693,7 @@ function updateSimulatorHUD(distM) {
     let nextWp = null;
     let distToNextWp = 0;
     let cumWpDist = 0;
+    let isApproachingWop = false;
     const wps = simState.waypoints;
 
     for (let i = 0; i < wps.length; i++) {
@@ -2469,18 +2717,97 @@ function updateSimulatorHUD(distM) {
         if (hudWpEta) hudWpEta.innerText = etaStr;
 
         const wopDistM = nextWp.wop_distance_m || 0;
-        const isApproachingWop = (distToNextWp <= wopDistM + 250 && distToNextWp >= wopDistM - 50);
+        isApproachingWop = (distToNextWp <= wopDistM + 250 && distToNextWp >= wopDistM - 50);
+    }
 
-        if (isApproachingWop && simAlarmBanner && Math.abs(nextWp.turn_angle_deg || 0) >= 4.0) {
-            simAlarmBanner.style.display = 'block';
-            simAlarmBanner.innerHTML = `
-                <b>ПЕРЕКЛАДКА РУЛЯ (WOP):</b> Подход к РТ${nextWp.index}!
-                Поворот на ${nextWp.rot_deg_min > 0 ? 'Правый' : 'Левый'} борт (${nextWp.leg_bearing_deg}°T) —
-                Угловая скорость ROT: <b>${Math.abs(nextWp.rot_deg_min)}°/мин</b> (Радиус: ${nextWp.turn_radius_m}м)
-            `;
-        } else if (simAlarmBanner && !isApproachingWop) {
-            simAlarmBanner.style.display = 'none';
+    // Динамический расчет упреждающего сектора безопасности (Look-Ahead Anti-Grounding Guard Zone)
+    const lookaheadSec = 180; // 3 минуты хода
+    const vMs = Math.max(1.0, speedKnots * 0.514444);
+    const lookaheadDistM = Math.max(400.0, vMs * lookaheadSec);
+
+    const guardFeature = calculateLookaheadSectorPolygon(pos.lon, pos.lat, pos.heading, lookaheadDistM, 15);
+
+    // Поиск лимитирующих глубин впереди по профилю
+    let minClearanceAhead = 999.0;
+    let minDepthAhead = 999.0;
+    let hazardDistM = null;
+
+    if (simState.profile && simState.profile.length > 0) {
+        for (let i = 0; i < simState.profile.length; i++) {
+            const p = simState.profile[i];
+            if (p.distance_from_start_m >= distM && p.distance_from_start_m <= distM + lookaheadDistM) {
+                if (p.clearance < minClearanceAhead) {
+                    minClearanceAhead = p.clearance;
+                    minDepthAhead = p.depth;
+                    if (p.clearance < 0.0 && hazardDistM === null) {
+                        hazardDistM = Math.max(0, p.distance_from_start_m - distM);
+                    }
+                }
+            }
         }
+    }
+
+    let guardColor = 'rgba(6, 182, 212, 0.15)';
+    let guardLineColor = '#06b6d4';
+
+    if (minClearanceAhead < 0.0) {
+        // КРИТИЧЕСКИЙ АЛАРМ: Опасность посадки на мель внутри сектора упреждения
+        guardColor = 'rgba(239, 68, 68, 0.40)';
+        guardLineColor = '#ef4444';
+
+        const hazTimeSec = hazardDistM !== null ? Math.round(hazardDistM / vMs) : 60;
+        const hazTimeMin = Math.max(0.1, hazTimeSec / 60.0).toFixed(1);
+
+        if (simAlarmBanner) {
+            simAlarmBanner.style.display = 'block';
+            simAlarmBanner.style.background = 'rgba(239, 68, 68, 0.25)';
+            simAlarmBanner.style.borderColor = 'var(--status-danger)';
+            simAlarmBanner.style.color = '#fca5a5';
+            simAlarmBanner.innerHTML = `
+                <b>КРИТИЧЕСКИЙ АЛАРМ (ALM-01): ОПАСНОСТЬ ПОСАДКИ НА МЕЛЬ ЧЕРЕЗ ${hazTimeMin} МИН!</b>
+                В секторе упреждения обнаружена глубина <b>${minDepthAhead.toFixed(1)} м</b> (Отрицательный запас: <b>${minClearanceAhead.toFixed(2)} м</b>)!
+            `;
+        }
+    } else if (isApproachingWop && simAlarmBanner && nextWp && Math.abs(nextWp.turn_angle_deg || 0) >= 4.0) {
+        // ОПЕРАЦИОННЫЙ СИГНАЛ: Точка перекладки руля (WOP)
+        simAlarmBanner.style.display = 'block';
+        simAlarmBanner.style.background = 'rgba(56, 189, 248, 0.2)';
+        simAlarmBanner.style.borderColor = 'var(--accent-blue)';
+        simAlarmBanner.style.color = '#bae6fd';
+        simAlarmBanner.innerHTML = `
+            <b>ПЕРЕКЛАДКА РУЛЯ (WOP):</b> Подход к РТ${nextWp.index}!
+            Поворот на ${nextWp.rot_deg_min > 0 ? 'Правый' : 'Левый'} борт (${nextWp.leg_bearing_deg}°T) —
+            Угловая скорость ROT: <b>${Math.abs(nextWp.rot_deg_min)}°/мин</b> (Радиус: ${nextWp.turn_radius_m}м)
+        `;
+    } else if (minClearanceAhead < 1.0) {
+        // ПРЕДУПРЕЖДЕНИЕ: Малый запас под килем впереди
+        guardColor = 'rgba(245, 158, 11, 0.28)';
+        guardLineColor = '#f59e0b';
+
+        if (simAlarmBanner) {
+            simAlarmBanner.style.display = 'block';
+            simAlarmBanner.style.background = 'rgba(245, 158, 11, 0.2)';
+            simAlarmBanner.style.borderColor = 'var(--status-warn)';
+            simAlarmBanner.style.color = '#fde68a';
+            simAlarmBanner.innerHTML = `
+                <b>ВНИМАНИЕ: МЕЛКОВОДЬЕ ВПЕРЕДИ ПО КУРСУ (${(lookaheadDistM / 1852.0).toFixed(2)} ММ)!</b>
+                Минимальная глубина: <b>${minDepthAhead.toFixed(1)} м</b> (Запас под килем: <b>${minClearanceAhead.toFixed(2)} м</b>).
+            `;
+        }
+    } else if (simAlarmBanner && !isApproachingWop) {
+        simAlarmBanner.style.display = 'none';
+    }
+
+    guardFeature.properties = {
+        color: guardColor,
+        lineColor: guardLineColor
+    };
+
+    if (map.getSource('lookahead-guard')) {
+        map.getSource('lookahead-guard').setData({
+            type: 'FeatureCollection',
+            features: [guardFeature]
+        });
     }
 
     // Прогресс симуляции
@@ -2565,6 +2892,9 @@ if (simResetBtn) {
         if (simPauseBtn) simPauseBtn.disabled = true;
         updateSimulatorHUD(0);
         if (simAlarmBanner) simAlarmBanner.style.display = 'none';
+        if (map.getSource('lookahead-guard')) {
+            map.getSource('lookahead-guard').setData({ type: 'FeatureCollection', features: [] });
+        }
     });
 }
 

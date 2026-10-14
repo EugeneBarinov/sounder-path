@@ -1302,3 +1302,86 @@ button:hover {
 .port-popup-btn.btn-arrive:hover {
     background: #059669;
 }
+
+/* Port Swap and Advisory */
+.port-swap-row {
+    display: flex;
+    justify-content: flex-end;
+    margin: -3px 0 3px 0;
+}
+
+.btn-swap-ports {
+    background: transparent;
+    border: 1px dashed rgba(56, 189, 248, 0.4);
+    color: #38bdf8;
+    border-radius: 3px;
+    padding: 3px 8px;
+    font-size: 11px;
+    font-weight: 500;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    transition: all 0.15s ease;
+}
+
+.btn-swap-ports:hover {
+    background: rgba(56, 189, 248, 0.15);
+    border-color: #38bdf8;
+    color: #ffffff;
+}
+
+.swap-icon {
+    font-size: 13px;
+    font-weight: bold;
+}
+
+.port-draft-warning {
+    background: rgba(239, 68, 68, 0.12);
+    border: 1px solid rgba(239, 68, 68, 0.4);
+    color: #fca5a5;
+    padding: 6px 10px;
+    border-radius: 4px;
+    font-size: 11px;
+    line-height: 1.35;
+    margin-top: 6px;
+    animation: fadeIn 0.2s ease;
+}
+
+/* Open-Meteo Weather Sync */
+.weather-sync-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-top: 4px;
+}
+
+.btn-live-weather {
+    background: rgba(56, 189, 248, 0.15);
+    border: 1px solid rgba(56, 189, 248, 0.5);
+    color: #7dd3fc;
+    border-radius: 3px;
+    padding: 2px 7px;
+    font-size: 10.5px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.15s ease;
+}
+
+.btn-live-weather:hover {
+    background: #0284c7;
+    color: #ffffff;
+}
+
+.live-weather-info {
+    background: rgba(15, 23, 42, 0.7);
+    border: 1px solid rgba(56, 189, 248, 0.3);
+    padding: 6px 8px;
+    border-radius: 3px;
+    font-size: 11px;
+    color: #93c5fd;
+    margin-top: 4px;
+    margin-bottom: 6px;
+    line-height: 1.3;
+}
+
