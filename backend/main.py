@@ -700,10 +700,11 @@ def get_ports():
     active_wb = waterbody_mgr.get_active()
     if active_wb and active_wb.ports:
         return active_wb.ports
-    ports_path = _BASE_DIR / "data" / "ports.json"
-    if ports_path.exists():
-        with open(ports_path, "r", encoding="utf-8") as f:
-            return json.load(f)
+    if active_wb and active_wb.id == "black_sea":
+        ports_path = _BASE_DIR / "data" / "ports.json"
+        if ports_path.exists():
+            with open(ports_path, "r", encoding="utf-8") as f:
+                return json.load(f)
     return []
 
 
@@ -713,10 +714,11 @@ def get_anchorages():
     active_wb = waterbody_mgr.get_active()
     if active_wb and active_wb.anchorages:
         return active_wb.anchorages
-    anc_path = _BASE_DIR / "data" / "anchorages.json"
-    if anc_path.exists():
-        with open(anc_path, "r", encoding="utf-8") as f:
-            return json.load(f)
+    if active_wb and active_wb.id == "black_sea":
+        anc_path = _BASE_DIR / "data" / "anchorages.json"
+        if anc_path.exists():
+            with open(anc_path, "r", encoding="utf-8") as f:
+                return json.load(f)
     return []
 
 
@@ -2026,23 +2028,37 @@ def create_waterbody(req: CreateWaterbodyRequest):
 
 
 @app.get("/api/geo/search")
-def search_geographic_location(q: str):
+def search_geographic_location(q: str, viewbox: Optional[str] = None):
     """
-    Global maritime and inland geocoding search proxy to OpenStreetMap Nominatim.
-    Finds rivers, lakes, bays, reservoirs, ports, and navigation landmarks worldwide.
+    Maritime and inland geocoding search proxy.
+    Searches both pre-indexed local bathymetric models and OpenStreetMap Nominatim.
+    Prioritizes local regional waterbodies and applies smart category tagging.
     """
     if not q or not q.strip():
         return []
 
+    results = []
+
+    # 1. Search local pre-built catalog and presets first
+    local_matches = waterbody_mgr.search_local_catalog(q)
+    results.extend(local_matches)
+
+    # 2. Query OpenStreetMap Nominatim for global coverage
     query = q.strip()
-    encoded = urllib.parse.quote(query)
-    url = f"https://nominatim.openstreetmap.org/search?q={encoded}&format=json&addressdetails=1&limit=6"
+    q_clean = query.lower().replace("ё", "е")
+    for pfx in ["река ", "р. ", "озеро ", "оз. ", "бухта ", "б. ", "залив ", "пролив ", "вдхр. ", "водохранилище ", "river ", "lake ", "bay "]:
+        if q_clean.startswith(pfx):
+            q_clean = q_clean[len(pfx):].strip()
+            break
+
+    vb_param = f"&viewbox={viewbox}&bounded=0" if viewbox else ""
+    encoded = urllib.parse.quote(q_clean)
+    url = f"https://nominatim.openstreetmap.org/search?q={encoded}&format=json&addressdetails=1&limit=12{vb_param}"
     req = urllib.request.Request(url, headers={"User-Agent": "SeaPath-Marine-Navigator/1.0"})
 
     try:
         with urllib.request.urlopen(req, timeout=5) as resp:
             data = json.loads(resp.read().decode("utf-8"))
-            results = []
             for item in data:
                 bbox_str = item.get("boundingbox", [])
                 if len(bbox_str) == 4:
@@ -2052,18 +2068,42 @@ def search_geographic_location(q: str):
                     lat_f, lon_f = float(item["lat"]), float(item["lon"])
                     bbox = [lon_f - 0.05, lat_f - 0.05, lon_f + 0.05, lat_f + 0.05]
 
+                osm_type = str(item.get("type", "")).lower()
+                osm_class = str(item.get("class", "")).lower()
+                if osm_type in ["river", "stream", "canal", "waterway", "drain"] or osm_class == "waterway":
+                    cat = "river"
+                elif osm_type in ["bay", "harbour", "harbor", "gulf", "fjord", "cove", "sea", "strait"] or osm_class in ["bay", "harbour"]:
+                    cat = "bay"
+                elif osm_type in ["lake", "reservoir", "pond", "water", "basin"] or osm_class in ["water", "natural"]:
+                    cat = "lake"
+                else:
+                    cat = "river" if "рек" in query.lower() else "lake"
+
+                raw_name = item.get("name") or item.get("display_name", "").split(",")[0]
+                parts = [p.strip() for p in item.get("display_name", "").split(",") if p.strip()]
+                region_str = ""
+                if len(parts) > 1:
+                    region_str = f" ({parts[1]}, {parts[-1]})"
+                title = f"{raw_name}{region_str}"
+
+                # Avoid duplicate if same area already in results
+                c_lat, c_lon = float(item["lat"]), float(item["lon"])
+                if any(abs(r.get("lat", 0) - c_lat) < 0.01 and abs(r.get("lon", 0) - c_lon) < 0.01 for r in results):
+                    continue
+
                 results.append({
-                    "name": item.get("name") or item.get("display_name", "").split(",")[0],
+                    "name": title,
                     "display_name": item.get("display_name"),
-                    "lat": float(item.get("lat")),
-                    "lon": float(item.get("lon")),
+                    "lat": c_lat,
+                    "lon": c_lon,
                     "bbox": bbox,
-                    "type": item.get("type", "water"),
-                    "class": item.get("class", "natural"),
+                    "category": cat,
+                    "is_preset": False
                 })
-            return results
     except Exception:
-        return []
+        pass
+
+    return results
 
 
 @app.post("/api/telemetry/live-point")

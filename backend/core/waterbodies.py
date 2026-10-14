@@ -255,6 +255,215 @@ def build_sevastopol_bays_waterbody() -> Waterbody:
     )
 
 
+def build_chernaya_river_waterbody() -> Waterbody:
+    """
+    High-resolution navigation model of River Chernaya & Inkerman (Севастополь, Крым).
+    Covers the navigable estuary in Sevastopol Bay (Инкерманский ковш) and river thalweg upstream
+    towards Chornorechensky canyon. Depths: 5.5-8.0m in estuary, 3.2-5.2m in river channel, 1.2m banks.
+    """
+    lat_min, lat_max = 44.570, 44.630
+    lon_min, lon_max = 33.570, 33.660
+    rows, cols = 140, 180
+
+    lats = np.linspace(lat_max, lat_min, rows)
+    lons = np.linspace(lon_min, lon_max, cols)
+    lon_mesh, lat_mesh = np.meshgrid(lons, lats)
+
+    depths = np.zeros((rows, cols), dtype=np.float32)
+
+    # 1. Inkerman Estuary / Eastern Sevastopol Bay reach (lat 44.608 to 44.622, lon 33.570 to 33.610)
+    estuary = (
+        (lat_mesh >= 44.608) & (lat_mesh <= 44.622) &
+        (lon_mesh >= 33.570) & (lon_mesh <= 33.610)
+    )
+    d_estuary = np.abs(lat_mesh - 44.614) * 111.139
+    est_profile = np.maximum(0.0, 1.0 - (d_estuary / 0.6) ** 2)
+    depths[estuary] = 7.5 * est_profile[estuary] + 1.8
+
+    # 2. Chernaya River meander from Inkerman into canyon (southeast along valley)
+    s = (lat_mesh - 44.570) / 0.060
+    river_center_lon = 33.640 - 0.035 * np.sin(s * np.pi) - 0.005 * np.cos(s * 2.0 * np.pi)
+    dist_river_km = np.abs(lon_mesh - river_center_lon) * 111.139 * math.cos(math.radians(44.6))
+    river_half_w_km = 0.18 + 0.12 * s
+    is_river = (dist_river_km < river_half_w_km) & (lat_mesh <= 44.615)
+
+    rel_r = dist_river_km / river_half_w_km
+    depths[is_river] = np.maximum(depths[is_river], (4.8 * (1.0 - rel_r[is_river] ** 2) + 1.4).astype(np.float32))
+
+    # 3. Shoal bank along eastern bay entrance (shoal hazard 1.8m)
+    shoal = (
+        (lat_mesh >= 44.610) & (lat_mesh <= 44.613) &
+        (lon_mesh >= 33.590) & (lon_mesh <= 33.595)
+    )
+    depths[shoal] = 1.8
+
+    depths = np.maximum(0.0, depths)
+
+    grid = BathymetricGrid(
+        lat_min=lat_min,
+        lat_max=lat_max,
+        lon_min=lon_min,
+        lon_max=lon_max,
+        depths=depths,
+    )
+
+    ports = [
+        {
+            "id": "inkerman_mouth",
+            "name": "Причал Инкерман-1 (Устье р. Чёрная)",
+            "short_name": "Инкерман-1",
+            "port_coords": [33.6020, 44.6120],
+            "approach_coords": [33.5980, 44.6140],
+            "depth_m": 6.8,
+            "vhf_channel": "VHF Ch 14 / 16",
+            "type": "passenger",
+            "description": "Причал катеров и маломерных судов в устье реки Чёрная."
+        },
+        {
+            "id": "inkerman_berth_river",
+            "name": "Причал Малый Инкерман (Речной)",
+            "short_name": "Малый Инкерман",
+            "port_coords": [33.6100, 44.6060],
+            "approach_coords": [33.6080, 44.6080],
+            "depth_m": 5.2,
+            "vhf_channel": "VHF Ch 14",
+            "type": "commercial",
+            "description": "Грузовой и технический причальный створ реки Чёрной."
+        },
+        {
+            "id": "chernorechye_dock",
+            "name": "Чернореченская стоянка (р. Чёрная)",
+            "short_name": "Черноречье",
+            "port_coords": [33.6260, 44.5910],
+            "approach_coords": [33.6240, 44.5930],
+            "depth_m": 3.8,
+            "vhf_channel": "VHF Ch 16",
+            "type": "marina",
+            "description": "Лодочная стоянка и причал маломерного флота."
+        }
+    ]
+
+    anchorages = [
+        {
+            "id": "anc_inkerman",
+            "name": "Инкерманский рейд устья реки Чёрная",
+            "coords": [33.5950, 44.6150],
+            "depth_min_m": 6.5,
+            "depth_max_m": 9.0,
+            "max_draft_m": 5.5,
+            "bottom_nature": "Ил, песок",
+            "sheltered_from_winds": ["N", "NE", "E", "SE", "S", "SW", "W", "NW"],
+            "vhf_channel": "VHF Ch 14",
+            "notes": "Полностью защищенная закрытая стоянка в вершине Севастопольской бухты."
+        }
+    ]
+
+    return Waterbody(
+        id="chernaya_river",
+        name="Река Чёрная и Инкерман (Севастополь, Крым)",
+        category="river",
+        description="Судоходный фарватер реки Чёрной: от устья в Севастопольской бухте (Инкерман) вверх по руслу к Чернореченскому каньону.",
+        bounds=[lon_min, lat_min, lon_max, lat_max],
+        center=[33.608, 44.608],
+        zoom=13.0,
+        grid=grid,
+        ports=ports,
+        anchorages=anchorages
+    )
+
+
+def build_balaklava_bay_waterbody() -> Waterbody:
+    """
+    High-resolution navigation model of Balaklava Bay (Севастополь, Крым).
+    Fjord-like narrow winding bay, sheltered marina, depths 9m - 18m, entrance channel.
+    """
+    lat_min, lat_max = 44.485, 44.515
+    lon_min, lon_max = 33.570, 33.625
+    rows, cols = 120, 160
+
+    lats = np.linspace(lat_max, lat_min, rows)
+    lons = np.linspace(lon_min, lon_max, cols)
+    lon_mesh, lat_mesh = np.meshgrid(lons, lats)
+
+    depths = np.zeros((rows, cols), dtype=np.float32)
+
+    # Balaklava Bay channel: narrow zigzag from entrance to northern marina
+    is_bay = (
+        (lat_mesh >= 44.492) & (lat_mesh <= 44.508) &
+        (lon_mesh >= 33.593) & (lon_mesh <= 33.604)
+    )
+    d_lon = np.abs(lon_mesh - 33.598) * 111.139 * math.cos(math.radians(44.5))
+    bay_profile = np.maximum(0.0, 1.0 - (d_lon / 0.25) ** 2)
+    depths[is_bay] = 15.0 * bay_profile[is_bay] + 2.5
+
+    # Coastal approach waters
+    open_approach = lat_mesh < 44.492
+    depths[open_approach] = 28.0
+
+    depths = np.maximum(0.0, depths)
+
+    grid = BathymetricGrid(
+        lat_min=lat_min,
+        lat_max=lat_max,
+        lon_min=lon_min,
+        lon_max=lon_max,
+        depths=depths,
+    )
+
+    ports = [
+        {
+            "id": "balaklava_marina",
+            "name": "Марина Золотой Символ (Балаклава)",
+            "short_name": "Балаклава Марина",
+            "port_coords": [33.5990, 44.4985],
+            "approach_coords": [33.5980, 44.4960],
+            "depth_m": 12.0,
+            "vhf_channel": "VHF Ch 67",
+            "type": "marina",
+            "description": "Яхтенная марина и причалы маломерных судов."
+        },
+        {
+            "id": "balaklava_entrance",
+            "name": "Входной створ Балаклавской бухты",
+            "short_name": "Вход Балаклава",
+            "port_coords": [33.5960, 44.4920],
+            "approach_coords": [33.5960, 44.4880],
+            "depth_m": 17.5,
+            "vhf_channel": "VHF Ch 16",
+            "type": "commercial",
+            "description": "Навигационный створ мыса Георгия на входе в бухту Балаклава."
+        }
+    ]
+
+    anchorages = [
+        {
+            "id": "anc_balaklava_outer",
+            "name": "Внешний рейд Балаклавы",
+            "coords": [33.5950, 44.4870],
+            "depth_min_m": 18.0,
+            "depth_max_m": 25.0,
+            "max_draft_m": 10.0,
+            "bottom_nature": "Песок, галька",
+            "sheltered_from_winds": ["N", "NE", "NW"],
+            "vhf_channel": "VHF Ch 16",
+            "notes": "Рейдовая якорная стоянка перед входом в Балаклавскую бухту."
+        }
+    ]
+
+    return Waterbody(
+        id="balaklava_bay",
+        name="Балаклавская бухта (Севастополь, Крым)",
+        category="bay",
+        description="Узкая извилистая бухта фьордового типа, стоянка яхт и катеров, глубины до 17м, входной створ.",
+        bounds=[lon_min, lat_min, lon_max, lat_max],
+        center=[33.599, 44.498],
+        zoom=14.0,
+        grid=grid,
+        ports=ports,
+        anchorages=anchorages
+    )
+
+
 def build_volga_river_waterbody() -> Waterbody:
     """
     Inland river navigation model: Volga River (Самарская Лука / Жигулевские ворота).
@@ -492,6 +701,8 @@ class WaterbodyManager:
         # Register pre-built real water bodies
         try:
             self.waterbodies["sevastopol_bays"] = build_sevastopol_bays_waterbody()
+            self.waterbodies["chernaya_river"] = build_chernaya_river_waterbody()
+            self.waterbodies["balaklava_bay"] = build_balaklava_bay_waterbody()
             self.waterbodies["volga_river"] = build_volga_river_waterbody()
             self.waterbodies["ladoga_lake"] = build_ladoga_lake_waterbody()
         except Exception as e:
@@ -513,6 +724,58 @@ class WaterbodyManager:
             self.active_id = id
             return self.waterbodies[id]
         return None
+
+    def search_local_catalog(self, query: str) -> List[Dict[str, Any]]:
+        """
+        Search local registered waterbodies and presets by name, category, or keywords.
+        Guarantees instant, highly-accurate matching for regional waterbodies.
+        """
+        if not query or len(query.strip()) < 2:
+            return []
+        q_clean = query.strip().lower().replace("ё", "е")
+        for pfx in ["река ", "р. ", "озеро ", "оз. ", "бухта ", "б. ", "залив ", "пролив ", "river ", "lake ", "bay "]:
+            if q_clean.startswith(pfx):
+                q_clean = q_clean[len(pfx):].strip()
+
+        aliases = {
+            "chernaya_river": ["черная", "черная речка", "инкерман", "черноречье", "чернореченский", "севастополь"],
+            "sevastopol_bays": ["севастополь", "бухта", "южная", "стрелецкая", "камышовая", "графская"],
+            "balaklava_bay": ["балаклава", "балаклавская", "золотой символ", "фьорд"],
+            "volga_river": ["волга", "самара", "жигули", "жигулевские", "жигулевск"],
+            "ladoga_lake": ["ладога", "ладожское", "нева", "санкт-петербург", "питер", "орешек", "шлиссельбург"],
+            "black_sea": ["черное море", "крым", "сочи", "ялта", "новороссийск", "геленджик", "анапа"]
+        }
+
+        matches = []
+        for wb in self.waterbodies.values():
+            wb_name_clean = wb.name.lower().replace("ё", "е")
+            wb_desc_clean = wb.description.lower().replace("ё", "е")
+            score = 0
+            if q_clean in wb_name_clean:
+                score += 10
+            if q_clean in wb_desc_clean:
+                score += 5
+            if wb.id.lower().replace("_", " ") in q_clean or q_clean in wb.id:
+                score += 8
+
+            for alias in aliases.get(wb.id, []):
+                if alias in q_clean or q_clean in alias:
+                    score += 6
+
+            if score > 0:
+                matches.append((score, {
+                    "name": wb.name,
+                    "display_name": f"[Готовая навигационная модель SeaPath] {wb.description}",
+                    "lat": wb.center[1],
+                    "lon": wb.center[0],
+                    "bbox": wb.bounds,
+                    "category": wb.category,
+                    "is_preset": True,
+                    "preset_id": wb.id,
+                }))
+
+        matches.sort(key=lambda x: x[0], reverse=True)
+        return [m[1] for m in matches]
 
     def create_custom_waterbody(
         self,

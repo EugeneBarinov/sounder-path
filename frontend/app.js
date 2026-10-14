@@ -1745,6 +1745,15 @@ function clearRouteData() {
 function initPortsUI(ports) {
     if (!portDepartSelect || !portArriveSelect) return;
 
+    if (!ports || ports.length === 0) {
+        portDepartSelect.innerHTML = '<option value="">-- Кликните на карте (Точка А) --</option>';
+        portArriveSelect.innerHTML = '<option value="">-- Кликните на карте (Точка Б) --</option>';
+        portDepartSelect.value = '';
+        portArriveSelect.value = '';
+        if (portDepthAdvisory) portDepthAdvisory.style.display = 'none';
+        return;
+    }
+
     portDepartSelect.innerHTML = '<option value="">-- Выберите порт отхода --</option>';
     portArriveSelect.innerHTML = '<option value="">-- Выберите порт прибытия --</option>';
 
@@ -1760,12 +1769,16 @@ function initPortsUI(ports) {
         portArriveSelect.appendChild(optB);
     });
 
-    // Устанавливаем популярный дефолтный переход (Севастополь -> Ялта)
     if (ports.some(p => p.id === 'sevastopol_kamyshovaya')) {
         portDepartSelect.value = 'sevastopol_kamyshovaya';
+    } else if (ports.length >= 1) {
+        portDepartSelect.value = ports[0].id;
     }
+
     if (ports.some(p => p.id === 'yalta_port')) {
         portArriveSelect.value = 'yalta_port';
+    } else if (ports.length >= 2) {
+        portArriveSelect.value = ports[1].id;
     }
 
     portDepartSelect.addEventListener('change', () => {
@@ -3967,7 +3980,13 @@ function executeGeoSearch() {
     if (!q || q.length < 2) return;
 
     if (btnGeoSearch) btnGeoSearch.innerText = '...';
-    fetch(`/api/geo/search?q=${encodeURIComponent(q)}`)
+    let vbParam = '';
+    if (typeof map !== 'undefined' && map && map.getBounds) {
+        const b = map.getBounds();
+        vbParam = `&viewbox=${b.getWest().toFixed(4)},${b.getSouth().toFixed(4)},${b.getEast().toFixed(4)},${b.getNorth().toFixed(4)}`;
+    }
+
+    fetch(`/api/geo/search?q=${encodeURIComponent(q)}${vbParam}`)
         .then(r => r.json())
         .then(results => {
             if (btnGeoSearch) btnGeoSearch.innerText = 'Поиск';
@@ -3983,7 +4002,7 @@ function renderGeoSearchResults(results) {
     if (!geoSearchResults) return;
     geoSearchResults.innerHTML = '';
     if (!results || results.length === 0) {
-        geoSearchResults.innerHTML = '<div style="padding: 10px; font-size: 11px; color: #94a3b8;">Водоемы не найдены. Уточните запрос (например: "Ладожское озеро", "р. Волга", "Lake Geneva").</div>';
+        geoSearchResults.innerHTML = '<div style="padding: 10px; font-size: 11px; color: #94a3b8;">Водоемы не найдены. Уточните запрос (например: "р. Чёрная", "Балаклава", "Волга", "Ладога").</div>';
         geoSearchResults.style.display = 'block';
         return;
     }
@@ -3991,14 +4010,26 @@ function renderGeoSearchResults(results) {
     results.forEach(res => {
         const item = document.createElement('div');
         item.className = 'geo-search-item';
-        item.innerHTML = `
-            <div class="geo-search-item-title">${res.name} <span class="wb-badge wb-badge-${res.category || 'lake'}" style="margin-left: 4px;">${(res.category || 'lake').toUpperCase()}</span></div>
-            <div class="geo-search-item-sub">${res.display_name}</div>
-        `;
-        item.addEventListener('click', () => {
-            geoSearchResults.style.display = 'none';
-            createAndActivateWaterbodyFromSearch(res);
-        });
+        if (res.is_preset) {
+            item.innerHTML = `
+                <div class="geo-search-item-title">${res.name} <span class="wb-badge" style="background: #10b981; color: #ffffff; margin-left: 4px; font-weight: 600;">ГОТОВАЯ КАРТА</span></div>
+                <div class="geo-search-item-sub" style="color: #6ee7b7;">${res.display_name}</div>
+            `;
+            item.addEventListener('click', () => {
+                geoSearchResults.style.display = 'none';
+                switchWaterbody(res.preset_id, true);
+            });
+        } else {
+            const cat = res.category || 'river';
+            item.innerHTML = `
+                <div class="geo-search-item-title">${res.name} <span class="wb-badge wb-badge-${cat}" style="margin-left: 4px;">${cat.toUpperCase()}</span></div>
+                <div class="geo-search-item-sub">${res.display_name}</div>
+            `;
+            item.addEventListener('click', () => {
+                geoSearchResults.style.display = 'none';
+                createAndActivateWaterbodyFromSearch(res);
+            });
+        }
         geoSearchResults.appendChild(item);
     });
     geoSearchResults.style.display = 'block';
@@ -4010,7 +4041,7 @@ function createAndActivateWaterbodyFromSearch(res) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
             name: res.name,
-            category: res.category || 'lake',
+            category: res.category || 'river',
             bbox: res.bbox
         })
     })
