@@ -11,6 +11,7 @@ jobs:
     name: Build & Test (${{ matrix.os }}, Python ${{ matrix.python-version }})
     runs-on: ${{ matrix.os }}
     env:
+      PYTHONPATH: "."
       PYTHONIOENCODING: "utf-8"
       SEAPATH_GEOTIFF_PATH: "data/raw/operational_sample.tif"
     strategy:
