@@ -590,6 +590,15 @@ class WaterbodyManager:
             depths = flat_z.reshape((rows, cols)).astype(np.float32)
 
             if water_mask is not None:
+                # Protect sounding locations from being masked out if OSM polygon query was partial
+                for s in soundings:
+                    s_r = int(np.clip(round((max_lat - s["lat"]) / max(1e-9, (max_lat - min_lat)) * (rows - 1)), 0, rows - 1))
+                    s_c = int(np.clip(round((s["lon"] - min_lon) / max(1e-9, (max_lon - min_lon)) * (cols - 1)), 0, cols - 1))
+                    r0 = max(0, s_r - 2)
+                    r1 = min(rows, s_r + 3)
+                    c0 = max(0, s_c - 2)
+                    c1 = min(cols, s_c + 3)
+                    water_mask[r0:r1, c0:c1] = 1.0
                 depths = depths * water_mask
         elif water_mask is not None:
             # Default lake depth inside water polygon: 5.5m
@@ -613,7 +622,7 @@ class WaterbodyManager:
 
         # 2. If soundings are provided, fuse them with IHO S-44 Shoal-bias
         if soundings:
-            fuse_soundings_into_grid(grid, soundings)
+            fuse_soundings_into_grid(grid, soundings, is_dredged=True)
 
         wb = Waterbody(
             id=wb_id,

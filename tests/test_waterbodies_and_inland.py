@@ -86,8 +86,23 @@ def test_river_routing_volga():
     assert route_data["properties"]["min_chart_depth_m"] >= 2.0
 
 
-def test_create_custom_waterbody_lake():
-    """Verify creating a custom lake waterbody on demand anywhere on Earth."""
+def test_create_custom_waterbody_lake(monkeypatch):
+    """Verify creating a custom lake waterbody on demand anywhere on Earth with mocked OSM query."""
+    import backend.core.waterbodies as wb_mod
+
+    # Deterministic offline mock for OSM Overpass polygon
+    mock_poly = {
+        "type": "Polygon",
+        "coordinates": [[
+            [6.10, 46.20],
+            [6.60, 46.20],
+            [6.60, 46.50],
+            [6.10, 46.50],
+            [6.10, 46.20]
+        ]]
+    }
+    monkeypatch.setattr(wb_mod, "_fetch_osm_water_polygons", lambda bbox, timeout_sec=5: [mock_poly])
+
     # Lake Geneva / Lac Leman bbox
     bbox = [6.10, 46.20, 6.60, 46.50]
     payload = {
@@ -113,6 +128,36 @@ def test_create_custom_waterbody_lake():
     assert d_res.status_code == 200
     assert d_res.json()["in_bounds"] is True
     assert d_res.json()["depth"] > 20.0
+
+
+def test_geo_search_proxy(monkeypatch):
+    """Verify OSM Nominatim geocoding search proxy with mocked network response."""
+    import urllib.request
+    from unittest.mock import MagicMock
+    import json
+
+    mock_osm_items = [
+        {
+            "display_name": "Женевское озеро, Швейцария",
+            "boundingbox": ["46.20", "46.50", "6.10", "6.60"],
+            "lat": "46.35",
+            "lon": "6.35",
+            "type": "water"
+        }
+    ]
+
+    mock_resp = MagicMock()
+    mock_resp.read.return_value = json.dumps(mock_osm_items).encode("utf-8")
+    mock_resp.__enter__.return_value = mock_resp
+
+    monkeypatch.setattr(urllib.request, "urlopen", lambda req, timeout=5: mock_resp)
+
+    res = client.get("/api/geo/search?q=geneva")
+    assert res.status_code == 200
+    data = res.json()
+    assert len(data) == 1
+    assert "Женевское" in data[0]["name"]
+    assert data[0]["bbox"] == [6.10, 46.20, 6.60, 46.50]
 
 
 def test_live_telemetry_and_track():

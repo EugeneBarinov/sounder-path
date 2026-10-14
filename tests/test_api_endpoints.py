@@ -529,6 +529,8 @@ def test_real_subprocess_production_fail_closed_missing_geotiff():
     env["SEAPATH_ENV"] = "production"
     env["SEAPATH_GEOTIFF_PATH"] = str(base_dir / "data" / "raw" / "nonexistent_operational_file.tif")
     env["PYTHONPATH"] = str(base_dir)
+    env["PYTHONIOENCODING"] = "utf-8"
+    env["PYTHONUTF8"] = "1"
 
     proc = subprocess.run(
         [sys.executable, "-c", "import backend.main"],
@@ -536,6 +538,8 @@ def test_real_subprocess_production_fail_closed_missing_geotiff():
         env=env,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
     )
 
     assert proc.returncode != 0, "Production mode without GeoTIFF must fail closed with non-zero exit code"
@@ -567,6 +571,8 @@ def test_production_fail_closed_sample_fallback_prohibited(tmp_path):
     env["SEAPATH_DATA_DIR"] = str(mock_raw_dir)
     env.pop("SEAPATH_GEOTIFF_PATH", None)
     env["PYTHONPATH"] = str(base_dir)
+    env["PYTHONIOENCODING"] = "utf-8"
+    env["PYTHONUTF8"] = "1"
 
     proc = subprocess.run(
         [sys.executable, "-c", "import backend.main"],
@@ -574,6 +580,8 @@ def test_production_fail_closed_sample_fallback_prohibited(tmp_path):
         env=env,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
     )
 
     assert proc.returncode != 0, "Production mode with only sample GeoTIFF must fail closed"
@@ -596,6 +604,8 @@ def test_production_fail_closed_explicit_sample_path_rejected():
     env["SEAPATH_ENV"] = "production"
     env["SEAPATH_GEOTIFF_PATH"] = str(base_dir / "data" / "raw" / "operational_sample.tif")
     env["PYTHONPATH"] = str(base_dir)
+    env["PYTHONIOENCODING"] = "utf-8"
+    env["PYTHONUTF8"] = "1"
 
     proc = subprocess.run(
         [sys.executable, "-c", "import backend.main"],
@@ -603,6 +613,8 @@ def test_production_fail_closed_explicit_sample_path_rejected():
         env=env,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
     )
 
     assert proc.returncode != 0
@@ -827,6 +839,8 @@ def test_production_fail_closed_renamed_small_sample_rejected(tmp_path):
     env["SEAPATH_ENV"] = "production"
     env["SEAPATH_GEOTIFF_PATH"] = str(renamed_sample)
     env["PYTHONPATH"] = str(base_dir)
+    env["PYTHONIOENCODING"] = "utf-8"
+    env["PYTHONUTF8"] = "1"
 
     proc = subprocess.run(
         [sys.executable, "-c", "import backend.main"],
@@ -834,6 +848,8 @@ def test_production_fail_closed_renamed_small_sample_rejected(tmp_path):
         env=env,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
     )
 
     assert proc.returncode != 0
@@ -1041,6 +1057,8 @@ def test_production_fail_closed_insufficient_geo_span(tmp_path):
     env["SEAPATH_ENV"] = "production"
     env["SEAPATH_GEOTIFF_PATH"] = str(small_span_tif)
     env["PYTHONPATH"] = str(base_dir)
+    env["PYTHONIOENCODING"] = "utf-8"
+    env["PYTHONUTF8"] = "1"
 
     proc = subprocess.run(
         [sys.executable, "-c", "import backend.main"],
@@ -1048,6 +1066,8 @@ def test_production_fail_closed_insufficient_geo_span(tmp_path):
         env=env,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
     )
 
     assert proc.returncode != 0
@@ -1186,6 +1206,8 @@ print('SUCCESS_CACHE_FALLBACK')
     env = os.environ.copy()
     env["SEAPATH_CACHE_DIR"] = str(ro_dir / "forbidden" / "sub" / "plans")
     env["PYTHONPATH"] = str(base_dir)
+    env["PYTHONIOENCODING"] = "utf-8"
+    env["PYTHONUTF8"] = "1"
 
     proc = subprocess.run(
         [sys.executable, "-c", test_code],
@@ -1193,6 +1215,8 @@ print('SUCCESS_CACHE_FALLBACK')
         env=env,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
     )
     assert proc.returncode == 0
     assert "SUCCESS_CACHE_FALLBACK" in proc.stdout
