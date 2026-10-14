@@ -15,10 +15,10 @@
 const MAP_THEMES = {
     'ecdis-night': {
         tiles: ['https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}'],
-        contourColor: '#38bdf8',
-        contourIndexColor: '#7dd3fc',
+        contourColor: '#0369a1',
+        contourIndexColor: '#38bdf8',
         contourHalo: 'rgba(15, 23, 42, 0.9)',
-        labelColor: '#bae6fd',
+        labelColor: '#93c5fd',
         soundingColor: '#94a3b8',
         maxzoom: 16
     },
@@ -673,7 +673,7 @@ map.on('load', () => {
         id: 'depth-hillshade-layer',
         type: 'raster',
         source: 'depth-hillshade',
-        paint: { 'raster-opacity': 0.85 }
+        paint: { 'raster-opacity': 0.70 }
     }, 'route-corridor-fill');
 
     // 5.2. Векторные изобаты глубин (Isobaths 1 - 2000м)
@@ -694,8 +694,18 @@ map.on('load', () => {
                 MAP_THEMES[currentChartTheme].contourIndexColor,
                 MAP_THEMES[currentChartTheme].contourColor
             ],
-            'line-width': ['case', ['get', 'is_index'], 1.8, 1.0],
-            'line-opacity': 0.75
+            'line-width': [
+                'interpolate', ['linear'], ['zoom'],
+                7, ['case', ['get', 'is_index'], 0.8, 0.0],
+                10, ['case', ['get', 'is_index'], 1.1, 0.55],
+                13, ['case', ['get', 'is_index'], 1.5, 0.8]
+            ],
+            'line-opacity': [
+                'interpolate', ['linear'], ['zoom'],
+                7, ['case', ['get', 'is_index'], 0.35, 0.0],
+                10, ['case', ['get', 'is_index'], 0.50, 0.22],
+                13, ['case', ['get', 'is_index'], 0.65, 0.35]
+            ]
         }
     }, 'route-corridor-fill');
 
@@ -703,19 +713,21 @@ map.on('load', () => {
         id: 'contours-label-layer',
         type: 'symbol',
         source: 'bathymetry-contours',
+        filter: ['==', ['get', 'is_index'], true],
+        minzoom: 8.5,
         layout: {
             'symbol-placement': 'line',
             'text-field': ['get', 'label'],
-            'text-size': 10.5,
+            'text-size': 9.0,
             'text-font': ['literal', ['Open Sans Regular', 'Arial Unicode MS Regular']],
             'text-letter-spacing': 0.05,
             'text-max-angle': 30,
-            'symbol-spacing': 350
+            'symbol-spacing': 550
         },
         paint: {
             'text-color': MAP_THEMES[currentChartTheme].labelColor,
             'text-halo-color': MAP_THEMES[currentChartTheme].contourHalo,
-            'text-halo-width': 1.6
+            'text-halo-width': 1.2
         }
     }, 'route-corridor-fill');
 
@@ -728,8 +740,9 @@ map.on('load', () => {
         layout: { 'line-join': 'round', 'line-cap': 'round' },
         paint: {
             'line-color': '#f43f5e',
-            'line-width': 3.2,
-            'line-opacity': 0.95
+            'line-width': 2.0,
+            'line-dasharray': [5, 2.5],
+            'line-opacity': 0.85
         }
     }, 'route-corridor-fill');
 
@@ -743,10 +756,10 @@ map.on('load', () => {
         id: 'soundings-layer',
         type: 'symbol',
         source: 'bathymetry-soundings',
-        minzoom: 8.5,
+        minzoom: 9.5,
         layout: {
             'text-field': ['get', 'label'],
-            'text-size': ['case', ['get', 'is_peak'], 11, 9.5],
+            'text-size': ['case', ['get', 'is_peak'], 10, 8.5],
             'text-font': ['literal', ['Open Sans Regular', 'Arial Unicode MS Regular']],
             'text-allow-overlap': false,
             'text-ignore-placement': false
@@ -759,7 +772,7 @@ map.on('load', () => {
                 MAP_THEMES[currentChartTheme].soundingColor
             ],
             'text-halo-color': MAP_THEMES[currentChartTheme].contourHalo,
-            'text-halo-width': 1.4
+            'text-halo-width': 1.2
         }
     }, 'route-corridor-fill');
 
@@ -768,7 +781,7 @@ map.on('load', () => {
         type: 'raster',
         tiles: ['https://tiles.openseamap.org/seamark/{z}/{x}/{y}.png'],
         tileSize: 256,
-        minzoom: 6,
+        minzoom: 9,
         maxzoom: 18
     });
 
@@ -776,7 +789,7 @@ map.on('load', () => {
         id: 'seamarks-layer',
         type: 'raster',
         source: 'openseamap-seamarks',
-        paint: { 'raster-opacity': 0.95 }
+        paint: { 'raster-opacity': 0.75 }
     }, 'route-corridor-fill');
 
     // Первичная синхронизация изолинии безопасности с текущей осадкой
@@ -799,7 +812,7 @@ map.on('load', () => {
                 type: 'fill',
                 source: 'fairways-data',
                 filter: ['!=', ['get', 'category'], 'restricted'],
-                paint: { 'fill-color': '#06b6d4', 'fill-opacity': 0.12 }
+                paint: { 'fill-color': '#06b6d4', 'fill-opacity': 0.05 }
             }, 'route-corridor-fill');
 
             map.addLayer({
@@ -809,9 +822,9 @@ map.on('load', () => {
                 filter: ['!=', ['get', 'category'], 'restricted'],
                 paint: {
                     'line-color': '#06b6d4',
-                    'line-width': 1.5,
+                    'line-width': 1.0,
                     'line-dasharray': [4, 3],
-                    'line-opacity': 0.85
+                    'line-opacity': 0.45
                 }
             }, 'route-corridor-fill');
 
@@ -820,7 +833,7 @@ map.on('load', () => {
                 type: 'fill',
                 source: 'fairways-data',
                 filter: ['==', ['get', 'category'], 'restricted'],
-                paint: { 'fill-color': '#ef4444', 'fill-opacity': 0.18 }
+                paint: { 'fill-color': '#ef4444', 'fill-opacity': 0.10 }
             }, 'route-corridor-fill');
 
             map.addLayer({
@@ -830,9 +843,9 @@ map.on('load', () => {
                 filter: ['==', ['get', 'category'], 'restricted'],
                 paint: {
                     'line-color': '#ef4444',
-                    'line-width': 2,
+                    'line-width': 1.5,
                     'line-dasharray': [6, 3],
-                    'line-opacity': 0.95
+                    'line-opacity': 0.85
                 }
             }, 'route-corridor-fill');
         })
