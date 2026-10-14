@@ -1388,12 +1388,56 @@ map.on('load', () => {
     const recenterBtn = document.getElementById('tool-recenter-btn');
     if (recenterBtn) {
         recenterBtn.addEventListener('click', () => {
-            map.fitBounds([
-                [32.8, 44.1],
-                [36.6, 45.6]
-            ], { padding: 40, duration: 600 });
+            if (activeWaterbodyBounds && activeWaterbodyBounds.length === 4) {
+                map.fitBounds([
+                    [activeWaterbodyBounds[0], activeWaterbodyBounds[1]],
+                    [activeWaterbodyBounds[2], activeWaterbodyBounds[3]]
+                ], { padding: 40, duration: 600 });
+            } else {
+                map.fitBounds([
+                    [32.8, 44.1],
+                    [36.6, 45.6]
+                ], { padding: 40, duration: 600 });
+            }
         });
     }
+
+    // 6.5. Слой живой телеметрии эхолота и трека судна (Quickdraw / Chartplotter)
+    map.addSource('live-telemetry-track', {
+        type: 'geojson',
+        data: { type: 'FeatureCollection', features: [] }
+    });
+
+    map.addLayer({
+        id: 'live-telemetry-line',
+        type: 'line',
+        source: 'live-telemetry-track',
+        filter: ['==', '$type', 'LineString'],
+        paint: {
+            'line-color': '#38bdf8',
+            'line-width': 2.5,
+            'line-dasharray': [2, 1]
+        }
+    }, 'route-corridor-fill');
+
+    map.addLayer({
+        id: 'live-telemetry-points',
+        type: 'circle',
+        source: 'live-telemetry-track',
+        filter: ['==', ['get', 'role'], 'live_sounding_point'],
+        paint: {
+            'circle-radius': 4.5,
+            'circle-color': [
+                'interpolate', ['linear'], ['get', 'depth_m'],
+                2.0, '#ef4444',
+                5.0, '#f59e0b',
+                10.0, '#10b981',
+                20.0, '#06b6d4'
+            ],
+            'circle-stroke-width': 1.5,
+            'circle-stroke-color': '#ffffff'
+        }
+    }, 'route-corridor-fill');
 
     // 7. Слой интерактивного указателя профиля глубин на карте
     map.addSource('profile-hover', {
@@ -1531,7 +1575,7 @@ map.on('load', () => {
                             hudCursorDepth.innerText = 'Суша (0.0 м)';
                             hudCursorDepth.style.color = 'var(--status-danger)';
                         } else {
-                            hudCursorDepth.innerText = `${data.depth.toFixed(1)} м`;
+                            hudCursorDepth.innerText = formatDepthVal(data.depth);
                             const safeLimit = (currentRouteData && currentRouteData.properties && currentRouteData.properties.min_chart_depth_m)
                                 ? currentRouteData.properties.min_chart_depth_m
                                 : (draft + dynamicSquat + baseUkc - tideOffsetM);
@@ -1545,6 +1589,7 @@ map.on('load', () => {
     });
 
     updateVesselPhysics();
+    loadWaterbodiesList();
 });
 
 // -----------------------------------------------------------------------------
@@ -3725,5 +3770,471 @@ if (passagePlanModal) {
         if (e.target === passagePlanModal) {
             passagePlanModal.style.display = 'none';
         }
+    });
+}
+
+// -----------------------------------------------------------------------------
+// 19. Модуль единиц глубин, водоемов, GPS и живого эхолота
+// -----------------------------------------------------------------------------
+
+// 19.1. Единицы измерения глубин (Метры / Футы)
+let currentDepthUnit = 'm'; // 'm' | 'ft'
+const toolUnitToggleBtn = document.getElementById('tool-unit-toggle');
+
+function formatDepthVal(depthM, decimals = 1) {
+    if (depthM === null || depthM === undefined || isNaN(depthM)) return '--';
+    if (currentDepthUnit === 'ft') {
+        const ft = Number(depthM) * 3.28084;
+        return `${ft.toFixed(decimals)} ft`;
+    }
+    return `${Number(depthM).toFixed(decimals)} м`;
+}
+
+if (toolUnitToggleBtn) {
+    toolUnitToggleBtn.addEventListener('click', () => {
+        currentDepthUnit = (currentDepthUnit === 'm') ? 'ft' : 'm';
+        toolUnitToggleBtn.innerText = `Глубины: ${currentDepthUnit === 'm' ? 'м' : 'ft'}`;
+        if (currentRouteData && currentRouteData.properties) {
+            updateVoyageSummaryCard(currentRouteData.properties);
+        }
+    });
+}
+
+// 19.2. Управление водоемами (Морские бухты, реки, озера, водохранилища)
+const waterbodySelect = document.getElementById('waterbody-select');
+const activeWbCategoryBadge = document.getElementById('wb-category-badge');
+const activeWbTitleText = document.getElementById('wb-title-text');
+const activeWbMetaText = document.getElementById('wb-meta-text');
+let activeWaterbodyId = 'black_sea';
+let activeWaterbodyBounds = [27.0, 40.5, 42.0, 47.0];
+
+function loadWaterbodiesList() {
+    fetch('/api/waterbodies')
+        .then(r => r.json())
+        .then(list => {
+            if (!waterbodySelect || !Array.isArray(list)) return;
+            waterbodySelect.innerHTML = '';
+            list.forEach(wb => {
+                const opt = document.createElement('option');
+                opt.value = wb.id;
+                opt.innerText = wb.name;
+                if (wb.is_active) {
+                    opt.selected = true;
+                    activeWaterbodyId = wb.id;
+                    activeWaterbodyBounds = wb.bounds;
+                    updateWaterbodyInfoUI(wb);
+                }
+                waterbodySelect.appendChild(opt);
+            });
+        })
+        .catch(err => console.warn('Ошибка загрузки списка водоемов:', err));
+}
+
+function updateWaterbodyInfoUI(wb) {
+    if (!wb) return;
+    if (activeWbCategoryBadge) {
+        const catMap = {
+            'sea': 'МОРЕ',
+            'bay': 'БУХТА',
+            'river': 'РЕКА',
+            'lake': 'ОЗЕРО',
+            'reservoir': 'ВОДОХРАНИЛИЩЕ',
+            'custom': 'ПРОЕКТ'
+        };
+        activeWbCategoryBadge.innerText = catMap[wb.category] || (wb.category || 'ВОДОЕМ').toUpperCase();
+        activeWbCategoryBadge.className = `wb-badge wb-badge-${wb.category || 'sea'}`;
+    }
+    if (activeWbTitleText) {
+        activeWbTitleText.innerText = wb.name;
+    }
+    if (activeWbMetaText) {
+        const gridDim = (wb.grid_dimensions && wb.grid_dimensions.length === 2) ? `${wb.grid_dimensions[0]}x${wb.grid_dimensions[1]} ячеек` : '';
+        const maxD = wb.max_depth_m ? `макс. глубина ${formatDepthVal(wb.max_depth_m)}` : '';
+        activeWbMetaText.innerText = wb.description || [gridDim, maxD].filter(Boolean).join(' | ');
+    }
+}
+
+function switchWaterbody(wbId, fly = true) {
+    fetch('/api/waterbody/activate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ waterbody_id: wbId })
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.success && data.active_waterbody) {
+            const wb = data.active_waterbody;
+            activeWaterbodyId = wb.id;
+            activeWaterbodyBounds = wb.bounds;
+            updateWaterbodyInfoUI(wb);
+            if (waterbodySelect) waterbodySelect.value = wb.id;
+
+            clearRouteData();
+
+            if (fly && wb.bounds && wb.bounds.length === 4) {
+                map.fitBounds([
+                    [wb.bounds[0], wb.bounds[1]],
+                    [wb.bounds[2], wb.bounds[3]]
+                ], { padding: 50, duration: 800 });
+            } else if (fly && wb.center && wb.center.length === 2) {
+                map.flyTo({ center: wb.center, zoom: wb.zoom || 11.0, duration: 800 });
+            }
+
+            reloadPortsAndAnchorages();
+        }
+    })
+    .catch(err => console.error('Ошибка активации водоема:', err));
+}
+
+if (waterbodySelect) {
+    waterbodySelect.addEventListener('change', (e) => {
+        switchWaterbody(e.target.value, true);
+    });
+}
+
+function reloadPortsAndAnchorages() {
+    fetch('/api/ports')
+        .then(res => res.json())
+        .then(ports => {
+            blackSeaPorts = ports || [];
+            initPortsUI(blackSeaPorts);
+
+            const portFeatures = blackSeaPorts.map(p => ({
+                type: 'Feature',
+                properties: {
+                    id: p.id,
+                    name: p.name,
+                    short_name: p.short_name || p.name,
+                    depth_m: p.depth_m,
+                    vhf_channel: p.vhf_channel,
+                    type: p.type,
+                    description: p.description
+                },
+                geometry: {
+                    type: 'Point',
+                    coordinates: p.port_coords
+                }
+            }));
+
+            if (map.getSource('ports-data')) {
+                map.getSource('ports-data').setData({
+                    type: 'FeatureCollection',
+                    features: portFeatures
+                });
+            }
+        })
+        .catch(err => console.warn('Не удалось обновить порты водоема:', err));
+
+    fetch('/api/anchorages')
+        .then(res => res.json())
+        .then(anchorages => {
+            blackSeaAnchorages = anchorages || [];
+            const anchorageFeatures = blackSeaAnchorages.map(a => ({
+                type: 'Feature',
+                properties: {
+                    id: a.id,
+                    name: a.name,
+                    depth_range: `${a.depth_min_m}-${a.depth_max_m} м`,
+                    max_draft: `${a.max_draft_m} м`,
+                    holding_ground: a.bottom_nature,
+                    shelter_from: a.sheltered_from_winds ? a.sheltered_from_winds.join(', ') : 'Открытая',
+                    vhf_channel: a.vhf_channel,
+                    notes: a.notes
+                },
+                geometry: {
+                    type: 'Point',
+                    coordinates: a.coords
+                }
+            }));
+
+            if (map.getSource('anchorages-data')) {
+                map.getSource('anchorages-data').setData({
+                    type: 'FeatureCollection',
+                    features: anchorageFeatures
+                });
+            }
+        })
+        .catch(err => console.warn('Не удалось обновить якорные стоянки водоема:', err));
+}
+
+// 19.3. Глобальный поиск водоемов в мире (OSM / Nominatim)
+const geoSearchInput = document.getElementById('geo-search-input');
+const btnGeoSearch = document.getElementById('btn-geo-search');
+const geoSearchResults = document.getElementById('geo-search-results');
+
+function executeGeoSearch() {
+    const q = geoSearchInput ? geoSearchInput.value.trim() : '';
+    if (!q || q.length < 2) return;
+
+    if (btnGeoSearch) btnGeoSearch.innerText = '...';
+    fetch(`/api/geo/search?q=${encodeURIComponent(q)}`)
+        .then(r => r.json())
+        .then(results => {
+            if (btnGeoSearch) btnGeoSearch.innerText = 'Поиск';
+            renderGeoSearchResults(results);
+        })
+        .catch(err => {
+            if (btnGeoSearch) btnGeoSearch.innerText = 'Поиск';
+            console.error('Ошибка поиска водоема:', err);
+        });
+}
+
+function renderGeoSearchResults(results) {
+    if (!geoSearchResults) return;
+    geoSearchResults.innerHTML = '';
+    if (!results || results.length === 0) {
+        geoSearchResults.innerHTML = '<div style="padding: 10px; font-size: 11px; color: #94a3b8;">Водоемы не найдены. Уточните запрос (например: "Ладожское озеро", "р. Волга", "Lake Geneva").</div>';
+        geoSearchResults.style.display = 'block';
+        return;
+    }
+
+    results.forEach(res => {
+        const item = document.createElement('div');
+        item.className = 'geo-search-item';
+        item.innerHTML = `
+            <div class="geo-search-item-title">${res.name} <span class="wb-badge wb-badge-${res.category || 'lake'}" style="margin-left: 4px;">${(res.category || 'lake').toUpperCase()}</span></div>
+            <div class="geo-search-item-sub">${res.display_name}</div>
+        `;
+        item.addEventListener('click', () => {
+            geoSearchResults.style.display = 'none';
+            createAndActivateWaterbodyFromSearch(res);
+        });
+        geoSearchResults.appendChild(item);
+    });
+    geoSearchResults.style.display = 'block';
+}
+
+function createAndActivateWaterbodyFromSearch(res) {
+    fetch('/api/waterbody/create', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            name: res.name,
+            category: res.category || 'lake',
+            bbox: res.bbox
+        })
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.success && data.created_waterbody) {
+            loadWaterbodiesList();
+            switchWaterbody(data.created_waterbody.id, true);
+        }
+    })
+    .catch(err => console.error('Ошибка создания акватории:', err));
+}
+
+if (btnGeoSearch) {
+    btnGeoSearch.addEventListener('click', executeGeoSearch);
+}
+if (geoSearchInput) {
+    geoSearchInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+            e.preventDefault();
+            executeGeoSearch();
+        }
+    });
+}
+document.addEventListener('click', (e) => {
+    if (geoSearchResults && !geoSearchResults.contains(e.target) && e.target !== geoSearchInput && e.target !== btnGeoSearch) {
+        geoSearchResults.style.display = 'none';
+    }
+});
+
+// 19.4. Картплоттер и GPS отслеживание положения судна
+const toolGpsBoatBtn = document.getElementById('tool-gps-boat-btn');
+let isGpsWatchActive = false;
+let gpsWatchId = null;
+let boatMarker = null;
+let lastBoatCoords = null;
+let lastBoatHdg = 0.0;
+let lastBoatSog = 0.0;
+
+function toggleGpsChartplotter() {
+    if (isGpsWatchActive) {
+        stopGpsChartplotter();
+    } else {
+        startGpsChartplotter();
+    }
+}
+
+function startGpsChartplotter() {
+    isGpsWatchActive = true;
+    if (toolGpsBoatBtn) {
+        toolGpsBoatBtn.innerText = 'GPS: Активен';
+        toolGpsBoatBtn.style.background = '#0284c7';
+        toolGpsBoatBtn.style.color = '#ffffff';
+    }
+
+    if (!navigator.geolocation) {
+        fallbackSimulatedGpsPosition();
+        return;
+    }
+
+    gpsWatchId = navigator.geolocation.watchPosition(
+        (pos) => {
+            const lat = pos.coords.latitude;
+            const lon = pos.coords.longitude;
+            const heading = (pos.coords.heading !== null && !isNaN(pos.coords.heading)) ? pos.coords.heading : lastBoatHdg;
+            const speedKnots = (pos.coords.speed !== null && !isNaN(pos.coords.speed)) ? (pos.coords.speed * 1.94384) : 0.0;
+            updateBoatPosition(lon, lat, heading, speedKnots);
+        },
+        (err) => {
+            console.warn('GPS Geolocation warning / fallback to waterbody center:', err.message);
+            fallbackSimulatedGpsPosition();
+        },
+        { enableHighAccuracy: true, maximumAge: 1000, timeout: 6000 }
+    );
+}
+
+function fallbackSimulatedGpsPosition() {
+    const center = map.getCenter();
+    updateBoatPosition(center.lng, center.lat, 60.0, 7.5);
+}
+
+function stopGpsChartplotter() {
+    isGpsWatchActive = false;
+    if (gpsWatchId !== null && navigator.geolocation) {
+        navigator.geolocation.clearWatch(gpsWatchId);
+        gpsWatchId = null;
+    }
+    if (toolGpsBoatBtn) {
+        toolGpsBoatBtn.innerText = 'Картплоттер: GPS';
+        toolGpsBoatBtn.style.background = '';
+        toolGpsBoatBtn.style.color = '';
+    }
+    if (boatMarker) {
+        boatMarker.remove();
+        boatMarker = null;
+    }
+}
+
+function updateBoatPosition(lon, lat, heading, sogKnots) {
+    lastBoatCoords = [lon, lat];
+    lastBoatHdg = heading || 0.0;
+    lastBoatSog = sogKnots || 0.0;
+
+    if (!boatMarker) {
+        const el = document.createElement('div');
+        el.className = 'boat-gps-marker';
+        el.innerHTML = '<div class="boat-gps-pulse"></div><div class="boat-gps-marker-body"></div>';
+        boatMarker = new maplibregl.Marker({ element: el })
+            .setLngLat([lon, lat])
+            .addTo(map);
+    } else {
+        boatMarker.setLngLat([lon, lat]);
+    }
+
+    const bodyEl = boatMarker.getElement().querySelector('.boat-gps-marker-body');
+    if (bodyEl) {
+        bodyEl.style.transform = `rotate(${lastBoatHdg}deg)`;
+    }
+
+    if (isLiveSonarActive) {
+        queryAndRecordLivePoint(lat, lon, lastBoatSog, lastBoatHdg);
+    }
+}
+
+if (toolGpsBoatBtn) {
+    toolGpsBoatBtn.addEventListener('click', toggleGpsChartplotter);
+}
+
+// 19.5. Живая съемка эхолотом (Quickdraw / Genesis Live)
+let isLiveSonarActive = false;
+let liveSonarTimer = null;
+const btnToggleLiveSonar = document.getElementById('btn-toggle-live-sonar');
+const btnSimulateSounderPing = document.getElementById('btn-simulate-sounder-ping');
+const liveSonarHud = document.getElementById('live-sonar-hud');
+const livePtsCount = document.getElementById('live-pts-count');
+const liveLastDepth = document.getElementById('live-last-depth');
+
+function toggleLiveSonar() {
+    isLiveSonarActive = !isLiveSonarActive;
+    if (isLiveSonarActive) {
+        if (btnToggleLiveSonar) {
+            btnToggleLiveSonar.innerText = 'Запись эхолота: ВКЛ';
+            btnToggleLiveSonar.classList.add('active');
+        }
+        if (liveSonarHud) liveSonarHud.style.display = 'block';
+
+        if (!isGpsWatchActive) {
+            startGpsChartplotter();
+        }
+
+        liveSonarTimer = setInterval(() => {
+            if (lastBoatCoords) {
+                const dLon = (Math.random() - 0.5) * 0.0003;
+                const dLat = (Math.random() - 0.5) * 0.0003;
+                const newLon = lastBoatCoords[0] + dLon;
+                const newLat = lastBoatCoords[1] + dLat;
+                updateBoatPosition(newLon, newLat, lastBoatHdg, lastBoatSog);
+            }
+        }, 3000);
+    } else {
+        if (btnToggleLiveSonar) {
+            btnToggleLiveSonar.innerText = 'Запись эхолота: Выкл';
+            btnToggleLiveSonar.classList.remove('active');
+        }
+        if (liveSonarTimer) {
+            clearInterval(liveSonarTimer);
+            liveSonarTimer = null;
+        }
+    }
+}
+
+function queryAndRecordLivePoint(lat, lon, sog, cog) {
+    fetch(`/api/depth?lon=${lon.toFixed(5)}&lat=${lat.toFixed(5)}`)
+        .then(r => r.json())
+        .then(d => {
+            const measuredDepth = (d && d.depth > 0.0) ? d.depth : (3.5 + Math.random() * 6.0);
+            sendLiveTelemetryPoint(lat, lon, measuredDepth, sog, cog);
+        })
+        .catch(() => {
+            sendLiveTelemetryPoint(lat, lon, 5.0, sog, cog);
+        });
+}
+
+function sendLiveTelemetryPoint(lat, lon, depthM, sog, cog) {
+    fetch('/api/telemetry/live-point', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            lat: lat,
+            lon: lon,
+            depth_m: depthM,
+            sog_knots: sog || 0.0,
+            cog_deg: cog || 0.0
+        })
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (livePtsCount) livePtsCount.innerText = data.total_track_points;
+        if (liveLastDepth && depthM) liveLastDepth.innerText = formatDepthVal(depthM);
+        refreshLiveTrackOnMap();
+    })
+    .catch(err => console.warn('Ошибка отправки промера эхолота:', err));
+}
+
+function refreshLiveTrackOnMap() {
+    fetch('/api/telemetry/live-track')
+        .then(r => r.json())
+        .then(geo => {
+            if (map.getSource('live-telemetry-track')) {
+                map.getSource('live-telemetry-track').setData(geo);
+            }
+        })
+        .catch(() => {});
+}
+
+if (btnToggleLiveSonar) {
+    btnToggleLiveSonar.addEventListener('click', toggleLiveSonar);
+}
+
+if (btnSimulateSounderPing) {
+    btnSimulateSounderPing.addEventListener('click', () => {
+        const center = map.getCenter();
+        const lat = center.lat;
+        const lon = center.lng;
+        queryAndRecordLivePoint(lat, lon, 6.0, 90.0);
     });
 }

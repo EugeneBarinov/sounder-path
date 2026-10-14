@@ -42,6 +42,9 @@ from backend.core.sonar import (
     fuse_soundings_into_grid,
 )
 from backend.core.passage_plan import generate_passage_plan
+from backend.core.waterbodies import WaterbodyManager, Waterbody
+import urllib.request
+import urllib.parse
 import math
 
 app = FastAPI(
@@ -241,9 +244,60 @@ except Exception as _err:
     _HAS_NATIVE = False
     print(f"[ROUTER] Running Python reference router ({_err})")
 
+waterbody_mgr = WaterbodyManager(full_grid)
+
+def activate_waterbody_instance(wb_id: str) -> Optional[Waterbody]:
+    """
+    Activates the specified water body (sea, bay, river, lake, or custom survey).
+    Synchronously updates full_grid, routing_grid, and router.
+    """
+    global full_grid, routing_grid, router, _HAS_NATIVE
+    wb = waterbody_mgr.set_active(wb_id)
+    if not wb:
+        return None
+    full_grid = wb.grid
+    routing_grid = wb.grid
+    try:
+        import seapath_native
+        native_grid = seapath_native.NativeGrid(
+            routing_grid.rows, routing_grid.cols,
+            routing_grid.lat_min, routing_grid.lat_max,
+            routing_grid.lon_min, routing_grid.lon_max,
+            routing_grid.depths,
+            routing_grid.fairway_weights
+        )
+        router = seapath_native.NativeRouter(native_grid)
+        _HAS_NATIVE = True
+    except Exception:
+        router = wb.router
+        _HAS_NATIVE = False
+    return wb
+
 # ---------------------------------------------------------------------------
 # Models
 # ---------------------------------------------------------------------------
+class ActivateWaterbodyRequest(BaseModel):
+    model_config = ConfigDict(allow_inf_nan=False, extra="ignore")
+    waterbody_id: str = Field(..., description="Unique ID of water body to activate")
+
+
+class CreateWaterbodyRequest(BaseModel):
+    model_config = ConfigDict(allow_inf_nan=False, extra="ignore")
+    name: str = Field(..., min_length=2, max_length=100, description="Name of bay, river, or lake")
+    category: Optional[str] = Field(default="lake", description="Category: bay, river, lake, reservoir, custom")
+    bbox: List[float] = Field(..., min_length=4, max_length=4, description="[min_lon, min_lat, max_lon, max_lat]")
+    soundings: Optional[List[Dict[str, float]]] = Field(default=None, description="Optional sounding measurements")
+
+
+class LiveTelemetryRequest(BaseModel):
+    model_config = ConfigDict(allow_inf_nan=False, extra="ignore")
+    lat: float = Field(..., ge=-90.0, le=90.0, description="Vessel GPS latitude")
+    lon: float = Field(..., ge=-180.0, le=180.0, description="Vessel GPS longitude")
+    depth_m: Optional[float] = Field(default=None, ge=0.0, le=11000.0, description="Live sounder depth reading in meters")
+    sog_knots: Optional[float] = Field(default=0.0, ge=0.0, le=100.0, description="Speed over ground in knots")
+    cog_deg: Optional[float] = Field(default=0.0, ge=0.0, le=360.0, description="Course over ground in degrees")
+
+
 class SonarUploadRequest(BaseModel):
     model_config = ConfigDict(allow_inf_nan=False, extra="ignore")
     raw_content: Optional[str] = Field(default=None, description="Raw text content of sounder file (CSV, NMEA, or GPX)")
@@ -642,7 +696,10 @@ def get_cartography_soundings():
 
 @app.get("/api/ports")
 def get_ports():
-    """Returns database of maritime ports, marinas, and safe approach coordinates."""
+    """Returns database of maritime and inland ports, marinas, and safe approach coordinates."""
+    active_wb = waterbody_mgr.get_active()
+    if active_wb and active_wb.ports:
+        return active_wb.ports
     ports_path = _BASE_DIR / "data" / "ports.json"
     if ports_path.exists():
         with open(ports_path, "r", encoding="utf-8") as f:
@@ -652,7 +709,10 @@ def get_ports():
 
 @app.get("/api/anchorages")
 def get_anchorages():
-    """Returns database of official maritime anchorages, holding grounds, and sheltered roadsteads."""
+    """Returns database of official maritime and inland anchorages, holding grounds, and sheltered roadsteads."""
+    active_wb = waterbody_mgr.get_active()
+    if active_wb and active_wb.anchorages:
+        return active_wb.anchorages
     anc_path = _BASE_DIR / "data" / "anchorages.json"
     if anc_path.exists():
         with open(anc_path, "r", encoding="utf-8") as f:
@@ -840,6 +900,14 @@ def calculate_route(req: RouteRequest):
             status_code=400,
             detail="Invalid request: either specify departure/destination coordinates or provide at least 2 waypoints."
         )
+
+    points_within = all(_is_within_coverage(pt[0], pt[1], routing_grid) for pt in points)
+    if not points_within:
+        for wb_id, wb_cand in waterbody_mgr.waterbodies.items():
+            if all(_is_within_coverage(pt[0], pt[1], wb_cand.grid) for pt in points):
+                activate_waterbody_instance(wb_id)
+                points_within = True
+                break
 
     for idx, pt in enumerate(points):
         if not _is_within_coverage(pt[0], pt[1], routing_grid):
@@ -1905,6 +1973,145 @@ def create_passage_plan(req: PassagePlanRequest):
         anchorages_db=anc_db,
     )
     return plan
+
+
+# ---------------------------------------------------------------------------
+# Multi-Waterbody & Real Inland / Coastal Navigation Endpoints
+# ---------------------------------------------------------------------------
+@app.get("/api/waterbodies")
+def list_waterbodies():
+    """List all registered and custom navigation water bodies (bays, rivers, lakes, seas)."""
+    return waterbody_mgr.list_all()
+
+
+@app.post("/api/waterbody/activate")
+def activate_waterbody(req: ActivateWaterbodyRequest):
+    """Switch active navigation water body and re-center chartplotter grid."""
+    wb = activate_waterbody_instance(req.waterbody_id)
+    if not wb:
+        raise HTTPException(status_code=404, detail=f"Водоем с идентификатором '{req.waterbody_id}' не найден.")
+    return {
+        "success": True,
+        "active_waterbody": wb.to_dict(),
+        "bounds": wb.bounds,
+        "center": wb.center,
+        "zoom": wb.zoom,
+        "ports": wb.ports,
+        "anchorages": wb.anchorages,
+    }
+
+
+@app.post("/api/waterbody/create")
+def create_waterbody(req: CreateWaterbodyRequest):
+    """
+    Create a new high-resolution localized water body project for ANY lake, river, or bay in the world.
+    Extracts water boundaries and IDW interpolates depths from survey soundings.
+    """
+    wb = waterbody_mgr.create_custom_waterbody(
+        name=req.name,
+        bbox=req.bbox,
+        soundings=req.soundings,
+        category=req.category or "lake"
+    )
+    activate_waterbody_instance(wb.id)
+    return {
+        "success": True,
+        "created_waterbody": wb.to_dict(),
+        "bounds": wb.bounds,
+        "center": wb.center,
+        "zoom": wb.zoom,
+        "ports": wb.ports,
+        "anchorages": wb.anchorages,
+    }
+
+
+@app.get("/api/geo/search")
+def search_geographic_location(q: str):
+    """
+    Global maritime and inland geocoding search proxy to OpenStreetMap Nominatim.
+    Finds rivers, lakes, bays, reservoirs, ports, and navigation landmarks worldwide.
+    """
+    if not q or not q.strip():
+        return []
+
+    query = q.strip()
+    encoded = urllib.parse.quote(query)
+    url = f"https://nominatim.openstreetmap.org/search?q={encoded}&format=json&addressdetails=1&limit=6"
+    req = urllib.request.Request(url, headers={"User-Agent": "SeaPath-Marine-Navigator/1.0"})
+
+    try:
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            results = []
+            for item in data:
+                bbox_str = item.get("boundingbox", [])
+                if len(bbox_str) == 4:
+                    s, n, w, e = [float(x) for x in bbox_str]
+                    bbox = [w, s, e, n]
+                else:
+                    lat_f, lon_f = float(item["lat"]), float(item["lon"])
+                    bbox = [lon_f - 0.05, lat_f - 0.05, lon_f + 0.05, lat_f + 0.05]
+
+                results.append({
+                    "name": item.get("name") or item.get("display_name", "").split(",")[0],
+                    "display_name": item.get("display_name"),
+                    "lat": float(item.get("lat")),
+                    "lon": float(item.get("lon")),
+                    "bbox": bbox,
+                    "type": item.get("type", "water"),
+                    "class": item.get("class", "natural"),
+                })
+            return results
+    except Exception:
+        return []
+
+
+@app.post("/api/telemetry/live-point")
+def record_live_telemetry_point(req: LiveTelemetryRequest):
+    """
+    Ingest live GPS and echo sounder telemetry from vessel in real-time (Chartplotter / Quickdraw mode).
+    Fuses measured depth into active grid and returns anti-grounding clearance and warnings.
+    """
+    res = waterbody_mgr.log_live_telemetry(
+        lat=req.lat,
+        lon=req.lon,
+        depth_m=req.depth_m,
+        sog_knots=req.sog_knots or 0.0,
+        cog_deg=req.cog_deg or 0.0
+    )
+    return res
+
+
+@app.get("/api/telemetry/live-track")
+def get_live_track():
+    """
+    Return GeoJSON FeatureCollection of recorded vessel sounding points and track line.
+    """
+    wb = waterbody_mgr.get_active()
+    points = wb.live_track_points
+    features = []
+
+    if len(points) >= 2:
+        line_coords = [[p["lon"], p["lat"]] for p in points]
+        features.append({
+            "type": "Feature",
+            "properties": {"role": "vessel_track_line"},
+            "geometry": {"type": "LineString", "coordinates": line_coords}
+        })
+
+    for p in points:
+        features.append({
+            "type": "Feature",
+            "properties": {
+                "role": "live_sounding_point",
+                "depth_m": p.get("depth_m"),
+                "sog_knots": p.get("sog_knots"),
+                "cog_deg": p.get("cog_deg")
+            },
+            "geometry": {"type": "Point", "coordinates": [p["lon"], p["lat"]]}
+        })
+
+    return {"type": "FeatureCollection", "features": features}
 
 
 # ---------------------------------------------------------------------------

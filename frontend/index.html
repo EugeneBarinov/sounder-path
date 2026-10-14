@@ -11,6 +11,35 @@
 </head>
 <body>
     <div id="sidebar">
+        <!-- Waterbody and Basin Switcher -->
+        <div class="panel-header">Район плавания / Акватория</div>
+        <div class="control-group">
+            <label for="waterbody-select">Бассейн / Водоем</label>
+            <select id="waterbody-select" class="vessel-select">
+                <option value="black_sea" selected>Черное море (Базовый регион)</option>
+                <option value="sevastopol_bays">Севастопольские бухты (Крым)</option>
+                <option value="volga_river">Река Волга (Самарская Лука)</option>
+                <option value="ladoga_lake">Ладожское озеро и р. Нева</option>
+            </select>
+
+            <div class="geo-search-container">
+                <label for="geo-search-input" style="font-size: 11px; margin-bottom: 4px; display: block; color: var(--text-secondary);">Поиск водоема в мире (OSM / Реки / Озера)</label>
+                <div class="geo-search-input-row">
+                    <input type="text" id="geo-search-input" class="geo-search-input" placeholder="Озеро, река, бухта в мире..." autocomplete="off">
+                    <button type="button" id="btn-geo-search" class="btn-geo-search" title="Найти водоем">Поиск</button>
+                </div>
+                <div id="geo-search-results" class="geo-search-results" style="display: none;"></div>
+            </div>
+
+            <div id="active-waterbody-info" class="waterbody-info-card">
+                <div class="wb-info-header">
+                    <span id="wb-category-badge" class="wb-badge wb-badge-sea">МОРЕ</span>
+                    <span id="wb-title-text" class="wb-name">Черное море</span>
+                </div>
+                <div class="wb-info-meta" id="wb-meta-text">Региональная батиметрия GEBCO / EMODnet</div>
+            </div>
+        </div>
+
         <div class="panel-header">Планирование перехода</div>
         <div class="control-group">
             <label for="port-depart-select">Отход (Порт А)</label>
@@ -196,6 +225,22 @@
                             <input type="checkbox" id="toggle-custom-soundings" checked>
                         </label>
                     </div>
+
+                    <div class="live-telemetry-controls" style="margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border-color);">
+                        <div style="font-size: 11px; font-weight: 600; color: #38bdf8; text-transform: uppercase; margin-bottom: 6px;">Живая съемка эхолотом (Quickdraw Live)</div>
+                        <div style="display: flex; gap: 6px;">
+                            <button type="button" id="btn-toggle-live-sonar" class="btn-live-sonar" title="Запись промеров эхолота в реальном времени с обновлением карты">
+                                Запись эхолота: Выкл
+                            </button>
+                            <button type="button" id="btn-simulate-sounder-ping" class="btn-sim-ping" title="Выполнить точечный промер эхолотом">
+                                Замер
+                            </button>
+                        </div>
+                        <div id="live-sonar-hud" class="live-sonar-hud" style="display: none; margin-top: 6px;">
+                            <span>Промеров: <strong id="live-pts-count">0</strong></span>
+                            <span style="margin-left: 8px;">Глубина: <strong id="live-last-depth">-- м</strong></span>
+                        </div>
+                    </div>
                 </div>
             </details>
         </div>
@@ -207,6 +252,8 @@
             <button id="sidebar-toggle-btn" class="mobile-toggle-btn" title="Переключить панель управления">МЕНЮ</button>
         </div>
         <div class="topbar-section topbar-actions">
+            <button id="tool-gps-boat-btn" class="topbar-tool-btn" title="Включить GPS отслеживание положения судна в реальном времени (Картплоттер)">Картплоттер: GPS</button>
+            <button id="tool-unit-toggle" class="topbar-tool-btn" title="Переключить единицы измерения глубин (Метры / Футы)">Глубины: м</button>
             <button id="topbar-add-wp" class="topbar-tool-btn" title="Добавить промежуточную путевую точку">+ Путевая точка</button>
             <button id="tool-ebl-vrm" class="topbar-tool-btn" title="Электронный визир направления и дальности (EBL / VRM)">Линейка / Пеленг (EBL)</button>
             <button id="tool-mute-alarm-btn" class="topbar-tool-btn" title="Включить / отключить звуковую сигнализацию мостика (IEC 62288)">Зуммер: Вкл</button>
