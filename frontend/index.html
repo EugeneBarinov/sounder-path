@@ -74,6 +74,38 @@
             <input type="range" id="xtd-slider" min="50" max="1000" step="25" value="185">
         </div>
 
+        <div class="panel-header">Морская картография (ECDIS)</div>
+        <div class="control-group">
+            <label for="chart-theme-select">Тема и подложка ЭКНИС</label>
+            <select id="chart-theme-select" class="vessel-select">
+                <option value="ecdis-night" selected>🌙 ECDIS Ночь (IHO S-52 Night)</option>
+                <option value="ecdis-day">☀️ ECDIS День (IHO S-52 Day)</option>
+                <option value="ocean">🌊 Морской океан (Esri Ocean)</option>
+                <option value="satellite">🛰️ Спутниковый гибрид</option>
+            </select>
+
+            <label class="checkbox-label" for="toggle-hillshade">
+                <span>3D Рельеф дна (Hillshade)</span>
+                <input type="checkbox" id="toggle-hillshade" checked>
+            </label>
+            <label class="checkbox-label" for="toggle-contours">
+                <span>Векторные изобаты (1–2000 м)</span>
+                <input type="checkbox" id="toggle-contours" checked>
+            </label>
+            <label class="checkbox-label" for="toggle-safety-contour">
+                <span>Изолиния безопасности (Safety)</span>
+                <input type="checkbox" id="toggle-safety-contour" checked>
+            </label>
+            <label class="checkbox-label" for="toggle-soundings">
+                <span>Отметки глубин (Soundings)</span>
+                <input type="checkbox" id="toggle-soundings" checked>
+            </label>
+            <label class="checkbox-label" for="toggle-seamarks">
+                <span>Знаки навигации (AtoN / Буи)</span>
+                <input type="checkbox" id="toggle-seamarks" checked>
+            </label>
+        </div>
+
         <div class="panel-header">Прокладка маршрута</div>
         <div class="wp-container">
             <div class="route-toolbar">

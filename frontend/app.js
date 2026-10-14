@@ -10,11 +10,67 @@
  */
 
 // -----------------------------------------------------------------------------
-// 1. Инициализация морской карты MapLibre GL
+// 1. Инициализация морской карты MapLibre GL с темами IHO S-52
 // -----------------------------------------------------------------------------
+const MAP_THEMES = {
+    'ecdis-night': {
+        tiles: ['https://basemaps.cartocdn.com/rastertiles/dark_all/{z}/{x}/{y}.png'],
+        contourColor: '#38bdf8',
+        contourIndexColor: '#7dd3fc',
+        contourHalo: 'rgba(15, 23, 42, 0.9)',
+        labelColor: '#bae6fd',
+        soundingColor: '#94a3b8',
+        maxzoom: 19
+    },
+    'ecdis-day': {
+        tiles: ['https://basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png'],
+        contourColor: '#0284c7',
+        contourIndexColor: '#0369a1',
+        contourHalo: 'rgba(255, 255, 255, 0.95)',
+        labelColor: '#0c4a6e',
+        soundingColor: '#1e293b',
+        maxzoom: 19
+    },
+    'ocean': {
+        tiles: ['https://server.arcgisonline.com/ArcGIS/rest/services/Ocean/World_Ocean_Base/MapServer/tile/{z}/{y}/{x}'],
+        contourColor: '#0284c7',
+        contourIndexColor: '#0369a1',
+        contourHalo: 'rgba(255, 255, 255, 0.9)',
+        labelColor: '#075985',
+        soundingColor: '#0f172a',
+        maxzoom: 13
+    },
+    'satellite': {
+        tiles: ['https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'],
+        contourColor: '#38bdf8',
+        contourIndexColor: '#7dd3fc',
+        contourHalo: 'rgba(0, 0, 0, 0.85)',
+        labelColor: '#bae6fd',
+        soundingColor: '#f1f5f9',
+        maxzoom: 18
+    }
+};
+
+let currentChartTheme = 'ecdis-night';
+
 const map = new maplibregl.Map({
     container: 'map',
-    style: 'https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json',
+    style: {
+        version: 8,
+        glyphs: 'https://demotiles.maplibre.org/font/{fontstack}/{range}.pbf',
+        sources: {
+            'base-night': { type: 'raster', tiles: MAP_THEMES['ecdis-night'].tiles, tileSize: 256, maxzoom: 19 },
+            'base-day': { type: 'raster', tiles: MAP_THEMES['ecdis-day'].tiles, tileSize: 256, maxzoom: 19 },
+            'base-ocean': { type: 'raster', tiles: MAP_THEMES['ocean'].tiles, tileSize: 256, maxzoom: 13 },
+            'base-satellite': { type: 'raster', tiles: MAP_THEMES['satellite'].tiles, tileSize: 256, maxzoom: 18 }
+        },
+        layers: [
+            { id: 'layer-base-night', type: 'raster', source: 'base-night', layout: { visibility: 'visible' } },
+            { id: 'layer-base-day', type: 'raster', source: 'base-day', layout: { visibility: 'none' } },
+            { id: 'layer-base-ocean', type: 'raster', source: 'base-ocean', layout: { visibility: 'none' } },
+            { id: 'layer-base-satellite', type: 'raster', source: 'base-satellite', layout: { visibility: 'none' } }
+        ]
+    },
     center: [34.5, 44.8], // Региональный обзор побережья Крыма и Черного моря
     zoom: 8.0,
     pitch: 0,
@@ -41,6 +97,13 @@ const toggleFairwaysCheckbox = document.getElementById('toggle-fairways');
 const prioritizeFairwaysCheckbox = document.getElementById('prioritize-fairways');
 const xtdSlider = document.getElementById('xtd-slider');
 const xtdVal = document.getElementById('xtd-val');
+
+const chartThemeSelect = document.getElementById('chart-theme-select');
+const toggleHillshadeCheckbox = document.getElementById('toggle-hillshade');
+const toggleContoursCheckbox = document.getElementById('toggle-contours');
+const toggleSafetyContourCheckbox = document.getElementById('toggle-safety-contour');
+const toggleSoundingsCheckbox = document.getElementById('toggle-soundings');
+const toggleSeamarksCheckbox = document.getElementById('toggle-seamarks');
 
 const dynDraftVal = document.getElementById('dynamic-draft-val');
 const dangerVal = document.getElementById('danger-val');
@@ -270,6 +333,22 @@ if (depthChartCanvas) {
 // -----------------------------------------------------------------------------
 // 5. Расчет гидродинамических параметров судна
 // -----------------------------------------------------------------------------
+const CONTOUR_LEVELS = [1.0, 2.0, 3.0, 5.0, 10.0, 15.0, 20.0, 30.0, 50.0, 100.0, 200.0, 500.0, 1000.0, 1500.0, 2000.0];
+
+function getClosestSafetyContourLevel(depthM) {
+    for (let lvl of CONTOUR_LEVELS) {
+        if (lvl >= depthM) return lvl;
+    }
+    return 2000.0;
+}
+
+function updateSafetyContour(requiredDepth) {
+    const safeLvl = getClosestSafetyContourLevel(requiredDepth);
+    if (map && map.getLayer && map.getLayer('safety-contour-line')) {
+        map.setFilter('safety-contour-line', ['==', ['get', 'depth'], safeLvl]);
+    }
+}
+
 function updateVesselPhysics() {
     // Формула проседания Баррасса: (Cb * V^2) / 100
     dynamicSquat = (currentCb * Math.pow(speedKnots, 2)) / 100.0;
@@ -281,6 +360,8 @@ function updateVesselPhysics() {
     if (cbVal) cbVal.innerText = currentCb.toFixed(2);
     if (dynDraftVal) dynDraftVal.innerText = dynamicDraft.toFixed(2) + 'м';
     if (dangerVal) dangerVal.innerText = requiredChartDepth.toFixed(2) + 'м';
+
+    updateSafetyContour(requiredChartDepth);
 }
 
 let recalcDebounceTimer = null;
@@ -419,8 +500,8 @@ map.on('load', () => {
     fetch('/api/health')
         .then(res => res.json())
         .then(h => {
-            if (map.getLayer('depth-heatmap-layer')) {
-                map.setLayoutProperty('depth-heatmap-layer', 'visibility', h.is_synthetic ? 'none' : 'visible');
+            if (map.getLayer('depth-hillshade-layer')) {
+                map.setLayoutProperty('depth-hillshade-layer', 'visibility', h.is_synthetic ? 'none' : 'visible');
             }
         })
         .catch(() => {});
@@ -564,8 +645,7 @@ map.on('load', () => {
         }
     });
 
-    // 5. Батиметрическая растровая подложка с ТОЧНЫМИ географическими координатами
-    // Координаты рассчитаны строго из метаданных GeoTIFF E8_2024.tif (EPSG:3857)
+    // 5. Профессиональная морская батиметрия и картография (IHO S-52 / S-57 / EMODnet)
     const exactHeatmapCoords = [
         [33.122917, 47.300000], // Top-Left: Северо-Западная точка морского сектора
         [41.000046, 47.300000], // Top-Right: Северо-Восточная точка (Тамань / Азов)
@@ -573,18 +653,128 @@ map.on('load', () => {
         [33.122917, 43.122706]  // Bottom-Left: Юго-Западная точка
     ];
 
-    map.addSource('depth-heatmap', {
+    // 5.1. 3D Теневой рельеф дна (Bathymetric Shaded Relief / Hillshade)
+    map.addSource('depth-hillshade', {
         type: 'image',
-        url: '/heatmap.png',
+        url: '/bathymetry_hillshade.png',
         coordinates: exactHeatmapCoords
     });
 
     map.addLayer({
-        id: 'depth-heatmap-layer',
+        id: 'depth-hillshade-layer',
         type: 'raster',
-        source: 'depth-heatmap',
-        paint: { 'raster-opacity': 0.82 }
+        source: 'depth-hillshade',
+        paint: { 'raster-opacity': 0.85 }
     }, 'route-corridor-fill');
+
+    // 5.2. Векторные изобаты глубин (Isobaths 1 - 2000м)
+    map.addSource('bathymetry-contours', {
+        type: 'geojson',
+        data: '/contours.geojson'
+    });
+
+    map.addLayer({
+        id: 'contours-line-layer',
+        type: 'line',
+        source: 'bathymetry-contours',
+        layout: { 'line-join': 'round', 'line-cap': 'round' },
+        paint: {
+            'line-color': [
+                'case',
+                ['get', 'is_index'],
+                MAP_THEMES[currentChartTheme].contourIndexColor,
+                MAP_THEMES[currentChartTheme].contourColor
+            ],
+            'line-width': ['case', ['get', 'is_index'], 1.8, 1.0],
+            'line-opacity': 0.75
+        }
+    }, 'route-corridor-fill');
+
+    map.addLayer({
+        id: 'contours-label-layer',
+        type: 'symbol',
+        source: 'bathymetry-contours',
+        layout: {
+            'symbol-placement': 'line',
+            'text-field': ['get', 'label'],
+            'text-size': 10.5,
+            'text-font': ['literal', ['Open Sans Regular', 'Arial Unicode MS Regular']],
+            'text-letter-spacing': 0.05,
+            'text-max-angle': 30,
+            'symbol-spacing': 350
+        },
+        paint: {
+            'text-color': MAP_THEMES[currentChartTheme].labelColor,
+            'text-halo-color': MAP_THEMES[currentChartTheme].contourHalo,
+            'text-halo-width': 1.6
+        }
+    }, 'route-corridor-fill');
+
+    // 5.3. Динамическая изолиния безопасности ЭКНИС (Safety Contour)
+    map.addLayer({
+        id: 'safety-contour-line',
+        type: 'line',
+        source: 'bathymetry-contours',
+        filter: ['==', ['get', 'depth'], 2.0],
+        layout: { 'line-join': 'round', 'line-cap': 'round' },
+        paint: {
+            'line-color': '#f43f5e',
+            'line-width': 3.2,
+            'line-opacity': 0.95
+        }
+    }, 'route-corridor-fill');
+
+    // 5.4. Морские отметки глубин (Spot Soundings)
+    map.addSource('bathymetry-soundings', {
+        type: 'geojson',
+        data: '/soundings.geojson'
+    });
+
+    map.addLayer({
+        id: 'soundings-layer',
+        type: 'symbol',
+        source: 'bathymetry-soundings',
+        minzoom: 8.5,
+        layout: {
+            'text-field': ['get', 'label'],
+            'text-size': ['case', ['get', 'is_peak'], 11, 9.5],
+            'text-font': ['literal', ['Open Sans Regular', 'Arial Unicode MS Regular']],
+            'text-allow-overlap': false,
+            'text-ignore-placement': false
+        },
+        paint: {
+            'text-color': [
+                'case',
+                ['get', 'is_peak'],
+                '#f59e0b',
+                MAP_THEMES[currentChartTheme].soundingColor
+            ],
+            'text-halo-color': MAP_THEMES[currentChartTheme].contourHalo,
+            'text-halo-width': 1.4
+        }
+    }, 'route-corridor-fill');
+
+    // 5.5. Навигационные знаки и обстановка IHO S-52 / INT 1 (OpenSeaMap AtoN)
+    map.addSource('openseamap-seamarks', {
+        type: 'raster',
+        tiles: ['https://tiles.openseamap.org/seamark/{z}/{x}/{y}.png'],
+        tileSize: 256,
+        minzoom: 6,
+        maxzoom: 18
+    });
+
+    map.addLayer({
+        id: 'seamarks-layer',
+        type: 'raster',
+        source: 'openseamap-seamarks',
+        paint: { 'raster-opacity': 0.95 }
+    }, 'route-corridor-fill');
+
+    // Первичная синхронизация изолинии безопасности с текущей осадкой
+    if (typeof updateSafetyContour === 'function') {
+        const initSafetyDepth = Math.max(0.5, draft + dynamicSquat + (0.35 * waveHeightM) + baseUkc - tideOffsetM);
+        updateSafetyContour(initSafetyDepth);
+    }
 
     // 6. Векторные фарватеры, системы разделения движения (TSS) и запретные зоны
     fetch('/api/fairways')
@@ -652,6 +842,93 @@ map.on('load', () => {
         prioritizeFairwaysCheckbox.addEventListener('change', (e) => {
             fairwayPreference = e.target.checked ? 1.0 : 0.0;
             triggerRouteRecalculation(true);
+        });
+    }
+
+    // 6.1. Управление темами и слоями морской картографии ЭКНИС
+    function applyChartTheme(themeName) {
+        if (!MAP_THEMES[themeName]) return;
+        currentChartTheme = themeName;
+        const cfg = MAP_THEMES[themeName];
+
+        const baseLayerMap = {
+            'ecdis-night': 'layer-base-night',
+            'ecdis-day': 'layer-base-day',
+            'ocean': 'layer-base-ocean',
+            'satellite': 'layer-base-satellite'
+        };
+        for (const [key, layerId] of Object.entries(baseLayerMap)) {
+            if (map.getLayer(layerId)) {
+                map.setLayoutProperty(layerId, 'visibility', key === themeName ? 'visible' : 'none');
+            }
+        }
+
+        if (map.getLayer('contours-line-layer')) {
+            map.setPaintProperty('contours-line-layer', 'line-color', [
+                'case',
+                ['get', 'is_index'],
+                cfg.contourIndexColor,
+                cfg.contourColor
+            ]);
+        }
+        if (map.getLayer('contours-label-layer')) {
+            map.setPaintProperty('contours-label-layer', 'text-color', cfg.labelColor);
+            map.setPaintProperty('contours-label-layer', 'text-halo-color', cfg.contourHalo);
+        }
+        if (map.getLayer('soundings-layer')) {
+            map.setPaintProperty('soundings-layer', 'text-color', [
+                'case',
+                ['get', 'is_peak'],
+                '#f59e0b',
+                cfg.soundingColor
+            ]);
+            map.setPaintProperty('soundings-layer', 'text-halo-color', cfg.contourHalo);
+        }
+    }
+
+    if (chartThemeSelect) {
+        chartThemeSelect.addEventListener('change', (e) => {
+            applyChartTheme(e.target.value);
+        });
+    }
+
+    if (toggleHillshadeCheckbox) {
+        toggleHillshadeCheckbox.addEventListener('change', (e) => {
+            if (map.getLayer('depth-hillshade-layer')) {
+                map.setLayoutProperty('depth-hillshade-layer', 'visibility', e.target.checked ? 'visible' : 'none');
+            }
+        });
+    }
+
+    if (toggleContoursCheckbox) {
+        toggleContoursCheckbox.addEventListener('change', (e) => {
+            const vis = e.target.checked ? 'visible' : 'none';
+            if (map.getLayer('contours-line-layer')) map.setLayoutProperty('contours-line-layer', 'visibility', vis);
+            if (map.getLayer('contours-label-layer')) map.setLayoutProperty('contours-label-layer', 'visibility', vis);
+        });
+    }
+
+    if (toggleSafetyContourCheckbox) {
+        toggleSafetyContourCheckbox.addEventListener('change', (e) => {
+            if (map.getLayer('safety-contour-line')) {
+                map.setLayoutProperty('safety-contour-line', 'visibility', e.target.checked ? 'visible' : 'none');
+            }
+        });
+    }
+
+    if (toggleSoundingsCheckbox) {
+        toggleSoundingsCheckbox.addEventListener('change', (e) => {
+            if (map.getLayer('soundings-layer')) {
+                map.setLayoutProperty('soundings-layer', 'visibility', e.target.checked ? 'visible' : 'none');
+            }
+        });
+    }
+
+    if (toggleSeamarksCheckbox) {
+        toggleSeamarksCheckbox.addEventListener('change', (e) => {
+            if (map.getLayer('seamarks-layer')) {
+                map.setLayoutProperty('seamarks-layer', 'visibility', e.target.checked ? 'visible' : 'none');
+            }
         });
     }
 

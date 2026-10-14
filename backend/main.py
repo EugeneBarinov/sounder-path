@@ -592,6 +592,24 @@ def get_fairways():
     return load_fairways_geojson()
 
 
+@app.get("/api/cartography/contours")
+def get_cartography_contours():
+    """Returns vector isobaths in GeoJSON format for nautical charts."""
+    contours_path = _FRONTEND_DIR / "contours.geojson"
+    if contours_path.exists():
+        return FileResponse(contours_path, media_type="application/geo+json")
+    return {"type": "FeatureCollection", "features": []}
+
+
+@app.get("/api/cartography/soundings")
+def get_cartography_soundings():
+    """Returns nautical spot soundings in GeoJSON format."""
+    soundings_path = _FRONTEND_DIR / "soundings.geojson"
+    if soundings_path.exists():
+        return FileResponse(soundings_path, media_type="application/geo+json")
+    return {"type": "FeatureCollection", "features": []}
+
+
 @app.get("/api/depth")
 def get_depth_at(lon: float, lat: float):
     """Returns exact seabed sounding depth in meters at the given geographic coordinate."""
