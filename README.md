@@ -95,7 +95,7 @@ docker compose up --build
   - 2D-интерполяция промеров эхолота методом Inverse Distance Weighting (IDW).
 
 ### 7. Съемка эхолотом и режим картплоттера (Quickdraw Live)
-- **Парсинг логов эхолотов**: поддержка форматов NMEA 0183 (`$SDDPT`, `$SDDBT`, `$GPGGA`, `$GPRMC`), GPX с высотными треками и CSV/TSV.
+- **Парсинг логов эхолотов**: поддержка форматов NMEA 0183 (предложения SDDPT, SDDBT, GPGGA, GPRMC), GPX с высотными треками и CSV/TSV.
 - **Живая запись эхолота (`POST /api/telemetry/live-point`)**: при движении судна замеры эхолота обновляют матрицу глубин в реальном времени с выводом цветного трека промеров.
 - **Картплоттер GPS (`navigator.geolocation.watchPosition`)**: отображение судна на карте с курсом (COG) и скоростью (SOG).
 - **Переключатель единиц глубин**: поддержка метров (м) и футов (ft).
@@ -184,7 +184,7 @@ $$\Delta d_{\text{heel}} = \frac{B}{2} \cdot \sin\theta$$
 ### 3. Волновой запас (Wave Response Allowance)
 Поправка на вертикальную качку (heave, pitch, roll) по руководству PIANC WG 121:
 
-$$\Delta d_{\text{wave}} = \begin{cases} 0.35 \cdot H_s, & \text{укрытые воды / подходной канал} \\ 0.50 \cdot H_s, & \text{открытая прибрежная акватория} \end{cases}$$
+$$\Delta d_{\text{wave}} = \begin{cases} 0.35 \cdot H_s, & \text{sheltered waters / fairway channel} \\ 0.50 \cdot H_s, & \text{open sea / coastal waters} \end{cases}$$
 
 ### 4. Итоговая динамическая осадка и безопасная глубина
 Полная динамическая осадка:
@@ -339,7 +339,7 @@ docker compose --profile demo up -d seapath-ecdis-demo
 
 **Серверная проверка DUKC при экспорте:**
 - Сервер самостоятельно вычисляет канонический бюджет `compute_search_budget()`, воспроизводя проседание Баррасса, крен на циркуляции, волновой запас и прилив.
-- Клиентский параметр `safety_contour` не может ослабить проверку: эффективная глубина равна $\max(\text{safety\_contour}, D_{\text{chart}}^{\min})$.
+- Клиентский параметр `safety_contour` не может ослабить проверку: эффективная глубина равна $\max(D_{\text{safety}}, D_{\text{chart}}^{\min})$ (где $D_{\text{safety}}$ — изолиния безопасности `safety_contour`).
 - Опасный маршрут или маршрут на демонстрационной батиметрии отклоняется с HTTP 400. Экспорт разрешается только при явном флаге `allow_unverified=true` с обязательным заголовком `X-SeaPath-Route-Status: UNVERIFIED_HAZARD` / `DEMO_UNVERIFIED` и критическими предупреждениями в XML.
 
 ---
