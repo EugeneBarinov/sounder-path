@@ -610,6 +610,16 @@ def get_cartography_soundings():
     return {"type": "FeatureCollection", "features": []}
 
 
+@app.get("/api/ports")
+def get_ports():
+    """Returns database of maritime ports, marinas, and safe approach coordinates."""
+    ports_path = _BASE_DIR / "data" / "ports.json"
+    if ports_path.exists():
+        with open(ports_path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    return []
+
+
 @app.get("/api/depth")
 def get_depth_at(lon: float, lat: float):
     """Returns exact seabed sounding depth in meters at the given geographic coordinate."""

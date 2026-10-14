@@ -65,3 +65,35 @@ def test_cartography_hillshade_static():
     # PNG signature: 89 50 4E 47 0D 0A 1A 0A
     assert response.content[:8] == b"\x89PNG\r\n\x1a\n"
     assert len(response.content) > 100_000
+
+
+def test_ports_api():
+    """Verify that /api/ports returns Black Sea ports and marinas with safe fairway coordinates."""
+    response = client.get("/api/ports")
+    assert response.status_code == 200
+    ports = response.json()
+    assert isinstance(ports, list)
+    assert len(ports) >= 10
+
+    # Verify essential ports exist
+    port_ids = {p["id"] for p in ports}
+    assert "sevastopol_kamyshovaya" in port_ids
+    assert "sevastopol_main" in port_ids
+    assert "yalta_port" in port_ids
+    assert "balaklava_marina" in port_ids
+    assert "feodosiya_port" in port_ids
+    assert "novorossiysk_port" in port_ids
+    assert "sochi_marina" in port_ids
+
+    for p in ports:
+        assert "id" in p
+        assert "name" in p
+        assert "port_coords" in p
+        assert len(p["port_coords"]) == 2
+        assert "approach_coords" in p
+        assert len(p["approach_coords"]) == 2
+        assert "depth_m" in p
+        assert p["depth_m"] > 0
+        assert "vhf_channel" in p
+        assert "type" in p
+

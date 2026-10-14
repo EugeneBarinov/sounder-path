@@ -1,0 +1,122 @@
+[
+  {
+    "id": "sevastopol_kamyshovaya",
+    "name": "Севастополь (Бухта Камышовая)",
+    "short_name": "Севастополь",
+    "city": "Севастополь",
+    "port_coords": [33.428, 44.595],
+    "approach_coords": [33.420, 44.620],
+    "depth_m": 14.5,
+    "vhf_channel": "VHF Ch 14 / 16",
+    "type": "marina",
+    "description": "Защищенная гавань, яхтенная марина и грузопассажирский терминал. Круглосуточный вход."
+  },
+  {
+    "id": "sevastopol_main",
+    "name": "Севастополь (Входной рейд / Северный мол)",
+    "short_name": "Севастополь (Рейд)",
+    "city": "Севастополь",
+    "port_coords": [33.525, 44.620],
+    "approach_coords": [33.480, 44.640],
+    "depth_m": 46.0,
+    "vhf_channel": "VHF Ch 16 / 74",
+    "type": "commercial",
+    "description": "Главный фарватер Севастопольской бухты. Лоцманская проводка и СУДС."
+  },
+  {
+    "id": "yalta_port",
+    "name": "Ялта (Пассажирский порт и Марина)",
+    "short_name": "Ялта",
+    "city": "Ялта",
+    "port_coords": [34.170, 44.495],
+    "approach_coords": [34.185, 44.485],
+    "depth_m": 28.5,
+    "vhf_channel": "VHF Ch 16 / 11",
+    "type": "passenger",
+    "description": "Центральная набережная Ялты, пассажирские причалы и стоянка парусно-моторных яхт."
+  },
+  {
+    "id": "balaklava_marina",
+    "name": "Балаклава (Яхтенная марина)",
+    "short_name": "Балаклава",
+    "city": "Балаклава",
+    "port_coords": [33.598, 44.498],
+    "approach_coords": [33.590, 44.480],
+    "depth_m": 15.4,
+    "vhf_channel": "VHF Ch 16 / 12",
+    "type": "marina",
+    "description": "Узкая извилистая бухта с абсолютной защитой от штормов всех направлений. Глубоководный вход."
+  },
+  {
+    "id": "yevpatoriya_port",
+    "name": "Евпатория (Морской торговый порт)",
+    "short_name": "Евпатория",
+    "city": "Евпатория",
+    "port_coords": [33.375, 45.185],
+    "approach_coords": [33.360, 45.155],
+    "depth_m": 8.5,
+    "vhf_channel": "VHF Ch 16 / 14",
+    "type": "commercial",
+    "description": "Морской порт в Каламитском заливе. Подходной канал с латеральной буйковой обстановкой."
+  },
+  {
+    "id": "feodosiya_port",
+    "name": "Феодосия (Торговый порт и рейд)",
+    "short_name": "Феодосия",
+    "city": "Феодосия",
+    "port_coords": [35.390, 45.035],
+    "approach_coords": [35.415, 45.045],
+    "depth_m": 19.4,
+    "vhf_channel": "VHF Ch 16 / 69",
+    "type": "commercial",
+    "description": "Глубоководная Феодосийская бухта. Защита от западных ветров. Круглогодичная навигация."
+  },
+  {
+    "id": "kerch_channel",
+    "name": "Керчь (Керчь-Еникальский канал / Юг)",
+    "short_name": "Керчь",
+    "city": "Керчь",
+    "port_coords": [36.480, 45.360],
+    "approach_coords": [36.560, 45.240],
+    "depth_m": 11.5,
+    "vhf_channel": "VHF Ch 16 / 67",
+    "type": "commercial",
+    "description": "Южный вход в Керченский пролив и систему разделения движения. Контроль движения СУДС Керчь."
+  },
+  {
+    "id": "anapa_port",
+    "name": "Анапа (Морской вокзал / Марина)",
+    "short_name": "Анапа",
+    "city": "Анапа",
+    "port_coords": [37.310, 44.898],
+    "approach_coords": [37.280, 44.890],
+    "depth_m": 8.0,
+    "vhf_channel": "VHF Ch 16",
+    "type": "passenger",
+    "description": "Причалы пассажирских судов и яхт-клуб в Анапской бухте."
+  },
+  {
+    "id": "novorossiysk_port",
+    "name": "Новороссийск (Цемесская бухта / Рейд)",
+    "short_name": "Новороссийск",
+    "city": "Новороссийск",
+    "port_coords": [37.795, 44.720],
+    "approach_coords": [37.840, 44.660],
+    "depth_m": 27.0,
+    "vhf_channel": "VHF Ch 16 / 09",
+    "type": "commercial",
+    "description": "Крупнейший порт юга. Регулируемый вход по фарватерам через створ мысов Дооб и Пенай."
+  },
+  {
+    "id": "sochi_marina",
+    "name": "Сочи (Сочи Гранд Марина)",
+    "short_name": "Сочи",
+    "city": "Сочи",
+    "port_coords": [39.718, 43.580],
+    "approach_coords": [39.705, 43.565],
+    "depth_m": 12.0,
+    "vhf_channel": "VHF Ch 16 / 12",
+    "type": "marina",
+    "description": "Современный маринный комплекс международного класса. Защищенный входной мол, все виды сервиса."
+  }
+]

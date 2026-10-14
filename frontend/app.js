@@ -187,6 +187,32 @@ const eblEtaVal = document.getElementById('ebl-eta-val');
 const eblSpdRef = document.getElementById('ebl-spd-ref');
 const eblPromptText = document.getElementById('ebl-prompt-text');
 
+// Элементы быстрого планирования перехода между портами
+const portDepartSelect = document.getElementById('port-depart-select');
+const portArriveSelect = document.getElementById('port-arrive-select');
+const btnBuildVoyage = document.getElementById('btn-build-voyage');
+const togglePortsCheckbox = document.getElementById('toggle-ports');
+
+// Элементы плавающей карточки перехода (Voyage Summary Card)
+const voyageCard = document.getElementById('voyage-card');
+const voyageCardTitle = document.getElementById('voyage-card-title');
+const voyageStatusBadge = document.getElementById('voyage-status-badge');
+const voyageCardClose = document.getElementById('voyage-card-close');
+const voyageDistVal = document.getElementById('voyage-dist-val');
+const voyageEtaVal = document.getElementById('voyage-eta-val');
+const voyageDepthVal = document.getElementById('voyage-depth-val');
+const voyageUkcVal = document.getElementById('voyage-ukc-val');
+const voyageDraftVal = document.getElementById('voyage-draft-val');
+
+const voyageBtnProfile = document.getElementById('voyage-btn-profile');
+const voyageBtnWaypoints = document.getElementById('voyage-btn-waypoints');
+const voyageBtnSafety = document.getElementById('voyage-btn-safety');
+const voyageBtnSim = document.getElementById('voyage-btn-sim');
+const voyageBtnGpx = document.getElementById('voyage-btn-gpx');
+const voyageBtnRtz = document.getElementById('voyage-btn-rtz');
+
+let blackSeaPorts = [];
+
 // -----------------------------------------------------------------------------
 // 3. Пресеты судов и состояние навигации
 const VESSEL_PROFILES = {
@@ -954,6 +980,123 @@ map.on('load', () => {
         });
     }
 
+    // 6.2. Порты, марины и рейдовые стоянки Черного моря
+    fetch('/api/ports')
+        .then(res => res.json())
+        .then(ports => {
+            blackSeaPorts = ports || [];
+            initPortsUI(blackSeaPorts);
+
+            const portFeatures = blackSeaPorts.map(p => ({
+                type: 'Feature',
+                properties: {
+                    id: p.id,
+                    name: p.name,
+                    short_name: p.short_name || p.name,
+                    depth_m: p.depth_m,
+                    vhf_channel: p.vhf_channel,
+                    type: p.type,
+                    description: p.description
+                },
+                geometry: {
+                    type: 'Point',
+                    coordinates: p.port_coords
+                }
+            }));
+
+            map.addSource('ports-data', {
+                type: 'geojson',
+                data: {
+                    type: 'FeatureCollection',
+                    features: portFeatures
+                }
+            });
+
+            map.addLayer({
+                id: 'ports-circle-layer',
+                type: 'circle',
+                source: 'ports-data',
+                paint: {
+                    'circle-radius': [
+                        'interpolate', ['linear'], ['zoom'],
+                        7, 4.5,
+                        10, 7.0,
+                        13, 9.5
+                    ],
+                    'circle-color': [
+                        'match', ['get', 'type'],
+                        'marina', '#38bdf8',
+                        'commercial', '#f59e0b',
+                        'passenger', '#ec4899',
+                        '#06b6d4'
+                    ],
+                    'circle-stroke-width': 2,
+                    'circle-stroke-color': '#ffffff'
+                }
+            });
+
+            map.addLayer({
+                id: 'ports-label-layer',
+                type: 'symbol',
+                source: 'ports-data',
+                minzoom: 8.0,
+                layout: {
+                    'text-field': ['get', 'short_name'],
+                    'text-font': ['literal', ['Open Sans Regular', 'Arial Unicode MS Regular']],
+                    'text-size': 11,
+                    'text-offset': [0, 1.2],
+                    'text-anchor': 'top',
+                    'text-allow-overlap': false
+                },
+                paint: {
+                    'text-color': '#ffffff',
+                    'text-halo-color': '#0f172a',
+                    'text-halo-width': 2
+                }
+            });
+
+            // Интерактивный клик на порт: всплывающая карточка
+            map.on('mouseenter', 'ports-circle-layer', () => {
+                if (!isEblVrmActive && !isAddingViaMode) map.getCanvas().style.cursor = 'pointer';
+            });
+            map.on('mouseleave', 'ports-circle-layer', () => {
+                if (!isEblVrmActive && !isAddingViaMode) map.getCanvas().style.cursor = '';
+            });
+
+            let activePortPopup = null;
+            map.on('click', 'ports-circle-layer', (e) => {
+                if (isEblVrmActive || isAddingViaMode) return;
+                const props = e.features[0].properties;
+                const coords = e.features[0].geometry.coordinates.slice();
+
+                if (activePortPopup) activePortPopup.remove();
+
+                activePortPopup = new maplibregl.Popup({ offset: 12, closeButton: true })
+                    .setLngLat(coords)
+                    .setHTML(`
+                        <div class="port-popup">
+                            <div class="port-popup-title">⚓ ${props.name}</div>
+                            <div class="port-popup-info">Глубина: ${props.depth_m} м &nbsp;|&nbsp; ${props.vhf_channel}</div>
+                            <div class="port-popup-desc">${props.description}</div>
+                            <div class="port-popup-buttons">
+                                <button class="port-popup-btn btn-depart" onclick="window.selectPortAsDepart('${props.id}')">🛫 Отход отсюда</button>
+                                <button class="port-popup-btn btn-arrive" onclick="window.selectPortAsArrive('${props.id}')">🛬 Приход сюда</button>
+                            </div>
+                        </div>
+                    `)
+                    .addTo(map);
+            });
+        })
+        .catch(err => console.warn('Не удалось загрузить базу портов:', err));
+
+    if (togglePortsCheckbox) {
+        togglePortsCheckbox.addEventListener('change', (e) => {
+            const vis = e.target.checked ? 'visible' : 'none';
+            if (map.getLayer('ports-circle-layer')) map.setLayoutProperty('ports-circle-layer', 'visibility', vis);
+            if (map.getLayer('ports-label-layer')) map.setLayoutProperty('ports-label-layer', 'visibility', vis);
+        });
+    }
+
     const recenterBtn = document.getElementById('tool-recenter-btn');
     if (recenterBtn) {
         recenterBtn.addEventListener('click', () => {
@@ -1258,8 +1401,165 @@ function clearRouteData() {
 
     if (bottomDrawer) bottomDrawer.style.display = 'none';
     if (exportActions) exportActions.style.display = 'none';
+    if (voyageCard) voyageCard.style.display = 'none';
     statusMsg.innerText = '';
     stopSimulator();
+}
+
+// -----------------------------------------------------------------------------
+// 8.1. Быстрое планирование перехода между портами и управление карточкой рейса
+// -----------------------------------------------------------------------------
+function initPortsUI(ports) {
+    if (!portDepartSelect || !portArriveSelect) return;
+
+    portDepartSelect.innerHTML = '<option value="">-- Выберите порт отхода --</option>';
+    portArriveSelect.innerHTML = '<option value="">-- Выберите порт прибытия --</option>';
+
+    ports.forEach(p => {
+        const typeIcon = p.type === 'marina' ? '⛵ ' : (p.type === 'passenger' ? '🚢 ' : '⚓ ');
+        const optA = document.createElement('option');
+        optA.value = p.id;
+        optA.innerText = `${typeIcon}${p.name}`;
+        portDepartSelect.appendChild(optA);
+
+        const optB = document.createElement('option');
+        optB.value = p.id;
+        optB.innerText = `${typeIcon}${p.name}`;
+        portArriveSelect.appendChild(optB);
+    });
+
+    // Устанавливаем популярный дефолтный переход (Севастополь -> Ялта)
+    if (ports.some(p => p.id === 'sevastopol_kamyshovaya')) {
+        portDepartSelect.value = 'sevastopol_kamyshovaya';
+    }
+    if (ports.some(p => p.id === 'yalta_port')) {
+        portArriveSelect.value = 'yalta_port';
+    }
+}
+
+window.selectPortAsDepart = function(portId) {
+    if (portDepartSelect) portDepartSelect.value = portId;
+    const p = blackSeaPorts.find(x => x.id === portId);
+    if (!p) return;
+    const coords = p.approach_coords || p.port_coords;
+    if (plannedWaypoints.length === 0) {
+        addWaypoint(coords, 'start');
+    } else {
+        plannedWaypoints[0].coords = coords;
+        if (plannedWaypoints[0].marker) plannedWaypoints[0].marker.setLngLat(coords);
+        renderWaypointsListUI();
+        if (plannedWaypoints.length >= 2) calculateRoute();
+    }
+    map.flyTo({ center: coords, zoom: Math.max(map.getZoom(), 10.5), speed: 1.2 });
+};
+
+window.selectPortAsArrive = function(portId) {
+    if (portArriveSelect) portArriveSelect.value = portId;
+    const p = blackSeaPorts.find(x => x.id === portId);
+    if (!p) return;
+    const coords = p.approach_coords || p.port_coords;
+    if (plannedWaypoints.length === 0) {
+        statusMsg.innerText = 'ℹ️ Сначала укажите порт или точку отхода (A).';
+        statusMsg.style.color = '#38bdf8';
+        return;
+    }
+    if (plannedWaypoints.length === 1) {
+        addWaypoint(coords, 'goal');
+    } else {
+        const lastIdx = plannedWaypoints.length - 1;
+        plannedWaypoints[lastIdx].coords = coords;
+        if (plannedWaypoints[lastIdx].marker) plannedWaypoints[lastIdx].marker.setLngLat(coords);
+        renderWaypointsListUI();
+        calculateRoute();
+    }
+    map.flyTo({ center: coords, zoom: Math.max(map.getZoom(), 10.5), speed: 1.2 });
+};
+
+function executePortToPortVoyage() {
+    const depId = portDepartSelect ? portDepartSelect.value : '';
+    const arrId = portArriveSelect ? portArriveSelect.value : '';
+    if (!depId || !arrId) {
+        statusMsg.innerText = '⚠️ Пожалуйста, выберите порт отхода и порт прибытия.';
+        statusMsg.style.color = '#f59e0b';
+        return;
+    }
+    if (depId === arrId) {
+        statusMsg.innerText = '⚠️ Порт прибытия должен отличаться от порта отхода.';
+        statusMsg.style.color = '#f59e0b';
+        return;
+    }
+    const portA = blackSeaPorts.find(p => p.id === depId);
+    const portB = blackSeaPorts.find(p => p.id === arrId);
+    if (!portA || !portB) return;
+
+    clearRouteData();
+
+    // Прокладываем маршрут между безопасными фарватерными подходами портов
+    const startCoords = portA.approach_coords || portA.port_coords;
+    const goalCoords = portB.approach_coords || portB.port_coords;
+
+    addWaypoint(startCoords, 'start');
+    addWaypoint(goalCoords, 'goal');
+
+    const minLon = Math.min(startCoords[0], goalCoords[0]);
+    const maxLon = Math.max(startCoords[0], goalCoords[0]);
+    const minLat = Math.min(startCoords[1], goalCoords[1]);
+    const maxLat = Math.max(startCoords[1], goalCoords[1]);
+
+    map.fitBounds([
+        [minLon, minLat],
+        [maxLon, maxLat]
+    ], { padding: 80, duration: 1000 });
+}
+
+if (btnBuildVoyage) {
+    btnBuildVoyage.addEventListener('click', executePortToPortVoyage);
+}
+
+// Навешивание действий на интерактивные кнопки Voyage Summary Card
+if (voyageCardClose) {
+    voyageCardClose.addEventListener('click', () => {
+        if (voyageCard) voyageCard.style.display = 'none';
+    });
+}
+
+if (voyageBtnProfile && tabProfileBtn) {
+    voyageBtnProfile.addEventListener('click', () => {
+        if (bottomDrawer) bottomDrawer.style.display = 'flex';
+        tabProfileBtn.click();
+    });
+}
+
+if (voyageBtnWaypoints && tabWaypointsBtn) {
+    voyageBtnWaypoints.addEventListener('click', () => {
+        if (bottomDrawer) bottomDrawer.style.display = 'flex';
+        tabWaypointsBtn.click();
+    });
+}
+
+if (voyageBtnSafety && tabSafetyBtn) {
+    voyageBtnSafety.addEventListener('click', () => {
+        if (bottomDrawer) bottomDrawer.style.display = 'flex';
+        tabSafetyBtn.click();
+    });
+}
+
+if (voyageBtnSim && tabSimulatorBtn) {
+    voyageBtnSim.addEventListener('click', () => {
+        if (bottomDrawer) bottomDrawer.style.display = 'flex';
+        tabSimulatorBtn.click();
+        if (simPlayBtn && !simPlayBtn.disabled) {
+            simPlayBtn.click();
+        }
+    });
+}
+
+if (voyageBtnGpx && exportGpxBtn) {
+    voyageBtnGpx.addEventListener('click', () => exportGpxBtn.click());
+}
+
+if (voyageBtnRtz && exportRtzBtn) {
+    voyageBtnRtz.addEventListener('click', () => exportRtzBtn.click());
 }
 
 function distToSegmentSquared(p, v, w) {
@@ -1736,11 +2036,44 @@ window.calculateRoute = async function () {
             if (bottomDrawer) bottomDrawer.style.display = 'flex';
             if (exportActions) exportActions.style.display = 'inline-flex';
 
+            // Обновление и показ плавающей карточки перехода (Voyage Summary Card)
+            if (voyageCard) {
+                voyageCard.style.display = 'block';
+
+                const depPort = blackSeaPorts.find(p => p.id === (portDepartSelect ? portDepartSelect.value : ''));
+                const arrPort = blackSeaPorts.find(p => p.id === (portArriveSelect ? portArriveSelect.value : ''));
+                if (depPort && arrPort && plannedWaypoints.length === 2) {
+                    if (voyageCardTitle) voyageCardTitle.innerText = `${depPort.short_name || depPort.name} → ${arrPort.short_name || arrPort.name}`;
+                } else if (voyageCardTitle) {
+                    voyageCardTitle.innerText = `Переход (${waypointsCount} РТ)`;
+                }
+
+                if (voyageDistVal) voyageDistVal.innerText = distNm;
+                if (voyageEtaVal) voyageEtaVal.innerText = eta;
+                if (voyageDepthVal) voyageDepthVal.innerText = (p && p.min_chart_depth_m !== undefined) ? `${p.min_chart_depth_m.toFixed(1)} м` : '—';
+                if (voyageUkcVal) voyageUkcVal.innerText = clearance;
+                if (voyageDraftVal) voyageDraftVal.innerText = `${draft.toFixed(1)} м`;
+
+                if (voyageStatusBadge) {
+                    if (isUnsafe) {
+                        voyageStatusBadge.innerText = isDemo ? 'ДЕМО' : 'ОПАСНОСТЬ';
+                        voyageStatusBadge.className = 'badge-danger';
+                    } else if (sc.status === 'WARNING_ADVISORY') {
+                        voyageStatusBadge.innerText = 'ВНИМАНИЕ';
+                        voyageStatusBadge.className = 'badge-warn';
+                    } else {
+                        voyageStatusBadge.innerText = 'БЕЗОПАСНО';
+                        voyageStatusBadge.className = 'badge-safe';
+                    }
+                }
+            }
+
             initSimulator(data);
         } else {
             const err = await res.json().catch(() => ({}));
             statusMsg.innerText = '❌ ' + (err.detail || 'Безопасный проход не найден при текущих параметрах осадки.');
             statusMsg.style.color = 'var(--status-danger)';
+            if (voyageCard) voyageCard.style.display = 'none';
             map.getSource('route').setData({ type: 'FeatureCollection', features: [] });
             if (map.getSource('route-corridor')) map.getSource('route-corridor').setData({ type: 'FeatureCollection', features: [] });
             if (map.getSource('turn-arcs')) map.getSource('turn-arcs').setData({ type: 'FeatureCollection', features: [] });
@@ -1753,6 +2086,7 @@ window.calculateRoute = async function () {
         }
     } catch (err) {
         console.error('Ошибка расчета маршрута:', err);
+        if (voyageCard) voyageCard.style.display = 'none';
         statusMsg.innerText = 'Ошибка связи с навигационным сервером.';
         statusMsg.style.color = 'var(--status-danger)';
     }

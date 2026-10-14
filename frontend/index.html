@@ -11,67 +11,105 @@
 </head>
 <body>
     <div id="sidebar">
-        <div class="panel-header">Судно и гидродинамика</div>
+        <div class="panel-header">Планирование перехода</div>
         <div class="control-group">
-            <label for="vessel-profile">Тип судна</label>
-            <select id="vessel-profile" class="vessel-select">
-                <option value="custom">Пользовательская модель</option>
-                <option value="yacht" selected>Малое судно / Яхта (12м, 10 уз)</option>
-                <option value="ferry">Паром / Ро-ро (80м, 18 уз)</option>
-                <option value="cargo">Сухогруз / Танкер (150м, 12 уз)</option>
+            <label for="port-depart-select">Отход (Порт А)</label>
+            <select id="port-depart-select" class="vessel-select">
+                <option value="">-- Выберите порт отхода --</option>
             </select>
 
-            <label for="draft-slider">Статическая осадка (Draft) <span class="val" id="draft-val">1.2м</span></label>
-            <input type="range" id="draft-slider" min="0.5" max="18.0" step="0.1" value="1.2">
-            
-            <label for="speed-slider">Скорость хода (Speed) <span class="val" id="speed-val">10 уз</span></label>
-            <input type="range" id="speed-slider" min="0" max="35" step="1" value="10">
-            
-            <label for="ukc-slider">Запас под килем (UKC) <span class="val" id="ukc-val">0.5м</span></label>
-            <input type="range" id="ukc-slider" min="0.0" max="4.0" step="0.1" value="0.5">
+            <label for="port-arrive-select">Приход (Порт Б)</label>
+            <select id="port-arrive-select" class="vessel-select">
+                <option value="">-- Выберите порт прибытия --</option>
+            </select>
 
-            <label for="radius-slider">Радиус циркуляции (R) <span class="val" id="radius-val">50м</span></label>
-            <input type="range" id="radius-slider" min="20" max="1000" step="10" value="50">
+            <button id="btn-build-voyage" class="btn-primary-route" title="Проложить безопасный маршрут между выбранными портами">
+                🧭 ПРОЛОЖИТЬ ПЕРЕХОД
+            </button>
 
-            <label for="tide-slider">Уровень моря / Прилив <span class="val" id="tide-val">+0.0м</span></label>
-            <input type="range" id="tide-slider" min="-1.5" max="3.0" step="0.1" value="0.0">
-
-            <label for="wave-slider">Высота волны (Hs) <span class="val" id="wave-val">0.0м</span></label>
-            <input type="range" id="wave-slider" min="0.0" max="3.5" step="0.1" value="0.0">
-
-            <div class="metrics-grid">
-                <div class="metric-box">
-                    <span class="metric-label">Squat (PIANC)</span>
-                    <span class="metric-val" id="squat-val" style="color: var(--accent-blue);">0.05м</span>
+            <div class="route-toolbar" style="margin-top: 8px;">
+                <button id="add-wp-btn" class="route-action-btn btn-add-wp" title="Добавить промежуточную путевую точку">+ Точка</button>
+                <button id="clear-route" class="route-action-btn btn-clear-route" title="Очистить маршрут и точки">✕ Очистить</button>
+            </div>
+            <div id="waypoints-list">
+                <div class="wp wp-start" id="wp-row-start">
+                    <div class="wp-indicator"></div>
+                    <span id="start-coord">A (Отход): Выберите порт или кликните</span>
                 </div>
-                <div class="metric-box">
-                    <span class="metric-label">Коэфф. Cb</span>
-                    <span class="metric-val" id="cb-val" style="color: var(--accent-blue);">0.50</span>
-                </div>
-                <div class="metric-box">
-                    <span class="metric-label">Динам. осадка</span>
-                    <span class="metric-val val-warn" id="dynamic-draft-val">1.25м</span>
-                </div>
-                <div class="metric-box">
-                    <span class="metric-label">Безоп. глубина</span>
-                    <span class="metric-val val-danger" id="danger-val">1.75м</span>
+                <div class="wp wp-goal" id="wp-row-goal">
+                    <div class="wp-indicator"></div>
+                    <span id="goal-coord">B (Приход): Выберите порт или кликните</span>
                 </div>
             </div>
+            <div id="status"></div>
         </div>
 
-        <div class="panel-header">Навигационные ограничения</div>
+        <div class="panel-header">Судно и профиль</div>
         <div class="control-group">
-            <label class="checkbox-label" for="toggle-fairways">
-                <span>Отображать фарватеры и СРД</span>
-                <input type="checkbox" id="toggle-fairways" checked>
-            </label>
-            <label class="checkbox-label" for="prioritize-fairways">
-                <span>Приоритет фарватеров</span>
-                <input type="checkbox" id="prioritize-fairways" checked>
-            </label>
+            <label for="vessel-profile">Тип судна (Пресет)</label>
+            <select id="vessel-profile" class="vessel-select">
+                <option value="yacht" selected>🚤 Малое судно / Яхта (12м, 10 уз)</option>
+                <option value="ferry">🚢 Паром / Ро-ро (80м, 18 уз)</option>
+                <option value="cargo">🏗️ Сухогруз / Танкер (150м, 12 уз)</option>
+                <option value="custom">⚙️ Пользовательская модель</option>
+            </select>
 
-            <label for="xtd-slider" style="margin-top: 10px;">Полоса безопасности (XTD) <span class="val" id="xtd-val">185м (0.10 ММ)</span></label>
-            <input type="range" id="xtd-slider" min="50" max="1000" step="25" value="185">
+            <!-- Laconic Collapsible Hydrodynamics & Safety Details -->
+            <details id="vessel-advanced-details" class="advanced-details">
+                <summary class="advanced-summary">⚙️ Точные параметры и гидродинамика (DUKC)</summary>
+                <div class="advanced-content">
+                    <label for="draft-slider">Статическая осадка (Draft) <span class="val" id="draft-val">1.2м</span></label>
+                    <input type="range" id="draft-slider" min="0.5" max="18.0" step="0.1" value="1.2">
+                    
+                    <label for="speed-slider">Скорость хода (Speed) <span class="val" id="speed-val">10 уз</span></label>
+                    <input type="range" id="speed-slider" min="0" max="35" step="1" value="10">
+                    
+                    <label for="ukc-slider">Запас под килем (UKC) <span class="val" id="ukc-val">0.5м</span></label>
+                    <input type="range" id="ukc-slider" min="0.0" max="4.0" step="0.1" value="0.5">
+
+                    <label for="radius-slider">Радиус циркуляции (R) <span class="val" id="radius-val">50м</span></label>
+                    <input type="range" id="radius-slider" min="20" max="1000" step="10" value="50">
+
+                    <label for="tide-slider">Уровень моря / Прилив <span class="val" id="tide-val">+0.0м</span></label>
+                    <input type="range" id="tide-slider" min="-1.5" max="3.0" step="0.1" value="0.0">
+
+                    <label for="wave-slider">Высота волны (Hs) <span class="val" id="wave-val">0.0м</span></label>
+                    <input type="range" id="wave-slider" min="0.0" max="3.5" step="0.1" value="0.0">
+
+                    <label for="xtd-slider" style="margin-top: 6px;">Полоса безопасности (XTD) <span class="val" id="xtd-val">185м (0.10 ММ)</span></label>
+                    <input type="range" id="xtd-slider" min="50" max="1000" step="25" value="185">
+
+                    <div class="metrics-grid">
+                        <div class="metric-box">
+                            <span class="metric-label">Squat (PIANC)</span>
+                            <span class="metric-val" id="squat-val" style="color: var(--accent-blue);">0.05м</span>
+                        </div>
+                        <div class="metric-box">
+                            <span class="metric-label">Коэфф. Cb</span>
+                            <span class="metric-val" id="cb-val" style="color: var(--accent-blue);">0.50</span>
+                        </div>
+                        <div class="metric-box">
+                            <span class="metric-label">Динам. осадка</span>
+                            <span class="metric-val val-warn" id="dynamic-draft-val">1.25м</span>
+                        </div>
+                        <div class="metric-box">
+                            <span class="metric-label">Безоп. глубина</span>
+                            <span class="metric-val val-danger" id="danger-val">1.75м</span>
+                        </div>
+                    </div>
+
+                    <div style="margin-top: 10px;">
+                        <label class="checkbox-label" for="toggle-fairways">
+                            <span>Отображать фарватеры и СРД</span>
+                            <input type="checkbox" id="toggle-fairways" checked>
+                        </label>
+                        <label class="checkbox-label" for="prioritize-fairways">
+                            <span>Приоритет фарватеров</span>
+                            <input type="checkbox" id="prioritize-fairways" checked>
+                        </label>
+                    </div>
+                </div>
+            </details>
         </div>
 
         <div class="panel-header">Морская картография (ECDIS)</div>
@@ -84,6 +122,10 @@
                 <option value="satellite">🛰️ Спутниковый гибрид</option>
             </select>
 
+            <label class="checkbox-label" for="toggle-ports">
+                <span>Порты и марины</span>
+                <input type="checkbox" id="toggle-ports" checked>
+            </label>
             <label class="checkbox-label" for="toggle-hillshade">
                 <span>3D Рельеф дна (Hillshade)</span>
                 <input type="checkbox" id="toggle-hillshade" checked>
@@ -104,25 +146,6 @@
                 <span>Знаки навигации (AtoN / Буи)</span>
                 <input type="checkbox" id="toggle-seamarks" checked>
             </label>
-        </div>
-
-        <div class="panel-header">Прокладка маршрута</div>
-        <div class="wp-container">
-            <div class="route-toolbar">
-                <button id="add-wp-btn" class="route-action-btn btn-add-wp" title="Добавить промежуточную путевую точку">+ Точка</button>
-                <button id="clear-route" class="route-action-btn btn-clear-route" title="Очистить маршрут и точки">✕ Очистить маршрут</button>
-            </div>
-            <div id="waypoints-list">
-                <div class="wp wp-start" id="wp-row-start">
-                    <div class="wp-indicator"></div>
-                    <span id="start-coord">A (Отход): Кликните на карте</span>
-                </div>
-                <div class="wp wp-goal" id="wp-row-goal">
-                    <div class="wp-indicator"></div>
-                    <span id="goal-coord">B (Приход): Кликните на карте</span>
-                </div>
-            </div>
-            <div id="status"></div>
         </div>
     </div>
 
@@ -168,6 +191,48 @@
     </div>
 
     <div id="map"></div>
+
+    <!-- Floating Voyage Summary Card -->
+    <div id="voyage-card" class="voyage-summary-card" style="display: none;">
+        <div class="voyage-card-header">
+            <div class="voyage-title">
+                <span>🚢</span>
+                <span id="voyage-card-title">Маршрут</span>
+                <span id="voyage-status-badge" class="badge-safe">НОРМА</span>
+            </div>
+            <button id="voyage-card-close" class="voyage-close-btn" title="Скрыть карточку">✕</button>
+        </div>
+        <div class="voyage-metrics-row">
+            <div class="voyage-metric">
+                <span class="m-label">Дистанция</span>
+                <span id="voyage-dist-val" class="m-val">—</span>
+            </div>
+            <div class="voyage-metric">
+                <span class="m-label">Время хода (ETA)</span>
+                <span id="voyage-eta-val" class="m-val">—</span>
+            </div>
+            <div class="voyage-metric">
+                <span class="m-label">Мин. глубина</span>
+                <span id="voyage-depth-val" class="m-val">—</span>
+            </div>
+            <div class="voyage-metric">
+                <span class="m-label">Мин. UKC</span>
+                <span id="voyage-ukc-val" class="m-val">—</span>
+            </div>
+            <div class="voyage-metric">
+                <span class="m-label">Осадка судна</span>
+                <span id="voyage-draft-val" class="m-val">—</span>
+            </div>
+        </div>
+        <div class="voyage-actions-row">
+            <button id="voyage-btn-profile" class="voyage-tool-btn">📊 Профиль глубин</button>
+            <button id="voyage-btn-waypoints" class="voyage-tool-btn">📋 План перехода</button>
+            <button id="voyage-btn-safety" class="voyage-tool-btn">🛡️ Аудит ECDIS</button>
+            <button id="voyage-btn-sim" class="voyage-tool-btn">🧭 Симулятор мостика</button>
+            <button id="voyage-btn-gpx" class="voyage-tool-btn">⬇ GPX</button>
+            <button id="voyage-btn-rtz" class="voyage-tool-btn">⬇ RTZ (ECDIS)</button>
+        </div>
+    </div>
 
     <div id="bottom-drawer">
         <div class="drawer-header">
