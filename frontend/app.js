@@ -4477,6 +4477,147 @@ if (btnSimulateSounderPing) {
     });
 }
 
+// 19.6. Управление сохранением и очисткой гидрографических съемок
+const btnSaveSurvey = document.getElementById('btn-save-survey');
+if (btnSaveSurvey) {
+    btnSaveSurvey.addEventListener('click', () => {
+        fetch('/api/surveys/save', { method: 'POST' })
+            .then(r => r.json())
+            .then(data => {
+                if (data.saved) {
+                    alert(`Съемка сохранена на диск!\nАкватория: ${data.waterbody_id}\nТочек: ${data.points_count}\nФайл: ${data.file_path}`);
+                } else {
+                    alert('Ошибка сохранения: ' + (data.error || 'неизвестно'));
+                }
+            })
+            .catch(err => alert('Сетевая ошибка: ' + err));
+    });
+}
+
+const btnClearSurvey = document.getElementById('btn-clear-survey');
+if (btnClearSurvey) {
+    btnClearSurvey.addEventListener('click', () => {
+        if (!confirm('Очистить промеры съемки для текущей акватории?')) return;
+        fetch('/api/surveys/clear', { method: 'POST' })
+            .then(r => r.json())
+            .then(data => {
+                if (data.cleared) {
+                    if (livePtsCount) livePtsCount.innerText = '0';
+                    if (liveLastDepth) liveLastDepth.innerText = '-- м';
+                    if (map.getSource('live-telemetry-track')) {
+                        map.getSource('live-telemetry-track').setData({ type: 'FeatureCollection', features: [] });
+                    }
+                }
+            })
+            .catch(err => alert('Ошибка очистки: ' + err));
+    });
+}
+
+// 19.7. Симуляция GPS и виртуальный круиз для тестирования на столе
+let isVirtualCruiseRunning = false;
+let virtualCruiseTimer = null;
+let virtualCruiseCoordIdx = 0;
+const btnVirtualCruise = document.getElementById('btn-virtual-cruise');
+const selectGpsSource = document.getElementById('select-gps-source');
+const selectCruiseSpeed = document.getElementById('select-cruise-speed');
+
+function stopVirtualCruise() {
+    isVirtualCruiseRunning = false;
+    if (virtualCruiseTimer) {
+        clearInterval(virtualCruiseTimer);
+        virtualCruiseTimer = null;
+    }
+    if (btnVirtualCruise) {
+        btnVirtualCruise.innerText = 'Старт круиза';
+        btnVirtualCruise.classList.remove('active');
+    }
+}
+
+function startVirtualCruise() {
+    isVirtualCruiseRunning = true;
+    if (btnVirtualCruise) {
+        btnVirtualCruise.innerText = 'Пауза круиза';
+        btnVirtualCruise.classList.add('active');
+    }
+    if (!isLiveSonarActive) {
+        toggleLiveSonar();
+    }
+    const speedMult = parseFloat(selectCruiseSpeed ? selectCruiseSpeed.value : '5') || 5;
+    const intervalMs = Math.max(250, Math.floor(1000 / speedMult));
+
+    let coords = (currentRouteData && currentRouteData.geometry && currentRouteData.geometry.coordinates)
+        ? currentRouteData.geometry.coordinates
+        : null;
+
+    virtualCruiseTimer = setInterval(() => {
+        if (!coords || coords.length === 0) {
+            coords = (currentRouteData && currentRouteData.geometry && currentRouteData.geometry.coordinates)
+                ? currentRouteData.geometry.coordinates
+                : null;
+        }
+
+        if (coords && coords.length >= 2) {
+            if (virtualCruiseCoordIdx >= coords.length) {
+                virtualCruiseCoordIdx = 0;
+            }
+            const curr = coords[virtualCruiseCoordIdx];
+            const next = coords[(virtualCruiseCoordIdx + 1) % coords.length];
+            const dLon = next[0] - curr[0];
+            const dLat = next[1] - curr[1];
+            const heading = ((Math.atan2(dLon, dLat) * 180 / Math.PI) + 360) % 360;
+            updateBoatPosition(curr[0], curr[1], heading, 12.0 * speedMult);
+            virtualCruiseCoordIdx++;
+        } else {
+            const center = map.getCenter();
+            const angle = (Date.now() / 2500) % (2 * Math.PI);
+            const radius = 0.003;
+            const lon = center.lng + radius * Math.cos(angle);
+            const lat = center.lat + radius * Math.sin(angle);
+            const hdg = ((angle * 180 / Math.PI) + 90) % 360;
+            updateBoatPosition(lon, lat, hdg, 10.0);
+        }
+    }, intervalMs);
+}
+
+if (btnVirtualCruise) {
+    btnVirtualCruise.addEventListener('click', () => {
+        if (isVirtualCruiseRunning) {
+            stopVirtualCruise();
+        } else {
+            startVirtualCruise();
+        }
+    });
+}
+
+if (selectGpsSource) {
+    selectGpsSource.addEventListener('change', () => {
+        const mode = selectGpsSource.value;
+        if (mode === 'browser') {
+            stopVirtualCruise();
+            startGpsChartplotter();
+        } else if (mode === 'cruise') {
+            stopGpsChartplotter();
+        } else if (mode === 'helm') {
+            stopVirtualCruise();
+            stopGpsChartplotter();
+        }
+    });
+}
+
+map.on('click', (e) => {
+    if (selectGpsSource && selectGpsSource.value === 'helm') {
+        const lon = e.lngLat.lng;
+        const lat = e.lngLat.lat;
+        let hdg = lastBoatHdg;
+        if (lastBoatCoords) {
+            const dLon = lon - lastBoatCoords[0];
+            const dLat = lat - lastBoatCoords[1];
+            hdg = ((Math.atan2(dLon, dLat) * 180 / Math.PI) + 360) % 360;
+        }
+        updateBoatPosition(lon, lat, hdg, 8.0);
+    }
+});
+
 // -----------------------------------------------------------------------------
 // 20. Загрузка слоев официального гидрографического датасета Крыма
 // -----------------------------------------------------------------------------

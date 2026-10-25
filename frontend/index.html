@@ -214,9 +214,9 @@
                 <summary class="advanced-summary">Построение карты дна по промерам</summary>
                 <div class="advanced-content" style="padding-top: 8px;">
                     <div class="sonar-upload-card">
-                        <input type="file" id="sonar-file-input" accept=".csv,.txt,.tsv,.nmea,.log,.gpx" style="display: none;">
-                        <button type="button" id="btn-trigger-sonar-upload" class="btn-sonar-upload" title="Загрузить файл промеров эхолота (CSV, NMEA 0183, GPX)">
-                            Загрузить лог эхолота (CSV/NMEA/GPX)
+                        <input type="file" id="sonar-file-input" accept=".csv,.txt,.tsv,.nmea,.log,.gpx,.xyz,.pts" style="display: none;">
+                        <button type="button" id="btn-trigger-sonar-upload" class="btn-sonar-upload" title="Загрузить файл промеров эхолота, LiDAR или AUV дрона (CSV, NMEA 0183, GPX, XYZ, PTS)">
+                            Загрузить эхолот / LiDAR / Дрон
                         </button>
                         <button type="button" id="btn-demo-sonar-data" class="btn-sonar-demo" title="Загрузить детальные тестовые промеры бухты">
                             Демо: Промеры Севастопольской бухты
@@ -249,6 +249,36 @@
                         <div id="live-sonar-hud" class="live-sonar-hud" style="display: none; margin-top: 6px;">
                             <span>Промеров: <strong id="live-pts-count">0</strong></span>
                             <span style="margin-left: 8px;">Глубина: <strong id="live-last-depth">-- м</strong></span>
+                        </div>
+                        <div style="display: flex; gap: 6px; margin-top: 8px;">
+                            <button type="button" id="btn-save-survey" class="btn-survey-action" title="Сохранить съемку на диск (data/surveys/)">
+                                Сохранить съемку
+                            </button>
+                            <button type="button" id="btn-clear-survey" class="btn-survey-action btn-danger-action" title="Очистить промеры текущей съемки">
+                                Очистить
+                            </button>
+                        </div>
+                    </div>
+
+                    <div class="gps-simulation-controls" style="margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border-color);">
+                        <div style="font-size: 11px; font-weight: 600; color: #38bdf8; text-transform: uppercase; margin-bottom: 6px;">Тестирование GPS без выхода в море</div>
+                        <div style="margin-bottom: 6px;">
+                            <label style="font-size: 11px; color: var(--text-muted); display: block; margin-bottom: 3px;">Источник координат:</label>
+                            <select id="select-gps-source" class="input-control" style="width: 100%; font-size: 11px; padding: 4px;">
+                                <option value="cruise">Виртуальный круиз (движение по маршруту)</option>
+                                <option value="browser">Реальный GPS устройства (watchPosition)</option>
+                                <option value="helm">Ручной штурвал (клик по карте)</option>
+                            </select>
+                        </div>
+                        <div style="display: flex; gap: 6px; align-items: center;">
+                            <button type="button" id="btn-virtual-cruise" class="btn-sim-cruise" style="flex: 2;" title="Запустить виртуальное движение судна по маршруту с постоянным промером глубин">
+                                Старт круиза
+                            </button>
+                            <select id="select-cruise-speed" class="input-control" style="flex: 1; font-size: 11px; padding: 4px;" title="Скорость симуляции">
+                                <option value="1">1x (12 уз)</option>
+                                <option value="5" selected>5x (быстро)</option>
+                                <option value="15">15x (турбо)</option>
+                            </select>
                         </div>
                     </div>
                 </div>

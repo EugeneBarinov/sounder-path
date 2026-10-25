@@ -51,6 +51,8 @@ logs/
 # Processed cache / artifacts
 data/processed/*
 !data/processed/.gitkeep
+data/surveys/*
+!data/surveys/.gitkeep
 data/cache/
 .cache/
 cache/
@@ -65,4 +67,13 @@ data/raw/*.tiff
 # Raw OSM PBF archives
 *.osm.pbf
 *.pbf
+
+# Presentation decks and temporary slide assets
+*.pptx
+*_preview.png
+slide*_preview.png
+data/presentation_assets/
+scripts/build_*.py
+scripts/render_*.py
+
 

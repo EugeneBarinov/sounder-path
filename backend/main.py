@@ -1932,6 +1932,11 @@ def upload_sonar_data(req: SonarUploadRequest):
         updated_routing = fuse_soundings_into_grid(routing_grid, soundings, is_dredged=bool(req.is_dredged))
 
     interp_result["statistics"]["cells_fused_into_grid"] = updated_full
+    active_wb = waterbody_mgr.get_active()
+    for s in soundings:
+        active_wb.live_track_points.append({"timestamp": time.time(), "lat": s["lat"], "lon": s["lon"], "depth_m": s["depth_m"], "sog_knots": 0.0, "cog_deg": 0.0})
+    waterbody_mgr.save_survey(active_wb.id)
+    interp_result["statistics"]["total_persistent_points"] = len(active_wb.live_track_points)
     interp_result["statistics"]["routing_cells_updated"] = updated_routing
 
     return interp_result
@@ -2191,6 +2196,31 @@ def get_live_track():
         })
 
     return {"type": "FeatureCollection", "features": features}
+
+
+@app.post("/api/surveys/save")
+def save_active_survey(waterbody_id: Optional[str] = None):
+    """
+    Persist current hydrographic survey soundings and boat track to disk in data/surveys/.
+    """
+    return waterbody_mgr.save_survey(waterbody_id)
+
+
+@app.get("/api/surveys/status")
+def get_surveys_status():
+    """
+    Get inventory of all persisted surveys and current active survey sounding count.
+    """
+    return waterbody_mgr.get_surveys_status()
+
+
+@app.post("/api/surveys/clear")
+def clear_active_survey(waterbody_id: Optional[str] = None):
+    """
+    Clear recorded survey track and delete persisted survey file for specified waterbody.
+    """
+    return waterbody_mgr.clear_survey(waterbody_id)
+
 
 
 # ---------------------------------------------------------------------------

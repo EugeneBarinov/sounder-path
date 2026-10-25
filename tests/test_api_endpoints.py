@@ -1398,6 +1398,37 @@ def test_plan_cache_disk_pruning_ttl_and_max_limit(tmp_path, monkeypatch):
     assert not exp_file2.exists()
 
 
+def test_api_surveys_workflow(client):
+    # 1. Check initial survey status
+    res = client.get("/api/surveys/status")
+    assert res.status_code == 200
+    st = res.json()
+    assert "active_waterbody_id" in st
+    assert "stored_surveys_count" in st
+
+    # 2. Record live telemetry point
+    live_res = client.post("/api/telemetry/live-point", json={
+        "lat": 44.615,
+        "lon": 33.525,
+        "depth_m": 8.5,
+        "sog_knots": 7.0,
+        "cog_deg": 45.0
+    })
+    assert live_res.status_code == 200
+    assert live_res.json()["recorded"] is True
+
+    # 3. Explicitly save survey
+    save_res = client.post("/api/surveys/save")
+    assert save_res.status_code == 200
+    assert save_res.json()["saved"] is True
+
+    # 4. Clear survey
+    clear_res = client.post("/api/surveys/clear")
+    assert clear_res.status_code == 200
+    assert clear_res.json()["cleared"] is True
+
+
+
 
 
 

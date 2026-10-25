@@ -16,6 +16,7 @@ Features:
 
 from typing import Dict, Any, List, Optional, Tuple
 import math
+import time
 import json
 import urllib.request
 import urllib.parse
@@ -682,7 +683,7 @@ def build_ladoga_lake_waterbody() -> Waterbody:
 class WaterbodyManager:
     """Manages active and registered water bodies across coastal and inland waters."""
 
-    def __init__(self, default_grid: BathymetricGrid):
+    def __init__(self, default_grid: BathymetricGrid, surveys_dir: Optional[Path] = None):
         self.waterbodies: Dict[str, Waterbody] = {}
         self.active_id: str = "black_sea"
 
@@ -715,6 +716,15 @@ class WaterbodyManager:
         self._crimea_piers: List[Dict[str, Any]] = []
         self._crimea_lighthouses: List[Dict[str, Any]] = []
         self._crimea_anchorages: List[Dict[str, Any]] = []
+
+        # Persistent marine survey storage (data/surveys/)
+        if surveys_dir is not None:
+            self.surveys_dir = Path(surveys_dir)
+        else:
+            self.surveys_dir = Path(__file__).resolve().parent.parent.parent / "data" / "surveys"
+        self.surveys_dir.mkdir(parents=True, exist_ok=True)
+        for wb in self.waterbodies.values():
+            self._load_survey_for_waterbody(wb)
 
     def _ensure_crimea_loaded(self):
         """Lazily load and index Crimean hydrography, waterways, piers, and lighthouses."""
@@ -1112,7 +1122,7 @@ class WaterbodyManager:
         grid = wb.grid
 
         point_data = {
-            "timestamp": math.floor(math.nan if False else 0),
+            "timestamp": time.time(),
             "lat": lat,
             "lon": lon,
             "depth_m": depth_m,
@@ -1131,6 +1141,10 @@ class WaterbodyManager:
                     grid.depths[r, c] = float(depth_m)
                     fused = True
 
+        # Auto-persist survey every 5 points if sounder measured, or every 20 total points
+        if (depth_m is not None and len(wb.live_track_points) % 5 == 0) or (len(wb.live_track_points) % 20 == 0):
+            self.save_survey(wb.id)
+
         chart_depth = grid.get_depth(*grid.lonlat_to_cell(lon, lat)) if grid.is_within_coverage(lon, lat) else 0.0
 
         return {
@@ -1140,4 +1154,99 @@ class WaterbodyManager:
             "measured_depth_m": depth_m,
             "fused_into_grid": fused,
             "total_track_points": len(wb.live_track_points)
+        }
+
+    def _load_survey_for_waterbody(self, wb: Waterbody) -> int:
+        """
+        Load persisted hydrographic survey points from data/surveys/{wb_id}_survey.json.
+        Fuses recorded depth soundings into the active bathymetric grid.
+        Ensures multi-voyage bathymetric surveys persist across server restarts.
+        """
+        survey_path = self.surveys_dir / f"{wb.id}_survey.json"
+        if not survey_path.exists():
+            return 0
+        try:
+            with open(survey_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            points = data.get("points", [])
+            wb.live_track_points = points
+            soundings = [
+                {"lat": p["lat"], "lon": p["lon"], "depth_m": p["depth_m"]}
+                for p in points
+                if p.get("depth_m") is not None and p.get("depth_m") > 0.05
+            ]
+            if soundings and wb.grid is not None:
+                fuse_soundings_into_grid(wb.grid, soundings, is_dredged=True)
+            return len(points)
+        except Exception as e:
+            print(f"[SURVEY] Error loading survey for {wb.id}: {e}")
+            return 0
+
+    def save_survey(self, waterbody_id: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Save all recorded sounding and live track points to disk in data/surveys/{wb.id}_survey.json.
+        """
+        wb = self.waterbodies.get(waterbody_id) if waterbody_id else self.get_active()
+        if not wb:
+            return {"saved": False, "error": "Waterbody not found"}
+        survey_path = self.surveys_dir / f"{wb.id}_survey.json"
+        payload = {
+            "waterbody_id": wb.id,
+            "updated_at": time.time(),
+            "points_count": len(wb.live_track_points),
+            "points": wb.live_track_points
+        }
+        try:
+            with open(survey_path, "w", encoding="utf-8") as f:
+                json.dump(payload, f, ensure_ascii=False, indent=2)
+            return {
+                "saved": True,
+                "waterbody_id": wb.id,
+                "points_count": len(wb.live_track_points),
+                "file_path": str(survey_path)
+            }
+        except Exception as e:
+            return {"saved": False, "error": str(e)}
+
+    def clear_survey(self, waterbody_id: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Reset live track points and delete persisted survey file for specified waterbody.
+        """
+        wb = self.waterbodies.get(waterbody_id) if waterbody_id else self.get_active()
+        if not wb:
+            return {"cleared": False, "error": "Waterbody not found"}
+        wb.live_track_points = []
+        survey_path = self.surveys_dir / f"{wb.id}_survey.json"
+        if survey_path.exists():
+            try:
+                survey_path.unlink()
+            except Exception:
+                pass
+        return {"cleared": True, "waterbody_id": wb.id}
+
+    def get_surveys_status(self) -> Dict[str, Any]:
+        """
+        List all available persistent surveys, points counts, and active waterbody survey status.
+        """
+        surveys = []
+        if self.surveys_dir.exists():
+            for p in self.surveys_dir.glob("*_survey.json"):
+                try:
+                    with open(p, "r", encoding="utf-8") as f:
+                        d = json.load(f)
+                    surveys.append({
+                        "file_name": p.name,
+                        "waterbody_id": d.get("waterbody_id", p.stem.replace("_survey", "")),
+                        "points_count": d.get("points_count", len(d.get("points", []))),
+                        "file_size_bytes": p.stat().st_size,
+                        "updated_at": d.get("updated_at")
+                    })
+                except Exception:
+                    pass
+        wb = self.get_active()
+        return {
+            "active_waterbody_id": wb.id,
+            "active_points_count": len(wb.live_track_points),
+            "stored_surveys_count": len(surveys),
+            "surveys": surveys
         }

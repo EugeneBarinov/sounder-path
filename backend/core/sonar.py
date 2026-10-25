@@ -264,10 +264,76 @@ def parse_gpx_soundings(text: str) -> List[Dict[str, float]]:
     return soundings
 
 
+def parse_lidar_xyz(text: str) -> List[Dict[str, float]]:
+    """
+    Parse topobathymetric LiDAR point clouds (ASCII XYZ, PTS, CSV).
+    Extracts high-resolution coastal soundings and shallow water returns.
+    Elevation Z <= 0 is converted to positive water depth (D = -Z).
+    """
+    soundings: List[Dict[str, float]] = []
+    lines = [l.strip() for l in text.splitlines() if l.strip() and not l.strip().startswith(("#", "//", "rem"))]
+    if not lines:
+        return soundings
+
+    # Detect delimiter: space, comma, tab, or semicolon
+    first = lines[0]
+    delimiter = None
+    if "\t" in first:
+        delimiter = "\t"
+    elif ";" in first:
+        delimiter = ";"
+    elif "," in first:
+        delimiter = ","
+    # If None, split on any whitespace
+
+    for line in lines:
+        parts = line.split(delimiter) if delimiter else line.split()
+        if len(parts) < 3:
+            continue
+        try:
+            p0 = float(parts[0].replace(",", "."))
+            p1 = float(parts[1].replace(",", "."))
+            p2 = float(parts[2].replace(",", "."))
+        except (ValueError, TypeError):
+            continue
+
+        # Coordinate order heuristic (lon/lat vs lat/lon)
+        if -90.0 <= p0 <= 90.0 and -180.0 <= p1 <= 180.0 and (abs(p0) < abs(p1) or -180.0 <= p0 <= 180.0):
+            # Could be lat, lon, z or lon, lat, z
+            if abs(p0) <= 90.0 and (p1 < -90.0 or p1 > 90.0):
+                lat, lon, z = p0, p1, p2
+            elif abs(p1) <= 90.0 and (p0 < -90.0 or p0 > 90.0):
+                lon, lat, z = p0, p1, p2
+            else:
+                # Default geographic order [lon, lat, z] or [x, y, z]
+                lon, lat, z = p0, p1, p2
+        else:
+            lon, lat, z = p0, p1, p2
+
+        if not (-180.0 <= lon <= 180.0 and -90.0 <= lat <= 90.0):
+            continue
+
+        # In bathymetric lidar: negative z is submerged bed, positive is subaerial land
+        if z <= 0.0:
+            depth = abs(z)
+        else:
+            # If positive and reasonable marine depth, treat as depth
+            depth = z
+
+        if 0.05 <= depth <= 11000.0:
+            soundings.append({
+                "lon": round(lon, 6),
+                "lat": round(lat, 6),
+                "depth_m": round(depth, 2)
+            })
+
+    return soundings
+
+
 def parse_sonar_payload(content_str: str, filename: str = "") -> List[Dict[str, float]]:
     """
     Unified entry point for parsing any echo sounder / bathymetry upload.
-    Dispatches to NMEA, GPX, or CSV parser based on structure and extension.
+    Dispatches to NMEA, GPX, LiDAR, or CSV parser based on structure and extension.
     """
     fname = filename.lower()
     text = content_str.strip()
@@ -280,8 +346,16 @@ def parse_sonar_payload(content_str: str, filename: str = "") -> List[Dict[str, 
         if nmea_res:
             return nmea_res
 
-    # Default to CSV / Delimited parser
-    return parse_csv_soundings(text)
+    if fname.endswith((".xyz", ".pts", ".las.txt")) or "lidar" in fname:
+        lidar_res = parse_lidar_xyz(text)
+        if lidar_res:
+            return lidar_res
+
+    # Default to CSV / Delimited parser, with fallback to LiDAR XYZ if no headers
+    csv_res = parse_csv_soundings(text)
+    if not csv_res:
+        return parse_lidar_xyz(text)
+    return csv_res
 
 
 def interpolate_sonar_bathymetry(

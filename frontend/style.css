@@ -1895,3 +1895,47 @@ button:hover {
     100% { transform: scale(1.6); opacity: 0; }
 }
 
+.btn-survey-action {
+    flex: 1;
+    padding: 6px 8px;
+    background: #1e293b;
+    border: 1px solid #475569;
+    border-radius: 4px;
+    color: #e2e8f0;
+    font-size: 11px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+.btn-survey-action:hover {
+    background: #334155;
+    border-color: #64748b;
+}
+.btn-danger-action {
+    color: #f87171;
+    border-color: #7f1d1d;
+}
+.btn-danger-action:hover {
+    background: #450a0a;
+    border-color: #ef4444;
+}
+.btn-sim-cruise {
+    padding: 7px 10px;
+    background: #0284c7;
+    border: 1px solid #38bdf8;
+    border-radius: 4px;
+    color: #ffffff;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+.btn-sim-cruise:hover {
+    background: #0369a1;
+}
+.btn-sim-cruise.active {
+    background: #16a34a;
+    border-color: #4ade80;
+    box-shadow: 0 0 10px rgba(74, 222, 128, 0.4);
+}
+
