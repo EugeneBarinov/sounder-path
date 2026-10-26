@@ -4326,8 +4326,12 @@ function startGpsChartplotter() {
 }
 
 function fallbackSimulatedGpsPosition() {
-    const center = map.getCenter();
-    updateBoatPosition(center.lng, center.lat, 60.0, 7.5);
+    console.warn('Аппаратный GPS устройства недоступен. Ожидание сигнала NMEA от бортового шлюза или геолокации устройства.');
+    if (toolGpsBoatBtn) {
+        toolGpsBoatBtn.innerText = 'GPS: Ожидание сигнала';
+        toolGpsBoatBtn.style.background = '#f59e0b';
+        toolGpsBoatBtn.style.color = '#000000';
+    }
 }
 
 function stopGpsChartplotter() {
@@ -4377,14 +4381,89 @@ if (toolGpsBoatBtn) {
     toolGpsBoatBtn.addEventListener('click', toggleGpsChartplotter);
 }
 
-// 19.5. Живая съемка эхолотом (Quickdraw / Genesis Live)
+// 19.5. Морская телеметрия реального времени и съемка эхолотом (NMEA 0183 / Quickdraw Live)
 let isLiveSonarActive = false;
-let liveSonarTimer = null;
+let telemetryWs = null;
+let lastNmeaVesselState = null;
+let nmeaReconnectTimer = null;
+
 const btnToggleLiveSonar = document.getElementById('btn-toggle-live-sonar');
 const btnSimulateSounderPing = document.getElementById('btn-simulate-sounder-ping');
 const liveSonarHud = document.getElementById('live-sonar-hud');
 const livePtsCount = document.getElementById('live-pts-count');
 const liveLastDepth = document.getElementById('live-last-depth');
+
+function initTelemetryWebSocket() {
+    if (telemetryWs && (telemetryWs.readyState === WebSocket.OPEN || telemetryWs.readyState === WebSocket.CONNECTING)) {
+        return;
+    }
+
+    const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const wsUrl = `${protocol}//${location.host}/api/ws/telemetry`;
+
+    try {
+        telemetryWs = new WebSocket(wsUrl);
+
+        telemetryWs.onopen = () => {
+            console.log('NMEA Telemetry WebSocket подключен к бортовому шлюзу.');
+            if (nmeaReconnectTimer) {
+                clearTimeout(nmeaReconnectTimer);
+                nmeaReconnectTimer = null;
+            }
+        };
+
+        telemetryWs.onmessage = (event) => {
+            try {
+                const msg = JSON.parse(event.data);
+                if (msg.type === 'vessel_telemetry') {
+                    onVesselTelemetryReceived(msg.data);
+                }
+            } catch (e) {
+                console.warn('Ошибка декодирования пакета телеметрии:', e);
+            }
+        };
+
+        telemetryWs.onerror = () => {};
+
+        telemetryWs.onclose = () => {
+            if (!nmeaReconnectTimer) {
+                nmeaReconnectTimer = setTimeout(initTelemetryWebSocket, 3000);
+            }
+        };
+    } catch (e) {
+        console.warn('Не удалось инициализировать WebSocket телеметрии:', e);
+    }
+}
+
+function onVesselTelemetryReceived(v) {
+    lastNmeaVesselState = v;
+
+    // Direct hardware GNSS position from vessel multiplexer
+    if (v.lat !== null && v.lon !== null && v.gps_valid) {
+        const heading = v.heading_deg !== null ? v.heading_deg : (v.cog_deg || 0.0);
+        updateBoatPosition(v.lon, v.lat, heading, v.sog_knots);
+    }
+
+    // Update Live Sonar HUD with genuine sensor telemetry
+    if (liveSonarHud && liveSonarHud.style.display !== 'none') {
+        if (v.depth_valid && v.depth_m !== null) {
+            if (liveLastDepth) {
+                liveLastDepth.innerText = `${formatDepthVal(v.depth_m)} [NMEA]`;
+                liveLastDepth.style.color = '#38bdf8';
+            }
+        } else {
+            if (liveLastDepth) {
+                liveLastDepth.innerText = 'Датчик: Поиск сигнала';
+                liveLastDepth.style.color = '#f59e0b';
+            }
+        }
+    }
+
+    // Refresh live survey track layer on the map periodically
+    if (isLiveSonarActive && v.total_packets_received % 5 === 0) {
+        refreshLiveTrackOnMap();
+    }
+}
 
 function toggleLiveSonar() {
     isLiveSonarActive = !isLiveSonarActive;
@@ -4395,44 +4474,44 @@ function toggleLiveSonar() {
         }
         if (liveSonarHud) liveSonarHud.style.display = 'block';
 
-        if (!isGpsWatchActive) {
+        initTelemetryWebSocket();
+
+        if (!isGpsWatchActive && (!lastNmeaVesselState || !lastNmeaVesselState.gps_valid)) {
             startGpsChartplotter();
         }
-
-        liveSonarTimer = setInterval(() => {
-            if (lastBoatCoords) {
-                const dLon = (Math.random() - 0.5) * 0.0003;
-                const dLat = (Math.random() - 0.5) * 0.0003;
-                const newLon = lastBoatCoords[0] + dLon;
-                const newLat = lastBoatCoords[1] + dLat;
-                updateBoatPosition(newLon, newLat, lastBoatHdg, lastBoatSog);
-            }
-        }, 3000);
     } else {
         if (btnToggleLiveSonar) {
             btnToggleLiveSonar.innerText = 'Запись эхолота: Выкл';
             btnToggleLiveSonar.classList.remove('active');
         }
-        if (liveSonarTimer) {
-            clearInterval(liveSonarTimer);
-            liveSonarTimer = null;
-        }
     }
 }
 
 function queryAndRecordLivePoint(lat, lon, sog, cog) {
+    // If hardware NMEA depth is valid, use verified acoustic depth
+    if (lastNmeaVesselState && lastNmeaVesselState.depth_valid && lastNmeaVesselState.depth_m !== null) {
+        sendLiveTelemetryPoint(lat, lon, lastNmeaVesselState.depth_m, sog, cog);
+        return;
+    }
+
+    // Otherwise, check chart background depth (Advisory display only, do not inject fake soundings)
     fetch(`/api/depth?lon=${lon.toFixed(5)}&lat=${lat.toFixed(5)}`)
         .then(r => r.json())
         .then(d => {
-            const measuredDepth = (d && d.depth > 0.0) ? d.depth : (3.5 + Math.random() * 6.0);
-            sendLiveTelemetryPoint(lat, lon, measuredDepth, sog, cog);
+            if (d && d.depth > 0.0) {
+                if (liveLastDepth) liveLastDepth.innerText = `${formatDepthVal(d.depth)} (по карте)`;
+            } else {
+                if (liveLastDepth) liveLastDepth.innerText = 'Вне растра глубин';
+            }
         })
-        .catch(() => {
-            sendLiveTelemetryPoint(lat, lon, 5.0, sog, cog);
-        });
+        .catch(() => {});
 }
 
 function sendLiveTelemetryPoint(lat, lon, depthM, sog, cog) {
+    if (depthM === null || depthM === undefined || isNaN(depthM) || depthM <= 0.0) {
+        return; // Reject invalid / fabricated depths
+    }
+
     fetch('/api/telemetry/live-point', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -4447,7 +4526,7 @@ function sendLiveTelemetryPoint(lat, lon, depthM, sog, cog) {
     .then(r => r.json())
     .then(data => {
         if (livePtsCount) livePtsCount.innerText = data.total_track_points;
-        if (liveLastDepth && depthM) liveLastDepth.innerText = formatDepthVal(depthM);
+        if (liveLastDepth && depthM) liveLastDepth.innerText = `${formatDepthVal(depthM)} [Записано]`;
         refreshLiveTrackOnMap();
     })
     .catch(err => console.warn('Ошибка отправки промера эхолота:', err));
@@ -4473,6 +4552,18 @@ if (btnSimulateSounderPing) {
         const center = map.getCenter();
         const lat = center.lat;
         const lon = center.lng;
+        // Explicit manual sounding calibration test
+        fetch(`/api/depth?lon=${lon.toFixed(5)}&lat=${lat.toFixed(5)}`)
+            .then(r => r.json())
+            .then(d => {
+                const targetDepth = (d && d.depth > 0.0) ? d.depth : 8.0;
+                sendLiveTelemetryPoint(lat, lon, targetDepth, 0.0, 0.0);
+            })
+            .catch(() => {
+                sendLiveTelemetryPoint(lat, lon, 8.0, 0.0, 0.0);
+            });
+    });
+}
         queryAndRecordLivePoint(lat, lon, 6.0, 90.0);
     });
 }
@@ -4698,4 +4789,33 @@ window.addPierAsWaypoint = function(lon, lat, name) {
     renderWaypointsListUI();
     triggerRouteRecalculation(true);
 };
+
+// 20. Управление бодрствованием экрана (Screen WakeLock API для ходового мостика / планшета)
+let screenWakeLock = null;
+
+async function requestMarineWakeLock() {
+    if ('wakeLock' in navigator) {
+        try {
+            screenWakeLock = await navigator.wakeLock.request('screen');
+            console.log('Screen WakeLock активен: предотвращение гашения экрана на ходовом мостике.');
+            screenWakeLock.addEventListener('release', () => {
+                screenWakeLock = null;
+            });
+        } catch (err) {
+            console.warn('Screen WakeLock запрос отклонен:', err);
+        }
+    }
+}
+
+document.addEventListener('visibilitychange', async () => {
+    if (screenWakeLock !== null && document.visibilityState === 'visible') {
+        await requestMarineWakeLock();
+    }
+});
+
+if (toolGpsBoatBtn) {
+    toolGpsBoatBtn.addEventListener('click', () => {
+        requestMarineWakeLock();
+    });
+}
 

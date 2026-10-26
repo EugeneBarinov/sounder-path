@@ -54,6 +54,7 @@ class BathymetricGrid:
             else np.zeros((self.rows, self.cols), dtype=bool)
         )
         self.is_synthetic = False
+        self.surveyed_mask = np.zeros((self.rows, self.cols), dtype=bool)
 
     @property
     def width(self) -> int:

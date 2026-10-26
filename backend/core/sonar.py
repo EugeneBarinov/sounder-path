@@ -574,19 +574,25 @@ def fuse_soundings_into_grid(grid: Any, soundings: List[Dict[str, float]], is_dr
                 continue
 
             curr_d = float(grid.depths[r, c])
-            if grid.nodata_mask is not None and grid.nodata_mask[r, c]:
+            if is_dredged and depth > 0.0:
+                grid.depths[r, c] = depth
+                if grid.land_mask is not None:
+                    grid.land_mask[r, c] = False
+                if hasattr(grid, "surveyed_mask"):
+                    grid.surveyed_mask[r, c] = True
+                updated_count += 1
+            elif grid.nodata_mask is not None and grid.nodata_mask[r, c]:
                 grid.depths[r, c] = max(0.0, depth)
                 grid.nodata_mask[r, c] = False
+                if hasattr(grid, "surveyed_mask"):
+                    grid.surveyed_mask[r, c] = True
                 updated_count += 1
             elif curr_d > 0.0 and depth > 0.0:
                 # IHO S-44 Shoal-bias rule: retain shallower depth for safety
                 if depth < curr_d:
                     grid.depths[r, c] = depth
+                    if hasattr(grid, "surveyed_mask"):
+                        grid.surveyed_mask[r, c] = True
                     updated_count += 1
-            elif is_dredged and depth > 0.0:
-                grid.depths[r, c] = depth
-                if grid.land_mask is not None:
-                    grid.land_mask[r, c] = False
-                updated_count += 1
 
     return updated_count

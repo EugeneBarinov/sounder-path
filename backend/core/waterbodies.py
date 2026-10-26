@@ -1112,11 +1112,14 @@ class WaterbodyManager:
         lon: float,
         depth_m: Optional[float] = None,
         sog_knots: float = 0.0,
-        cog_deg: float = 0.0
+        cog_deg: float = 0.0,
+        beam_angle_deg: float = 24.0,
+        survey_mode: bool = True
     ) -> Dict[str, Any]:
         """
         Record real-time boat telemetry from GPS & depth sounder (Chartplotter / Quickdraw mode).
-        Updates active bathymetric grid and returns anti-grounding warnings.
+        Fuses in-situ hydrographic measurements using acoustic cone swath footprint (IDW).
+        Updates active bathymetric grid and returns anti-grounding clearance and warnings.
         """
         wb = self.get_active()
         grid = wb.grid
@@ -1131,15 +1134,65 @@ class WaterbodyManager:
         }
         wb.live_track_points.append(point_data)
 
-        # If sounder reading provided, fuse into grid under keel
+        # If sounder reading provided, fuse into grid under keel with acoustic beam footprint
         fused = False
-        if depth_m is not None and depth_m > 0.1 and grid.is_within_coverage(lon, lat):
+        cells_updated = 0
+        if depth_m is not None and depth_m > 0.05 and grid.is_within_coverage(lon, lat):
             r, c = grid.lonlat_to_cell(lon, lat)
             if 0 <= r < grid.rows and 0 <= c < grid.cols:
                 curr_d = float(grid.depths[r, c])
-                if curr_d <= 0.0 or depth_m < curr_d:
+                is_synthetic = getattr(grid, "is_synthetic", False)
+                already_surveyed = getattr(grid, "surveyed_mask", None) is not None and grid.surveyed_mask[r, c]
+
+                # Direct keel point update: survey measurements take precedence over synthetic/unverified grids
+                if survey_mode or is_synthetic or not already_surveyed or curr_d <= 0.0 or depth_m < curr_d:
                     grid.depths[r, c] = float(depth_m)
+                    if hasattr(grid, "surveyed_mask"):
+                        grid.surveyed_mask[r, c] = True
+                    if grid.land_mask is not None:
+                        grid.land_mask[r, c] = False
+                    if grid.nodata_mask is not None:
+                        grid.nodata_mask[r, c] = False
                     fused = True
+                    cells_updated += 1
+
+                # Dynamic acoustic beam swath footprint (Quickdraw / SonarChart Live standard)
+                # Footprint radius R = depth_m * tan(beam_angle / 2)
+                rad_half = math.radians(max(5.0, min(60.0, beam_angle_deg)) / 2.0)
+                footprint_m = max(1.5, depth_m * math.tan(rad_half))
+
+                lat_step = max(1e-9, (grid.lat_max - grid.lat_min) / max(1, grid.rows))
+                lon_step = max(1e-9, (grid.lon_max - grid.lon_min) / max(1, grid.cols))
+                dy_m = lat_step * 111139.0
+                dx_m = lon_step * 111139.0 * math.cos(math.radians(lat))
+
+                dr_span = max(0, int(math.ceil(footprint_m / max(1.0, dy_m))))
+                dc_span = max(0, int(math.ceil(footprint_m / max(1.0, dx_m))))
+
+                if dr_span > 0 or dc_span > 0:
+                    dr_span = min(dr_span, 3)
+                    dc_span = min(dc_span, 3)
+                    for dr in range(-dr_span, dr_span + 1):
+                        for dc in range(-dc_span, dc_span + 1):
+                            if dr == 0 and dc == 0:
+                                continue
+                            nr, nc = r + dr, c + dc
+                            if 0 <= nr < grid.rows and 0 <= nc < grid.cols:
+                                dist_m = math.hypot(dr * dy_m, dc * dx_m)
+                                if dist_m <= footprint_m:
+                                    w = (1.0 - (dist_m / footprint_m)) ** 2
+                                    n_curr = float(grid.depths[nr, nc])
+                                    n_surveyed = getattr(grid, "surveyed_mask", None) is not None and grid.surveyed_mask[nr, nc]
+                                    if n_curr <= 0.0 or is_synthetic or not n_surveyed:
+                                        grid.depths[nr, nc] = float(depth_m)
+                                        if hasattr(grid, "surveyed_mask"):
+                                            grid.surveyed_mask[nr, nc] = True
+                                        if grid.land_mask is not None:
+                                            grid.land_mask[nr, nc] = False
+                                        cells_updated += 1
+                                    elif depth_m < n_curr:
+                                        grid.depths[nr, nc] = float(n_curr * (1.0 - w) + depth_m * w)
+                                        cells_updated += 1
 
         # Auto-persist survey every 5 points if sounder measured, or every 20 total points
         if (depth_m is not None and len(wb.live_track_points) % 5 == 0) or (len(wb.live_track_points) % 20 == 0):
@@ -1153,6 +1206,7 @@ class WaterbodyManager:
             "chart_depth_m": round(chart_depth, 2),
             "measured_depth_m": depth_m,
             "fused_into_grid": fused,
+            "swath_cells_updated": cells_updated,
             "total_track_points": len(wb.live_track_points)
         }
 

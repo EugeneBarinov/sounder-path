@@ -9,11 +9,11 @@ import os
 import time
 from collections import deque, OrderedDict
 from pathlib import Path
-from typing import Optional, Tuple, List, Dict, Any
+from typing import Optional, Tuple, List, Dict, Any, Set
 import json
 import uuid
 
-from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi import FastAPI, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -43,14 +43,70 @@ from backend.core.sonar import (
 )
 from backend.core.passage_plan import generate_passage_plan
 from backend.core.waterbodies import WaterbodyManager, Waterbody
+from backend.core.nmea_receiver import NmeaManager, VesselLiveState
 import urllib.request
 import urllib.parse
 import math
+import asyncio
+from contextlib import asynccontextmanager
+
+nmea_mgr = NmeaManager()
+connected_websockets: Set[WebSocket] = set()
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """
+    Application lifespan: starts background NMEA 0183 UDP receiver on marine port (10110)
+    and manages real-time telemetry streaming to connected clients.
+    """
+    udp_port = int(os.environ.get("SEAPATH_NMEA_PORT", "10110"))
+    udp_host = os.environ.get("SEAPATH_NMEA_HOST", "0.0.0.0")
+
+    def on_vessel_telemetry(vessel: VesselLiveState):
+        if vessel.lat is not None and vessel.lon is not None and vessel.gps_valid:
+            try:
+                waterbody_mgr.log_live_telemetry(
+                    lat=vessel.lat,
+                    lon=vessel.lon,
+                    depth_m=vessel.depth_m if vessel.depth_valid else None,
+                    sog_knots=vessel.sog_knots,
+                    cog_deg=vessel.cog_deg
+                )
+            except Exception:
+                pass
+
+    nmea_mgr.receiver.add_listener(on_vessel_telemetry)
+    await nmea_mgr.start_udp_listener(host=udp_host, port=udp_port)
+
+    async def telemetry_broadcaster():
+        while True:
+            try:
+                await asyncio.sleep(0.5)
+                if connected_websockets:
+                    state_dict = nmea_mgr.receiver.state.to_dict()
+                    msg = json.dumps({"type": "vessel_telemetry", "data": state_dict})
+                    for ws in list(connected_websockets):
+                        try:
+                            await ws.send_text(msg)
+                        except Exception:
+                            connected_websockets.discard(ws)
+            except asyncio.CancelledError:
+                break
+            except Exception:
+                pass
+
+    broadcast_task = asyncio.create_task(telemetry_broadcaster())
+
+    yield
+
+    broadcast_task.cancel()
+    await nmea_mgr.stop()
 
 app = FastAPI(
     title="SeaPath ECDIS Engine",
     description="Maritime routing and bathymetric passage planning engine",
     version="1.0.0",
+    lifespan=lifespan,
 )
 
 @app.exception_handler(RequestValidationError)
@@ -2220,6 +2276,50 @@ def clear_active_survey(waterbody_id: Optional[str] = None):
     Clear recorded survey track and delete persisted survey file for specified waterbody.
     """
     return waterbody_mgr.clear_survey(waterbody_id)
+
+
+class NmeaFeedRequest(BaseModel):
+    sentence: str = Field(description="Raw NMEA 0183 sentence string, e.g. $SDDPT,12.4,0.0*5E")
+    source: Optional[str] = Field(default="HTTP_FEED", description="Source identifier")
+
+
+@app.get("/api/nmea/status")
+def get_nmea_status():
+    """
+    Return diagnostic status of NMEA 0183 listener, physical packet counts, and vessel fix.
+    """
+    return nmea_mgr.get_status()
+
+
+@app.post("/api/nmea/feed")
+def feed_nmea_sentence(req: NmeaFeedRequest):
+    """
+    Inject raw NMEA 0183 sentence into the engine (for USB/serial relays and testing).
+    """
+    success = nmea_mgr.receiver.feed_sentence(req.sentence, source_tag=req.source or "HTTP_FEED")
+    return {
+        "accepted": success,
+        "vessel_state": nmea_mgr.receiver.state.to_dict()
+    }
+
+
+@app.websocket("/api/ws/telemetry")
+async def websocket_telemetry_endpoint(websocket: WebSocket):
+    """
+    Real-time WebSocket feed streaming instantaneous NMEA vessel telemetry
+    (GPS fix, SOG, COG, depth, water temp, sensor health) to chartplotter UI.
+    """
+    await websocket.accept()
+    connected_websockets.add(websocket)
+    try:
+        initial_st = nmea_mgr.receiver.state.to_dict()
+        await websocket.send_text(json.dumps({"type": "vessel_telemetry", "data": initial_st}))
+        while True:
+            msg = await websocket.receive_text()
+    except WebSocketDisconnect:
+        connected_websockets.discard(websocket)
+    except Exception:
+        connected_websockets.discard(websocket)
 
 
 
