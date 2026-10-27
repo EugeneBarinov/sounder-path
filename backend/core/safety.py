@@ -412,6 +412,7 @@ def scan_corridor_raster_swath(
                     is_nodata = bool(grid.nodata_mask[r, c]) if getattr(grid, "nodata_mask", None) is not None else False
                     is_land = (depth_val <= 0.0 and not is_nodata) or (getattr(grid, "land_mask", None) is not None and bool(grid.land_mask[r, c]))
 
+                    # --- Depth / restriction / land / nodata hazards ----------
                     if depth_val <= safety_depth or is_restricted or is_nodata or is_land:
                         if is_restricted:
                             h_type = "RESTRICTED_ZONE"
@@ -440,12 +441,35 @@ def scan_corridor_raster_swath(
                             "hazard_type": h_type,
                         })
 
+                    # --- ZOC (Zone of Confidence) hazard ----------------------
+                    # Low survey confidence means charted depth may be unreliable
+                    # even when depth appears safe. Classes D(5), U(6), unknown(0)
+                    # trigger a low-confidence hazard inside the XTD corridor.
+                    zoc_class = grid.get_zoc_class(r, c) if hasattr(grid, "get_zoc_class") else 0
+                    if zoc_class in (0, 5, 6):
+                        zoc_class_name = {0: "UNKNOWN", 5: "D", 6: "U"}.get(zoc_class, f"ZOC{zoc_class}")
+                        hazards.append({
+                            "r": r,
+                            "c": c,
+                            "lon": round(lon_c, 6),
+                            "lat": round(lat_c, 6),
+                            "depth": round(depth_val, 2),
+                            "xtd_offset_m": round(d_xtd, 1),
+                            "port_xtd_m": round(cur_port_xtd_m, 1),
+                            "stbd_xtd_m": round(cur_stbd_xtd_m, 1),
+                            "is_restricted": False,
+                            "is_unverified_coverage": True,
+                            "hazard_type": "ZOC_LOW_CONFIDENCE",
+                            "zoc_class": zoc_class_name,
+                        })
+
     # Group hazards by category to guarantee worst hazard of EACH category is included
     by_type: Dict[str, List[Dict[str, Any]]] = {
         "NODATA_UNVERIFIED": [],
         "LAND": [],
         "RESTRICTED_ZONE": [],
         "SHALLOW_WATER": [],
+        "ZOC_LOW_CONFIDENCE": [],
     }
     for h in hazards:
         ht = h.get("hazard_type", "SHALLOW_WATER")
@@ -459,12 +483,13 @@ def scan_corridor_raster_swath(
     by_type["LAND"].sort(key=lambda h: (h.get("depth", 0.0), abs(h.get("xtd_offset_m", 0.0))))
     by_type["RESTRICTED_ZONE"].sort(key=lambda h: abs(h.get("xtd_offset_m", 0.0)))
     by_type["SHALLOW_WATER"].sort(key=lambda h: (h.get("depth", 0.0), abs(h.get("xtd_offset_m", 0.0))))
+    by_type["ZOC_LOW_CONFIDENCE"].sort(key=lambda h: (5 - h.get("zoc_class", 0) if h.get("zoc_class", 0) in (5, 6) else 5, abs(h.get("xtd_offset_m", 0.0))))
 
     selected: List[Dict[str, Any]] = []
     seen_ids = set()
 
     # Priority 1: Pick the worst representative of EACH detected hazard type
-    for cat in ["NODATA_UNVERIFIED", "LAND", "RESTRICTED_ZONE", "SHALLOW_WATER"]:
+    for cat in ["NODATA_UNVERIFIED", "LAND", "RESTRICTED_ZONE", "SHALLOW_WATER", "ZOC_LOW_CONFIDENCE"]:
         cat_list = by_type.get(cat, [])
         if cat_list:
             top_h = cat_list[0]
@@ -707,6 +732,24 @@ def verify_ecdis_route_safety(
                     f"offset {abs(worst_land['xtd_offset_m']):.0f}m to {'Starboard' if worst_land['xtd_offset_m'] > 0 else 'Port'}."
                 ),
                 "hazard_location": [worst_land["lon"], worst_land["lat"]],
+            })
+
+        # Alarm 5: Low survey confidence (ZOC D / U / unknown) inside XTD
+        zoc_hazards = [h for h in corridor_hazards if h.get("hazard_type") == "ZOC_LOW_CONFIDENCE"]
+        if zoc_hazards:
+            worst_zoc = zoc_hazards[0]
+            z_p_xtd = worst_zoc.get("port_xtd_m", port_xtd_m)
+            z_s_xtd = worst_zoc.get("stbd_xtd_m", stbd_xtd_m)
+            alarms.append({
+                "severity": "WARNING",
+                "code": "ALM-11-ZOC-LOW-CONFIDENCE",
+                "title": "Low Survey Confidence Zone Inside XTD Corridor",
+                "detail": (
+                    f"XTD safety corridor ({z_p_xtd:.0f}m port / {z_s_xtd:.0f}m stbd) passes through a Zone of Confidence "
+                    f"{worst_zoc.get('zoc_class', '?')} area at ({worst_zoc['lon']:.4f}, {worst_zoc['lat']:.4f}). "
+                    f"Charted depth may be unreliable; consider additional soundings before passage."
+                ),
+                "hazard_location": [worst_zoc["lon"], worst_zoc["lat"]],
             })
 
     # 5. Waypoint-In-Restricted-Zone (RESARE) check via fairways_coll

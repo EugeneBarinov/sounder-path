@@ -31,6 +31,7 @@ class BathymetricGrid:
         fairway_weights: Optional[np.ndarray] = None,
         land_mask: Optional[np.ndarray] = None,
         nodata_mask: Optional[np.ndarray] = None,
+        zoc_mask: Optional[np.ndarray] = None,
     ):
         self.lat_min = float(lat_min)
         self.lat_max = float(lat_max)
@@ -52,6 +53,13 @@ class BathymetricGrid:
             nodata_mask
             if nodata_mask is not None
             else np.zeros((self.rows, self.cols), dtype=bool)
+        )
+        # ZOC (Zone of Confidence) mask: per-cell confidence class index.
+        # 0 = no data / unknown (treated as lowest confidence), 1=A1 ... 6=U.
+        self.zoc_mask = (
+            zoc_mask
+            if zoc_mask is not None
+            else np.zeros((self.rows, self.cols), dtype=np.uint8)
         )
         self.is_synthetic = False
         self.surveyed_mask = np.zeros((self.rows, self.cols), dtype=bool)
@@ -84,6 +92,38 @@ class BathymetricGrid:
         """Attach precomputed 2D fairway and navigational restrictions weights."""
         if fairway_weights.shape == (self.rows, self.cols):
             self.fairway_weights = fairway_weights
+
+    def attach_zoc(self, zoc_mask: np.ndarray) -> None:
+        """Attach per-cell ZOC (Zone of Confidence) class mask.
+
+        Values: 0=unknown/lowest, 1=A1, 2=A2, 3=B, 4=C, 5=D, 6=U.
+        Higher value = lower survey confidence.
+        """
+        if zoc_mask.shape == (self.rows, self.cols):
+            self.zoc_mask = zoc_mask.astype(np.uint8)
+
+    def get_zoc_class(self, r: int, c: int) -> int:
+        """Returns ZOC class index for cell [0..6], or 0 if out of bounds."""
+        if 0 <= r < self.rows and 0 <= c < self.cols:
+            return int(self.zoc_mask[r, c])
+        return 0
+
+    def get_zoc_penalty(self, r: int, c: int) -> float:
+        """Returns additional A* cost penalty for low-confidence survey zones.
+
+        Penalty factors (additive to step cost):
+          A1/A2: 0.0   (highest confidence)
+          B:     0.1
+          C:     0.3
+          D:     0.6
+          U:     0.8   (unassessed)
+          0:     0.8   (unknown treated as lowest confidence)
+        """
+        if not (0 <= r < self.rows and 0 <= c < self.cols):
+            return 0.8
+        zoc = int(self.zoc_mask[r, c])
+        penalty_map = {1: 0.0, 2: 0.0, 3: 0.1, 4: 0.3, 5: 0.6, 6: 0.8}
+        return float(penalty_map.get(zoc, 0.8))
 
     def is_within_coverage(self, lon: float, lat: float) -> bool:
         """Checks if geographic coordinate lies within raster bounding box."""
@@ -150,6 +190,7 @@ class BathymetricGrid:
                     depths=depths,
                     land_mask=land_mask,
                     nodata_mask=nodata_mask,
+                    zoc_mask=None,
                 )
                 grid_obj.is_synthetic = False
                 return grid_obj
@@ -184,6 +225,7 @@ class BathymetricGrid:
             depths=depths,
             land_mask=land_mask,
             nodata_mask=nodata_mask,
+            zoc_mask=None,
         )
         grid_obj.is_synthetic = False
         return grid_obj
@@ -266,6 +308,13 @@ class BathymetricGrid:
             nodata_blocks = cropped_nodata.reshape(h // factor, factor, w // factor, factor)
             coarse_nodata = nodata_blocks.any(axis=(1, 3))
 
+        coarse_zoc = None
+        if self.zoc_mask is not None and self.zoc_mask.shape == (self.rows, self.cols):
+            cropped_zoc = self.zoc_mask[:h, :w]
+            zoc_blocks = cropped_zoc.reshape(h // factor, factor, w // factor, factor)
+            # Keep the lowest confidence (max class index) in each aggregated cell
+            coarse_zoc = zoc_blocks.max(axis=(1, 3)).astype(np.uint8)
+
         grid_obj = BathymetricGrid(
             lat_min=cropped_lat_min,
             lat_max=self.lat_max,
@@ -275,6 +324,7 @@ class BathymetricGrid:
             fairway_weights=coarse_fw,
             land_mask=coarse_land,
             nodata_mask=coarse_nodata,
+            zoc_mask=coarse_zoc,
         )
         grid_obj.is_synthetic = getattr(self, "is_synthetic", False)
         return grid_obj

@@ -38,46 +38,67 @@
 **Статус пуша:** прямой пуш в `main` отклонён (`GH006`, ветка защищена);
 запушена ветка `feat/unified-dukc-budget`, PR создаётся вручную.
 
+### 2026-10-11 — P0 Безопасность: CRS валидация, ZOC, Rate Limiting (ветка `feat/safety-resare-export-fix`, коммит `5b195dd`)
+**Что изменено (5 файлов):**
+- `backend/core/fairways.py` — P0.4 CRS валидация: `_detect_fc_crs()` определяет EPSG из GeoJSON CRS,
+  `_transform_geometry_to_wgs84()` трансформирует не-WGS84 геометрии через pyproj (опционально,
+  с graceful degradation), `load_fairways_geojson()` логирует предупреждение при несоответствии CRS.
+  Также добавлен `rasterize_zoc_mask()` — растеризация классов ZOC (A1..U) из свойств `zoc_class`/`CATZOC`.
+- `backend/core/grid.py` — P0.1 ZOC: `zoc_mask` в `BathymetricGrid.__init__`, `attach_zoc()`,
+  `get_zoc_class()`, `get_zoc_penalty()` (штрафы: A1/A2=0, B=0.1, C=0.3, D=0.6, U/unknown=0.8).
+  `downsample()` сохраняет zoc_mask через max-pooling (худший класс побеждает).
+- `backend/core/router.py` — P0.1 ZOC: `get_zoc_penalty(nr, nc)` добавляется к стоимости шага A*,
+  маршрут уходит из зон с низкой достоверностью гидрографии.
+- `backend/core/safety.py` — P0.1+P0 RESARE: `_point_in_polygon()` ray-casting точка-во-многоугольнике,
+  шаг 5 `verify_ecdis_route_safety` проверяет waypoint-inside-RESARE через `fairways_coll`
+  (ALM-10 CRITICAL). Шаг сканирования коридора добавляет ZOC_LOW_CONFIDENCE hazard (классы 0/5/6)
+  и ALM-11 WARNING. Пошаговые комментарии на русском.
+- `backend/core/export.py` — P0: `safetyContour` fallback теперь включает оценку squat
+  (`draft + est_squat + ukc` через Barrass) вместо чистого `draft + ukc`.
+- `backend/main.py` — P0.1: импорт `rasterize_zoc_mask`, растеризация и `attach_zoc()` для
+  full + routing сеток. P0.5: `rate_limit_middleware` — in-memory ограничение 60 запросов/мин
+  на IP для `/api/route`, ответ 429 с `Retry-After`.
+- `TODO.md` — этот файл.
+
+**Проверка:** `py_compile` — `PY_OK` для всех 5 файлов. Pure-Python smoke тесты:
+CRS детекция (WGS84=4326, EPSG:3857=3857, none=None), ZOC mapping (A1=1, D=5, U=6, unknown=0),
+точка-во-многоугольнике (inside/outside/edge).
+
 ### Ранее (из истории git, контекст)
 - Многоточечная прокладка, XTD-коридор, аудит IEC 61174, DUKC/приливы/бутылочные
   горлышки, симулятор мостика, C++ ядро, фарватеры S-57/ENC, экспорт GPX/RTZ.
 
 ## 🔶 Запланировано (по приоритету)
 
-### P0 — корректность безопасности
-- [ ] `safety.py:verify_ecdis_route_safety` — сейчас игнорирует `fairways_coll`:
-      добавить проверку близости к RESARE (аларм захода в запретку).
-- [ ] `export.py` — `safetyContour = draft+UKC` → полный `dynamic_draft+UKC`;
-      XTD брать из запроса, а не хардкод `0.10 NM` (сейчас коридор на карте ≠ RTZ).
-- [ ] Фронт `app.js:1208` — `stbd_xtd_m: portXtdM` (copy-paste): чинить на `stbdXtdM`.
-- [ ] Python-роутер: портировать heading-штраф из C++ (`router.cpp:165-180`) или
-      задокументировать расхождение fallback.
+### P0 — корректность безопасности (оставшееся)
+- [ ] Фронт `app.js:2614` — `stbd_xtd_m: portXtdM` (copy-paste): один слайдер XTD,
+      оба борта получают одинаковое значение. Нужно либо отдельный слайдер стренд-борта,
+      либо явное Dokument.
+- [ ] Python-роутер: heading-штраф уже портирован в `router.py` (строки 247-259),
+      соответствует C++ логике — задача закрыта.
 - [ ] `bottleneck.py` — `K=50` фикс. → честный пересчёт по h/T; проверять
-      `recommended`, а не `safe_speed`, против минимума управляемости 3.5 уз.
+      `recommended` против минимума управляемости ~3.5 уз.
+- [ ] P0.2 Плотность судоходства (AIS density): слой `ais_density` в `grid.py`,
+      штраф в `router.py`, аларм в `safety.py`. Требует исходных данных AIS.
+- [ ] P0.3 Приливы в реальном времени: модуль `backend/core/tides.py`,
+      вычисление `tide_offset_m` по координатам и времени.
+- [ ] P0.2/AIS и P0.3/приливы отложены до появления исходных данных.
 
 ### P1 — воспроизводимость демо
-- [ ] Синтетика vs heatmap: экстенты `create_synthetic` (33.12–40.0/43.12–46.5)
-      vs `heatmap_bounds` (…–41.0/…–47.3) + хардкод координат в `app.js:500` —
-      выровнять, иначе оверлей врёт.
-- [ ] `requirements.txt` — добавить `affine`, `pybind11` (сейчас чистая установка ломается).
-- [ ] `fairways.py` — silent-fallback `weights=1` без лога → явный warn, иначе
-      запретки молча игнорируются.
-- [ ] `download_data.py` — sample/чексумма тифа, понятный `exit 1` для CI.
+- [ ] Синтетика vs heatmap: экстенты не совпадают — оверлей врёт.
+- [ ] `requirements.txt` — добавить `affine`, `pybind11` (чистая установка ломается).
+- [ ] `download_data.py` — чексумма тифа, понятный `exit 1` для CI.
 
 ### P2 — режим планирования (state-machine фронта)
-- [ ] Ввести `idle | planning | verified`: вход «Новый план», заморозка черновика,
-      кнопка «Проверить» → `safety/bottleneck/dukc`, только после `PASSED/ACK` —
-      экспорт и симулятор. Сейчас всё реактивно и без версий плана.
-- [ ] `app.js` — разбить монолит 1808 строк, SRI/offline для CDN, abort для
-      `/api/depth` на mousemove.
-- [ ] Дубли `calculate_bearing_deg` (×3), `flat vs haversine` дистанции — централизовать.
-- [ ] Коридор XTD — mitre/endcap (сейчас самопересечение на острых поворотах).
+- [ ] `idle | planning | verified`: черновик → проверка → утверждение → экспорт.
+- [ ] `app.js` — разбить монолит, SRI/offline для CDN.
+- [ ] Дубли `calculate_bearing_deg` (×3), централизовать геодезию.
+- [ ] Коридор XTD — mitre/endcap (самопересечение на острых поворотах).
 
 ### P3 — опс
-- [ ] Smoke-тест `POST /api/route` на синтетике (до/после), лимит итераций A*,
-      CORS для внешних ЭКНИС, Dockerfile/CI.
+- [ ] Smoke-тест `POST /api/route`, лимит итераций A*, CORS, Dockerfile/CI.
 - [ ] `setup.py` — `-O3`, пины `pybind11`.
-- [ ] Секреты: отозвать `ghp_...` из чата и `sk-proj-...` в `/workspace/docker-compose.yml`.
+- [ ] Секреты: отозвать `ghp_...` и `sk-proj-...`.
 
 ## 📌 Правила работы (напомнилка)
 - Работаем локально в `/workspace/sounder-path/sounder-path`, коммиты локально.

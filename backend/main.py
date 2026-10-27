@@ -21,7 +21,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator, ConfigD
 
 from backend.core.grid import BathymetricGrid
 from backend.core.router import Router
-from backend.core.fairways import rasterize_fairway_weights, load_fairways_geojson
+from backend.core.fairways import rasterize_fairway_weights, load_fairways_geojson, rasterize_zoc_mask
 from backend.core.export import export_to_gpx, export_to_rtz
 from backend.core.safety import generate_safety_corridor_polygon, verify_ecdis_route_safety, compute_route_segment_xtds
 from backend.core.dukc import compute_dukc_budget, calculate_tidal_window, compute_search_budget, calculate_turning_heel
@@ -48,6 +48,44 @@ import urllib.request
 import urllib.parse
 import math
 import asyncio
+
+
+# ---------------------------------------------------------------------------
+# P0.5 Rate Limiting (in-memory, per-client IP)
+# ---------------------------------------------------------------------------
+_RATE_LIMIT_WINDOW_SEC = 60.0
+_RATE_LIMIT_MAX_REQUESTS = 60
+_RATE_LIMIT_ROUTE_ENDPOINT = "/api/route"
+_client_request_times: Dict[str, deque] = {}
+
+
+def _client_ip(request: Request) -> str:
+    """Best-effort client IP extraction (supports X-Forwarded-For behind proxies)."""
+    xff = request.headers.get("x-forwarded-for")
+    if xff:
+        return xff.split(",")[0].strip()
+    client = request.client
+    return client.host if client else "unknown"
+
+
+def _rate_limit_check(ip: str, now: float) -> bool:
+    """Returns True if request is allowed, False if rate limit exceeded."""
+    window_start = now - _RATE_LIMIT_WINDOW_SEC
+    times = _client_request_times.get(ip)
+    if times is None:
+        times = deque()
+        _client_request_times[ip] = times
+
+    while times and times[0] < window_start:
+        times.popleft()
+
+    if len(times) >= _RATE_LIMIT_MAX_REQUESTS:
+        return False
+
+    times.append(now)
+    return True
+
+
 from contextlib import asynccontextmanager
 
 nmea_mgr = NmeaManager()
@@ -150,6 +188,28 @@ async def request_validation_exception_handler(request: Request, exc: RequestVal
 # Development middleware: Prevent client-side caching of local static assets
 # ---------------------------------------------------------------------------
 import os
+
+@app.middleware("http")
+async def rate_limit_middleware(request: Request, call_next):
+    """Simple in-memory rate limiter for /api/route endpoint."""
+    if request.url.path == _RATE_LIMIT_ROUTE_ENDPOINT and request.method == "POST":
+        ip = _client_ip(request)
+        now = time.monotonic()
+        if not _rate_limit_check(ip, now):
+            return JSONResponse(
+                status_code=429,
+                content={
+                    "detail": (
+                        f"Rate limit exceeded: maximum {_RATE_LIMIT_MAX_REQUESTS} requests "
+                        f"per {_RATE_LIMIT_WINDOW_SEC:.0f}s for {ip}. Try again later."
+                    ),
+                    "code": "RATE_LIMIT_EXCEEDED",
+                },
+                headers={"Retry-After": str(int(_RATE_LIMIT_WINDOW_SEC))},
+            )
+    response = await call_next(request)
+    return response
+
 
 @app.middleware("http")
 async def no_cache_header_middleware(request: Request, call_next):
@@ -275,16 +335,31 @@ full_fairway_weights = rasterize_fairway_weights(
 )
 full_grid.attach_fairways(full_fairway_weights)
 
+# Rasterize ZOC (Zone of Confidence) survey quality mask for full resolution grid
+full_zoc_mask = rasterize_zoc_mask(
+    full_grid.rows, full_grid.cols,
+    full_grid.lat_min, full_grid.lat_max,
+    full_grid.lon_min, full_grid.lon_max
+)
+full_grid.attach_zoc(full_zoc_mask)
+
 # Rasterize navigational fairways for routing resolution grid
 if routing_grid is full_grid:
     fairway_weights = full_fairway_weights
+    zoc_mask = full_zoc_mask
 else:
     fairway_weights = rasterize_fairway_weights(
         routing_grid.rows, routing_grid.cols,
         routing_grid.lat_min, routing_grid.lat_max,
         routing_grid.lon_min, routing_grid.lon_max
     )
+    zoc_mask = rasterize_zoc_mask(
+        routing_grid.rows, routing_grid.cols,
+        routing_grid.lat_min, routing_grid.lat_max,
+        routing_grid.lon_min, routing_grid.lon_max
+    )
     routing_grid.attach_fairways(fairway_weights)
+routing_grid.attach_zoc(zoc_mask)
 
 print(f"Grid active: Full resolution {full_grid.rows}x{full_grid.cols} | Routing {routing_grid.rows}x{routing_grid.cols}")
 

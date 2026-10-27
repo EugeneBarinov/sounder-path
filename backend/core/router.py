@@ -258,7 +258,7 @@ class Router:
                         else:
                             heading_penalty = 1.8 + 1.2 * (-cos_theta)
 
-                transition_cost = (base_cost * (1.0 + shallow_penalty) * fw_factor) + heading_penalty
+                transition_cost = (base_cost * (1.0 + shallow_penalty) * fw_factor) + heading_penalty + self.grid.get_zoc_penalty(nr, nc)
                 g_new = g_curr + transition_cost
                 next_state = (nr, nc, i)
 
