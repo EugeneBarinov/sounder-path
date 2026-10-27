@@ -18,6 +18,36 @@ RAD_TO_DEG = 180.0 / math.pi
 METERS_PER_DEG_LAT = 111139.0
 
 
+def _point_in_polygon(lon: float, lat: float, coordinates: List[List[List[float]]]) -> bool:
+    """
+    Ray-casting точка-во-многоугольнике для GeoJSON Polygon координат [lon, lat].
+
+    Проверяет, попадает ли точка (lon, lat) во внешнее кольцо полигона.
+    Работает с любым количеством вершин, включая сложные прибрежные контуры RESARE.
+    """
+    if not coordinates or not coordinates[0]:
+        return False
+
+    ring = coordinates[0]  # Внешнее кольцо (exterior ring)
+    n = len(ring)
+    if n < 3:
+        return False
+
+    inside = False
+    j = n - 1
+    for i in range(n):
+        xi, yi = ring[i][0], ring[i][1]
+        xj, yj = ring[j][0], ring[j][1]
+
+        if ((yi > lat) != (yj > lat)):
+            x_intersect = (xj - xi) * (lat - yi) / (yj - yi) + xi
+            if lon < x_intersect:
+                inside = not inside
+        j = i
+
+    return inside
+
+
 def calculate_bearing_deg(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     """Calculate forward true compass bearing between two coordinates."""
     phi1 = lat1 * DEG_TO_RAD
@@ -678,6 +708,42 @@ def verify_ecdis_route_safety(
                 ),
                 "hazard_location": [worst_land["lon"], worst_land["lat"]],
             })
+
+    # 5. Waypoint-In-Restricted-Zone (RESARE) check via fairways_coll
+    # fairways_coll передаётся в функцию, но ранее не использовался.
+    # Теперь проверяем, не попадает ли каждая путевая точка внутрь полигона
+    # ограниченной зоны (RESARE) — полигоны боевой подготовки, заповедников,
+    # районов затонувших судов и т.п. Это защита на уровне путевых точек,
+    # дополняющая сканирование коридора XTD по сетке батиметрии.
+    if fairways_coll:
+        for idx, wp in enumerate(waypoints, start=1):
+            wp_lon = float(wp.get("lon") if wp.get("lon") is not None else wp.get("lng", 0.0))
+            wp_lat = float(wp.get("lat") if wp.get("lat") is not None else wp.get("latitude", 0.0))
+
+            for feature in fairways_coll.get("features", []):
+                props = feature.get("properties", {})
+                cat = props.get("category", "")
+                if cat != "restricted":
+                    continue
+                geom = feature.get("geometry", {})
+                if geom.get("type") != "Polygon":
+                    continue
+                if _point_in_polygon(wp_lon, wp_lat, geom.get("coordinates", [])):
+                    zone_name = props.get("name", f"Zone {feature.get('id', idx)}")
+                    zone_desc = props.get("description", "")
+                    alarms.append({
+                        "severity": "CRITICAL",
+                        "code": "ALM-10-WAYPOINT-IN-RESARE",
+                        "title": f"Waypoint WP{idx} Inside Restricted Zone ({zone_name})",
+                        "detail": (
+                            f"Планируемая путевая точка WP{idx} ({wp_lon:.4f}, {wp_lat:.4f}) "
+                            f"попадает внутри ограниченной навигационной зоны '{zone_name}' (RESARE). "
+                            f"{zone_desc} Маршрут необходимо перепроложить, чтобы избежать запретной зоны."
+                        ),
+                        "waypoint_index": idx,
+                        "hazard_location": [wp_lon, wp_lat],
+                    })
+                    break
 
     is_grid_available = (grid is not None and hasattr(grid, "lonlat_to_cell") and len(active_route_coords) >= 2)
     if not is_grid_available:

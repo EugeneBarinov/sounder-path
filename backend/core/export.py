@@ -214,7 +214,16 @@ def export_to_rtz(
         if idx < num_wps:
             port_xtd = float(wp.get("port_xtd_nm", 0.10) or 0.10)
             stbd_xtd = float(wp.get("stbd_xtd_nm", 0.10) or 0.10)
-            contour_val = float(safety_contour if safety_contour is not None else (draft + ukc))
+            # Safety contour по IEC 61174 должен включать полную динамическую осадку:
+            # static draft + squat + heel sinkage + wave allowance + required UKC.
+            # gateway передаёт safety_contour уже собранным; fallback только
+            # для вызовов без параметра — тогда берём консервативную оценку.
+            if safety_contour is not None:
+                contour_val = float(safety_contour)
+            else:
+                # Консервативная оценка без данных о манёвре: squat≈(Cb·V²)/100
+                est_squat = (0.65 * (speed_knots ** 2)) / 100.0
+                contour_val = draft + est_squat + ukc
 
             # Leg specification (IEC 61174 standards)
             # Must use geometryType="Loxodrome", portsideXTD, starboardXTD
