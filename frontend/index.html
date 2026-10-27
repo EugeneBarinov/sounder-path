@@ -11,9 +11,9 @@
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <meta name="apple-mobile-web-app-title" content="SeaPath">
     <link rel="apple-touch-icon" href="/icon-192.png">
-    <script src="https://unpkg.com/maplibre-gl@3.3.1/dist/maplibre-gl.js"></script>
-    <link href="https://unpkg.com/maplibre-gl@3.3.1/dist/maplibre-gl.css" rel="stylesheet" />
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="/vendor/maplibre-gl.js"></script>
+    <link href="/vendor/maplibre-gl.css" rel="stylesheet" />
+    <script src="/vendor/chart.js"></script>
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -257,9 +257,15 @@
                             <span>Промеров: <strong id="live-pts-count">0</strong></span>
                             <span style="margin-left: 8px;">Глубина: <strong id="live-last-depth">-- м</strong></span>
                         </div>
-                        <div style="display: flex; gap: 6px; margin-top: 8px;">
+                        <div style="display: flex; gap: 4px; margin-top: 8px; flex-wrap: wrap;">
                             <button type="button" id="btn-save-survey" class="btn-survey-action" title="Сохранить съемку на диск (data/surveys/)">
-                                Сохранить съемку
+                                Сохранить
+                            </button>
+                            <button type="button" id="btn-export-survey-csv" class="btn-survey-action" title="Экспорт съемки в CSV (XYZ для QGIS / САПР)">
+                                Экспорт CSV
+                            </button>
+                            <button type="button" id="btn-export-survey-gpx" class="btn-survey-action" title="Экспорт съемки в GPX (для картплоттеров)">
+                                GPX
                             </button>
                             <button type="button" id="btn-clear-survey" class="btn-survey-action btn-danger-action" title="Очистить промеры текущей съемки">
                                 Очистить

@@ -15,6 +15,7 @@ Features:
 """
 
 from typing import Dict, Any, List, Optional, Tuple
+from collections import deque
 import math
 import time
 import json
@@ -65,6 +66,11 @@ class Waterbody:
         self.anchorages = anchorages or []
         self.is_custom = is_custom
         self.live_track_points: List[Dict[str, Any]] = []
+        self.recent_soundings: deque = deque(maxlen=5)
+        self.last_logged_time: float = 0.0
+        self.last_logged_lat: Optional[float] = None
+        self.last_logged_lon: Optional[float] = None
+        self.last_logged_depth: Optional[float] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -1124,20 +1130,52 @@ class WaterbodyManager:
         wb = self.get_active()
         grid = wb.grid
 
-        point_data = {
-            "timestamp": time.time(),
-            "lat": lat,
-            "lon": lon,
-            "depth_m": depth_m,
-            "sog_knots": sog_knots,
-            "cog_deg": cog_deg
-        }
-        wb.live_track_points.append(point_data)
+        # 1. Rolling Median Heave / Wave filter (dampens wave-induced oscillations and aeration spikes)
+        effective_depth = depth_m
+        if depth_m is not None and depth_m > 0.05:
+            wb.recent_soundings.append(float(depth_m))
+            if len(wb.recent_soundings) >= 3:
+                med = float(np.median(list(wb.recent_soundings)))
+                # If reading is severe aeration spike (< 35% of rolling median and rolling median > 4m), suppress spike
+                if depth_m < med * 0.35 and med > 4.0:
+                    effective_depth = med
+                else:
+                    effective_depth = med
+
+        # 2. Spatial Deadband Decimation (prevents redundant spam when anchored or docked)
+        now = time.time()
+        is_stationary = False
+        if wb.last_logged_lat is not None and wb.last_logged_lon is not None and len(wb.live_track_points) > 0:
+            d_lat_m = (lat - wb.last_logged_lat) * 111139.0
+            d_lon_m = (lon - wb.last_logged_lon) * 111139.0 * math.cos(math.radians(lat))
+            dist_m = math.hypot(d_lat_m, d_lon_m)
+            dt = now - wb.last_logged_time
+            d_depth = abs((effective_depth or 0.0) - (wb.last_logged_depth or 0.0))
+
+            # If vessel moved less than 1.5m and (less than 10s passed or depth change is negligible)
+            if dist_m < 1.5 and (dt < 10.0 or d_depth < 0.2):
+                is_stationary = True
+
+        if not is_stationary:
+            point_data = {
+                "timestamp": now,
+                "lat": lat,
+                "lon": lon,
+                "depth_m": effective_depth,
+                "raw_depth_m": depth_m,
+                "sog_knots": sog_knots,
+                "cog_deg": cog_deg
+            }
+            wb.live_track_points.append(point_data)
+            wb.last_logged_lat = lat
+            wb.last_logged_lon = lon
+            wb.last_logged_time = now
+            wb.last_logged_depth = effective_depth
 
         # If sounder reading provided, fuse into grid under keel with acoustic beam footprint
         fused = False
         cells_updated = 0
-        if depth_m is not None and depth_m > 0.05 and grid.is_within_coverage(lon, lat):
+        if effective_depth is not None and effective_depth > 0.05 and grid.is_within_coverage(lon, lat):
             r, c = grid.lonlat_to_cell(lon, lat)
             if 0 <= r < grid.rows and 0 <= c < grid.cols:
                 curr_d = float(grid.depths[r, c])
@@ -1145,8 +1183,8 @@ class WaterbodyManager:
                 already_surveyed = getattr(grid, "surveyed_mask", None) is not None and grid.surveyed_mask[r, c]
 
                 # Direct keel point update: survey measurements take precedence over synthetic/unverified grids
-                if survey_mode or is_synthetic or not already_surveyed or curr_d <= 0.0 or depth_m < curr_d:
-                    grid.depths[r, c] = float(depth_m)
+                if survey_mode or is_synthetic or not already_surveyed or curr_d <= 0.0 or effective_depth < curr_d:
+                    grid.depths[r, c] = float(effective_depth)
                     if hasattr(grid, "surveyed_mask"):
                         grid.surveyed_mask[r, c] = True
                     if grid.land_mask is not None:
@@ -1157,9 +1195,9 @@ class WaterbodyManager:
                     cells_updated += 1
 
                 # Dynamic acoustic beam swath footprint (Quickdraw / SonarChart Live standard)
-                # Footprint radius R = depth_m * tan(beam_angle / 2)
+                # Footprint radius R = effective_depth * tan(beam_angle / 2)
                 rad_half = math.radians(max(5.0, min(60.0, beam_angle_deg)) / 2.0)
-                footprint_m = max(1.5, depth_m * math.tan(rad_half))
+                footprint_m = max(1.5, effective_depth * math.tan(rad_half))
 
                 lat_step = max(1e-9, (grid.lat_max - grid.lat_min) / max(1, grid.rows))
                 lon_step = max(1e-9, (grid.lon_max - grid.lon_min) / max(1, grid.cols))
@@ -1167,6 +1205,7 @@ class WaterbodyManager:
                 dx_m = lon_step * 111139.0 * math.cos(math.radians(lat))
 
                 dr_span = max(0, int(math.ceil(footprint_m / max(1.0, dy_m))))
+                dc_span = max(0, int(math.ceil(footprint_m / max(1.0, dc_span if 'dc_span' in locals() else dx_m))))
                 dc_span = max(0, int(math.ceil(footprint_m / max(1.0, dx_m))))
 
                 if dr_span > 0 or dc_span > 0:
@@ -1184,18 +1223,18 @@ class WaterbodyManager:
                                     n_curr = float(grid.depths[nr, nc])
                                     n_surveyed = getattr(grid, "surveyed_mask", None) is not None and grid.surveyed_mask[nr, nc]
                                     if n_curr <= 0.0 or is_synthetic or not n_surveyed:
-                                        grid.depths[nr, nc] = float(depth_m)
+                                        grid.depths[nr, nc] = float(effective_depth)
                                         if hasattr(grid, "surveyed_mask"):
                                             grid.surveyed_mask[nr, nc] = True
                                         if grid.land_mask is not None:
                                             grid.land_mask[nr, nc] = False
                                         cells_updated += 1
-                                    elif depth_m < n_curr:
-                                        grid.depths[nr, nc] = float(n_curr * (1.0 - w) + depth_m * w)
+                                    elif effective_depth < n_curr:
+                                        grid.depths[nr, nc] = float(n_curr * (1.0 - w) + effective_depth * w)
                                         cells_updated += 1
 
-        # Auto-persist survey every 5 points if sounder measured, or every 20 total points
-        if (depth_m is not None and len(wb.live_track_points) % 5 == 0) or (len(wb.live_track_points) % 20 == 0):
+        # Auto-persist survey every 10 points if sounder measured, or every 30 total points
+        if (depth_m is not None and len(wb.live_track_points) % 10 == 0) or (len(wb.live_track_points) % 30 == 0):
             self.save_survey(wb.id)
 
         chart_depth = grid.get_depth(*grid.lonlat_to_cell(lon, lat)) if grid.is_within_coverage(lon, lat) else 0.0
@@ -1205,6 +1244,8 @@ class WaterbodyManager:
             "waterbody_id": wb.id,
             "chart_depth_m": round(chart_depth, 2),
             "measured_depth_m": depth_m,
+            "effective_depth_m": round(effective_depth, 2) if effective_depth is not None else None,
+            "is_stationary": is_stationary,
             "fused_into_grid": fused,
             "swath_cells_updated": cells_updated,
             "total_track_points": len(wb.live_track_points)
@@ -1304,3 +1345,98 @@ class WaterbodyManager:
             "stored_surveys_count": len(surveys),
             "surveys": surveys
         }
+
+    def export_survey(
+        self,
+        waterbody_id: Optional[str] = None,
+        export_format: str = "csv"
+    ) -> Tuple[str, str, bytes]:
+        """
+        Export recorded hydrographic survey points to industry-standard GIS/marine formats:
+        - CSV (XYZ format: Longitude, Latitude, Depth_m, SOG_knots, COG_deg, Timestamp, ISO_Time)
+        - GeoJSON (Point FeatureCollection)
+        - GPX 1.1 (Track with elevation/depth extensions)
+        Returns: (filename, mime_type, file_bytes)
+        """
+        wb = self.waterbodies.get(waterbody_id) if waterbody_id else self.get_active()
+        if not wb:
+            raise ValueError(f"Waterbody not found: {waterbody_id}")
+
+        points = wb.live_track_points
+        timestamp_str = time.strftime("%Y%m%d_%H%M%S")
+        safe_id = wb.id.replace(" ", "_")
+
+        fmt = export_format.lower().strip()
+        if fmt == "csv":
+            filename = f"{safe_id}_survey_{timestamp_str}.csv"
+            mime_type = "text/csv; charset=utf-8"
+            lines = ["Longitude,Latitude,Depth_m,SOG_knots,COG_deg,Timestamp,ISO_Time\n"]
+            for p in points:
+                d_val = f"{p['depth_m']:.2f}" if p.get("depth_m") is not None else ""
+                sog = f"{p.get('sog_knots', 0.0):.2f}"
+                cog = f"{p.get('cog_deg', 0.0):.1f}"
+                ts = p.get("timestamp", time.time())
+                iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(ts))
+                lines.append(f"{p['lon']:.7f},{p['lat']:.7f},{d_val},{sog},{cog},{ts:.3f},{iso}\n")
+            data = "".join(lines).encode("utf-8")
+            return filename, mime_type, data
+
+        elif fmt == "geojson":
+            filename = f"{safe_id}_survey_{timestamp_str}.geojson"
+            mime_type = "application/geo+json; charset=utf-8"
+            features = []
+            for p in points:
+                feat = {
+                    "type": "Feature",
+                    "properties": {
+                        "depth_m": p.get("depth_m"),
+                        "sog_knots": p.get("sog_knots"),
+                        "cog_deg": p.get("cog_deg"),
+                        "timestamp": p.get("timestamp"),
+                        "iso_time": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(p.get("timestamp", time.time())))
+                    },
+                    "geometry": {
+                        "type": "Point",
+                        "coordinates": [round(p["lon"], 7), round(p["lat"], 7)]
+                    }
+                }
+                features.append(feat)
+            geojson_doc = {
+                "type": "FeatureCollection",
+                "name": f"Survey_{wb.name}",
+                "waterbody_id": wb.id,
+                "features": features
+            }
+            data = json.dumps(geojson_doc, indent=2, ensure_ascii=False).encode("utf-8")
+            return filename, mime_type, data
+
+        elif fmt == "gpx":
+            filename = f"{safe_id}_survey_{timestamp_str}.gpx"
+            mime_type = "application/gpx+xml; charset=utf-8"
+            gpx_lines = [
+                '<?xml version="1.0" encoding="UTF-8"?>\n',
+                '<gpx version="1.1" creator="SeaPath ECDIS Engine"\n',
+                '     xmlns="http://www.topografix.com/GPX/1/1"\n',
+                '     xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"\n',
+                '     xsi:schemaLocation="http://www.topografix.com/GPX/1/1 http://www.topografix.com/GPX/1/1/gpx.xsd">\n',
+                f'  <metadata><name>Hydrographic Survey {wb.name}</name><time>{time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}</time></metadata>\n',
+                '  <trk>\n',
+                f'    <name>Survey Track {wb.id}</name>\n',
+                '    <trkseg>\n'
+            ]
+            for p in points:
+                iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(p.get("timestamp", time.time())))
+                ele_tag = f"<ele>{-p['depth_m']:.2f}</ele>" if p.get("depth_m") is not None else ""
+                depth_ext = f"<depth>{p['depth_m']:.2f}</depth>" if p.get("depth_m") is not None else ""
+                sog_ext = f"<speed>{(p.get('sog_knots', 0.0) * 0.514444):.2f}</speed>"
+                gpx_lines.append(
+                    f'      <trkpt lat="{p["lat"]:.7f}" lon="{p["lon"]:.7f}">'
+                    f'{ele_tag}<time>{iso}</time>'
+                    f'<extensions>{depth_ext}{sog_ext}</extensions></trkpt>\n'
+                )
+            gpx_lines.append('    </trkseg>\n  </trk>\n</gpx>\n')
+            data = "".join(gpx_lines).encode("utf-8")
+            return filename, mime_type, data
+
+        else:
+            raise ValueError(f"Unsupported export format: {export_format}. Use 'csv', 'geojson', or 'gpx'.")

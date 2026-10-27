@@ -78,6 +78,11 @@ async def lifespan(app: FastAPI):
     nmea_mgr.receiver.add_listener(on_vessel_telemetry)
     await nmea_mgr.start_udp_listener(host=udp_host, port=udp_port)
 
+    serial_port = os.environ.get("SEAPATH_SERIAL_PORT")
+    if serial_port:
+        serial_baud = int(os.environ.get("SEAPATH_SERIAL_BAUD", "4800"))
+        await nmea_mgr.start_serial_reader(port=serial_port, baudrate=serial_baud)
+
     async def telemetry_broadcaster():
         while True:
             try:
@@ -2276,6 +2281,62 @@ def clear_active_survey(waterbody_id: Optional[str] = None):
     Clear recorded survey track and delete persisted survey file for specified waterbody.
     """
     return waterbody_mgr.clear_survey(waterbody_id)
+
+
+@app.get("/api/surveys/export")
+def export_hydrographic_survey(
+    waterbody_id: Optional[str] = None,
+    format: str = "csv"
+):
+    """
+    Export persistent hydrographic survey soundings to CSV (XYZ), GeoJSON, or GPX 1.1 format.
+    Allows seamless data exchange with QGIS, Surfer, AutoCAD, and marine chartplotters.
+    """
+    try:
+        filename, mime_type, file_bytes = waterbody_mgr.export_survey(
+            waterbody_id=waterbody_id,
+            export_format=format
+        )
+        return Response(
+            content=file_bytes,
+            media_type=mime_type,
+            headers={
+                "Content-Disposition": f'attachment; filename="{filename}"'
+            }
+        )
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+class NmeaSerialConfigRequest(BaseModel):
+    port: str = Field(description="Hardware serial port, e.g. COM3 or /dev/ttyUSB0")
+    baudrate: int = Field(default=4800, description="Serial baud rate: 4800 for standard NMEA, 38400 for High-Speed")
+
+
+@app.post("/api/nmea/serial/start")
+async def start_nmea_serial(req: NmeaSerialConfigRequest):
+    """
+    Start listening on a hardware Serial COM port for direct USB/RS-422 echo sounder connections.
+    """
+    success = await nmea_mgr.start_serial_reader(port=req.port, baudrate=req.baudrate)
+    return {
+        "started": success,
+        "port": req.port,
+        "baudrate": req.baudrate,
+        "status": nmea_mgr.get_status()
+    }
+
+
+@app.post("/api/nmea/serial/stop")
+async def stop_nmea_serial():
+    """
+    Stop active serial COM port reader.
+    """
+    await nmea_mgr.stop_serial_reader()
+    return {
+        "stopped": True,
+        "status": nmea_mgr.get_status()
+    }
 
 
 class NmeaFeedRequest(BaseModel):

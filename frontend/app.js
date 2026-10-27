@@ -4564,11 +4564,22 @@ if (btnSimulateSounderPing) {
             });
     });
 }
-        queryAndRecordLivePoint(lat, lon, 6.0, 90.0);
+
+// 19.6. Управление сохранением, экспортом и очисткой гидрографических съемок
+const btnExportSurveyCsv = document.getElementById('btn-export-survey-csv');
+if (btnExportSurveyCsv) {
+    btnExportSurveyCsv.addEventListener('click', () => {
+        window.location.href = '/api/surveys/export?format=csv';
     });
 }
 
-// 19.6. Управление сохранением и очисткой гидрографических съемок
+const btnExportSurveyGpx = document.getElementById('btn-export-survey-gpx');
+if (btnExportSurveyGpx) {
+    btnExportSurveyGpx.addEventListener('click', () => {
+        window.location.href = '/api/surveys/export?format=gpx';
+    });
+}
+
 const btnSaveSurvey = document.getElementById('btn-save-survey');
 if (btnSaveSurvey) {
     btnSaveSurvey.addEventListener('click', () => {

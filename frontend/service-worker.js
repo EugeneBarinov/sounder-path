@@ -3,7 +3,7 @@
  * Ensures full standalone operation on open water without internet connectivity.
  */
 
-const CACHE_NAME = 'seapath-ecdis-v1';
+const CACHE_NAME = 'seapath-ecdis-v2';
 const PRECACHE_ASSETS = [
     '/',
     '/index.html',
@@ -11,7 +11,10 @@ const PRECACHE_ASSETS = [
     '/app.js',
     '/manifest.webmanifest',
     '/icon-192.png',
-    '/icon-512.png'
+    '/icon-512.png',
+    '/vendor/maplibre-gl.js',
+    '/vendor/maplibre-gl.css',
+    '/vendor/chart.js'
 ];
 
 self.addEventListener('install', (event) => {

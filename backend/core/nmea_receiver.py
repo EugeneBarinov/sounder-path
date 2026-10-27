@@ -371,7 +371,7 @@ class NmeaUdpProtocol(asyncio.DatagramProtocol):
 
 class NmeaManager:
     """
-    Lifecycle manager for NMEA receivers, network sockets, and engine integration.
+    Lifecycle manager for NMEA receivers, network sockets, serial ports, and engine integration.
     """
 
     def __init__(self, receiver: Optional[NmeaReceiver] = None):
@@ -382,6 +382,11 @@ class NmeaManager:
         self.port: int = 10110
         self.is_running: bool = False
         self._watchdog_task: Optional[asyncio.Task] = None
+        self.serial_port: Optional[str] = None
+        self.serial_baudrate: int = 4800
+        self.serial_is_running: bool = False
+        self._serial_task: Optional[asyncio.Task] = None
+        self._serial_stop_event = asyncio.Event()
 
     async def start_udp_listener(self, host: str = "0.0.0.0", port: int = 10110) -> bool:
         """Start background UDP socket server on marine port."""
@@ -410,11 +415,76 @@ class NmeaManager:
             logger.warning(f"Failed to bind NMEA UDP listener on {self.host}:{self.port}: {e}")
             return False
 
+    async def start_serial_reader(self, port: str, baudrate: int = 4800) -> bool:
+        """
+        Start background asynchronous reader for hardware Serial COM port (RS-422 / USB).
+        """
+        try:
+            import serial
+        except ImportError:
+            logger.warning("pyserial is not installed. Serial COM port reading is unavailable.")
+            return False
+
+        if self.serial_is_running:
+            await self.stop_serial_reader()
+
+        self.serial_port = port
+        self.serial_baudrate = baudrate
+        self._serial_stop_event.clear()
+        self.serial_is_running = True
+        self._serial_task = asyncio.create_task(self._serial_worker(port, baudrate))
+        logger.info(f"NMEA Serial reader initiated on {port} @ {baudrate} baud")
+        return True
+
+    async def stop_serial_reader(self) -> None:
+        """Stop serial COM reader worker."""
+        self._serial_stop_event.set()
+        if self._serial_task and not self._serial_task.done():
+            self._serial_task.cancel()
+            try:
+                await self._serial_task
+            except asyncio.CancelledError:
+                pass
+            self._serial_task = None
+        self.serial_is_running = False
+        logger.info(f"NMEA Serial reader stopped on {self.serial_port}")
+
+    async def _serial_worker(self, port: str, baudrate: int) -> None:
+        """Background thread worker reading serial lines with auto-reconnect."""
+        import serial
+        while not self._serial_stop_event.is_set():
+            try:
+                ser = await asyncio.to_thread(serial.Serial, port, baudrate, timeout=1.0)
+                logger.info(f"Connected to hardware NMEA serial port {port}")
+                try:
+                    while not self._serial_stop_event.is_set():
+                        raw_line = await asyncio.to_thread(ser.readline)
+                        if raw_line:
+                            try:
+                                line = raw_line.decode("ascii", errors="replace").strip()
+                                if line:
+                                    self.receiver.feed_sentence(line, source_tag=f"SERIAL_{port}")
+                            except Exception:
+                                pass
+                        else:
+                            await asyncio.sleep(0.01)
+                finally:
+                    await asyncio.to_thread(ser.close)
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                if self._serial_stop_event.is_set():
+                    break
+                logger.warning(f"NMEA Serial error on {port}: {e}. Retrying in 2.0s...")
+                await asyncio.sleep(2.0)
+
     async def stop(self) -> None:
-        """Stop UDP listener and clean up tasks."""
+        """Stop UDP listener and serial workers, clean up tasks."""
         if self._watchdog_task and not self._watchdog_task.done():
             self._watchdog_task.cancel()
             self._watchdog_task = None
+
+        await self.stop_serial_reader()
 
         if self.udp_transport:
             self.udp_transport.close()
@@ -442,5 +512,8 @@ class NmeaManager:
             "is_running": self.is_running,
             "host": self.host,
             "port": self.port,
+            "serial_is_running": self.serial_is_running,
+            "serial_port": self.serial_port,
+            "serial_baudrate": self.serial_baudrate,
             "vessel_state": st
         }

@@ -78,30 +78,33 @@ def test_swath_fusion_accepts_deeper_water_and_interpolates_footprint():
     waterbody_mgr.waterbodies["test_swath_wb"] = test_wb
     waterbody_mgr.set_active("test_swath_wb")
 
-    center_lat, center_lon = 44.61025, 33.51025
-    r, c = grid.lonlat_to_cell(center_lon, center_lat)
+    try:
+        center_lat, center_lon = 44.61025, 33.51025
+        r, c = grid.lonlat_to_cell(center_lon, center_lat)
 
-    # Initial depth is 2.0m
-    assert grid.depths[r, c] == 2.0
+        # Initial depth is 2.0m
+        assert grid.depths[r, c] == 2.0
 
-    # Vessel sounder measures 14.0m (deeper dredged water) with 30° acoustic cone
-    res = waterbody_mgr.log_live_telemetry(
-        lat=center_lat,
-        lon=center_lon,
-        depth_m=14.0,
-        sog_knots=4.0,
-        cog_deg=90.0,
-        beam_angle_deg=30.0,
-        survey_mode=True
-    )
+        # Vessel sounder measures 14.0m (deeper dredged water) with 30° acoustic cone
+        res = waterbody_mgr.log_live_telemetry(
+            lat=center_lat,
+            lon=center_lon,
+            depth_m=14.0,
+            sog_knots=4.0,
+            cog_deg=90.0,
+            beam_angle_deg=30.0,
+            survey_mode=True
+        )
 
-    assert res["recorded"] is True
-    assert res["fused_into_grid"] is True
-    assert res["swath_cells_updated"] >= 1
+        assert res["recorded"] is True
+        assert res["fused_into_grid"] is True
+        assert res["swath_cells_updated"] >= 1
 
-    # Key check 1: Center cell is now 14.0m, NOT blocked at 2.0m!
-    assert grid.depths[r, c] == 14.0
+        # Key check 1: Center cell is now 14.0m, NOT blocked at 2.0m!
+        assert grid.depths[r, c] == 14.0
 
-    # Key check 2: Adjacent cell in acoustic footprint is also updated
-    adj_depth = grid.depths[r + 1, c]
-    assert adj_depth > 2.0  # Has been updated by beam footprint
+        # Key check 2: Adjacent cell in acoustic footprint is also updated
+        adj_depth = grid.depths[r + 1, c]
+        assert adj_depth > 2.0  # Has been updated by beam footprint
+    finally:
+        waterbody_mgr.set_active("black_sea")
