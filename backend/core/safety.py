@@ -443,11 +443,23 @@ def scan_corridor_raster_swath(
 
                     # --- ZOC (Zone of Confidence) hazard ----------------------
                     # Low survey confidence means charted depth may be unreliable
-                    # even when depth appears safe. Classes D(5), U(6), unknown(0)
-                    # trigger a low-confidence hazard inside the XTD corridor.
+                    # even when depth appears safe. Two distinct cases:
+                    #   Class 0 = no ZOC data in file at all (unknown quality)
+                    #   Class 5 (D) / 6 (U) = confirmed low-quality survey
+                    # Both are WARNING-level (ALM-11), NOT CRITICAL — they do not
+                    # block export if charted depth is sufficient. They only warn
+                    # that bathymetry may be unreliable.
                     zoc_class = grid.get_zoc_class(r, c) if hasattr(grid, "get_zoc_class") else 0
-                    if zoc_class in (0, 5, 6):
-                        zoc_class_name = {0: "UNKNOWN", 5: "D", 6: "U"}.get(zoc_class, f"ZOC{zoc_class}")
+                    if zoc_class == 0:
+                        zoc_hazard_type = "ZOC_UNKNOWN"
+                        zoc_class_name = "UNKNOWN"
+                    elif zoc_class in (5, 6):
+                        zoc_hazard_type = "ZOC_LOW_CONFIDENCE"
+                        zoc_class_name = {5: "D", 6: "U"}[zoc_class]
+                    else:
+                        zoc_hazard_type = None
+
+                    if zoc_hazard_type is not None:
                         hazards.append({
                             "r": r,
                             "c": c,
@@ -458,8 +470,8 @@ def scan_corridor_raster_swath(
                             "port_xtd_m": round(cur_port_xtd_m, 1),
                             "stbd_xtd_m": round(cur_stbd_xtd_m, 1),
                             "is_restricted": False,
-                            "is_unverified_coverage": True,
-                            "hazard_type": "ZOC_LOW_CONFIDENCE",
+                            "is_unverified_coverage": False,
+                            "hazard_type": zoc_hazard_type,
                             "zoc_class": zoc_class_name,
                         })
 
@@ -469,6 +481,7 @@ def scan_corridor_raster_swath(
         "LAND": [],
         "RESTRICTED_ZONE": [],
         "SHALLOW_WATER": [],
+        "ZOC_UNKNOWN": [],
         "ZOC_LOW_CONFIDENCE": [],
     }
     for h in hazards:
@@ -483,13 +496,14 @@ def scan_corridor_raster_swath(
     by_type["LAND"].sort(key=lambda h: (h.get("depth", 0.0), abs(h.get("xtd_offset_m", 0.0))))
     by_type["RESTRICTED_ZONE"].sort(key=lambda h: abs(h.get("xtd_offset_m", 0.0)))
     by_type["SHALLOW_WATER"].sort(key=lambda h: (h.get("depth", 0.0), abs(h.get("xtd_offset_m", 0.0))))
-    by_type["ZOC_LOW_CONFIDENCE"].sort(key=lambda h: (5 - h.get("zoc_class", 0) if h.get("zoc_class", 0) in (5, 6) else 5, abs(h.get("xtd_offset_m", 0.0))))
+    by_type["ZOC_UNKNOWN"].sort(key=lambda h: abs(h.get("xtd_offset_m", 0.0)))
+    by_type["ZOC_LOW_CONFIDENCE"].sort(key=lambda h: abs(h.get("xtd_offset_m", 0.0)))
 
     selected: List[Dict[str, Any]] = []
     seen_ids = set()
 
     # Priority 1: Pick the worst representative of EACH detected hazard type
-    for cat in ["NODATA_UNVERIFIED", "LAND", "RESTRICTED_ZONE", "SHALLOW_WATER", "ZOC_LOW_CONFIDENCE"]:
+    for cat in ["NODATA_UNVERIFIED", "LAND", "RESTRICTED_ZONE", "SHALLOW_WATER", "ZOC_UNKNOWN", "ZOC_LOW_CONFIDENCE"]:
         cat_list = by_type.get(cat, [])
         if cat_list:
             top_h = cat_list[0]
@@ -734,21 +748,30 @@ def verify_ecdis_route_safety(
                 "hazard_location": [worst_land["lon"], worst_land["lat"]],
             })
 
-        # Alarm 5: Low survey confidence (ZOC D / U / unknown) inside XTD
-        zoc_hazards = [h for h in corridor_hazards if h.get("hazard_type") == "ZOC_LOW_CONFIDENCE"]
+        # Alarm 5: Low survey confidence (ZOC) inside XTD
+        zoc_hazards = [h for h in corridor_hazards if h.get("hazard_type") in ("ZOC_UNKNOWN", "ZOC_LOW_CONFIDENCE")]
         if zoc_hazards:
             worst_zoc = zoc_hazards[0]
             z_p_xtd = worst_zoc.get("port_xtd_m", port_xtd_m)
             z_s_xtd = worst_zoc.get("stbd_xtd_m", stbd_xtd_m)
+            zoc_type = worst_zoc.get("hazard_type", "ZOC_LOW_CONFIDENCE")
+            if zoc_type == "ZOC_UNKNOWN":
+                zoc_detail = (
+                    f"XTD safety corridor ({z_p_xtd:.0f}m port / {z_s_xtd:.0f}m stbd) passes through an area "
+                    f"with no Zone of Confidence (ZOC) data at ({worst_zoc['lon']:.4f}, {worst_zoc['lat']:.4f}). "
+                    f"Survey quality is unknown — charted depth may be unreliable."
+                )
+            else:
+                zoc_detail = (
+                    f"XTD safety corridor ({z_p_xtd:.0f}m port / {z_s_xtd:.0f}m stbd) passes through a Zone of Confidence "
+                    f"{worst_zoc.get('zoc_class', '?')} area at ({worst_zoc['lon']:.4f}, {worst_zoc['lat']:.4f}). "
+                    f"Charted depth may be unreliable; consider additional soundings before passage."
+                )
             alarms.append({
                 "severity": "WARNING",
                 "code": "ALM-11-ZOC-LOW-CONFIDENCE",
                 "title": "Low Survey Confidence Zone Inside XTD Corridor",
-                "detail": (
-                    f"XTD safety corridor ({z_p_xtd:.0f}m port / {z_s_xtd:.0f}m stbd) passes through a Zone of Confidence "
-                    f"{worst_zoc.get('zoc_class', '?')} area at ({worst_zoc['lon']:.4f}, {worst_zoc['lat']:.4f}). "
-                    f"Charted depth may be unreliable; consider additional soundings before passage."
-                ),
+                "detail": zoc_detail,
                 "hazard_location": [worst_zoc["lon"], worst_zoc["lat"]],
             })
 
