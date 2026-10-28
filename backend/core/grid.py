@@ -117,13 +117,20 @@ class BathymetricGrid:
           C:     0.3
           D:     0.6
           U:     0.8   (unassessed)
-          0:     0.8   (unknown treated as lowest confidence)
+          0:     0.0   (no ZOC data available — no penalty, graceful degradation)
+
+        If the entire zoc_mask is zero (no ZOC data in the file), no penalty
+        is applied anywhere — the router cannot distinguish survey quality
+        and must not penalize all cells equally.
         """
         if not (0 <= r < self.rows and 0 <= c < self.cols):
-            return 0.8
+            return 0.0
+        # Graceful degradation: if no ZOC data is available at all, skip penalty
+        if not np.any(self.zoc_mask):
+            return 0.0
         zoc = int(self.zoc_mask[r, c])
         penalty_map = {1: 0.0, 2: 0.0, 3: 0.1, 4: 0.3, 5: 0.6, 6: 0.8}
-        return float(penalty_map.get(zoc, 0.8))
+        return float(penalty_map.get(zoc, 0.0))
 
     def is_within_coverage(self, lon: float, lat: float) -> bool:
         """Checks if geographic coordinate lies within raster bounding box."""
